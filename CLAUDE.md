@@ -1,6 +1,27 @@
 # OptiFlow
 
-## What it is
+## ⚙️ How work gets built — READ FIRST (the Factory)
+**Every task passes the orchestrator's Gate:** is the Factory worth it here (quality / cost /
+time)? Trivial change → **Lane B** (write it inline). Worthwhile change → **Lane FACTORY**
+(split into Work Units, dispatch, QC gates) — even if it touches only one sub-factory. Full
+protocol:
+
+@.claude/ORCHESTRATOR.md
+
+- **backend** — specialized agents `api-agent`, `async-agent`, `doc-agent`, `review-agent`,
+  `test-agent` (invoke via the Task tool).
+- **frontend** / **mobile** — shared skills `.claude/skills/{frontend,mobile}` (no agent
+  roster yet).
+
+Playbooks: `.claude/factories/{backend,frontend,mobile}.md`.
+
+**Skills (`.claude/skills/*`) are the codebase conventions and apply to _every_ code change —
+including Lane B inline work, not just the specialized agents.** They activate automatically
+from the task (each carries a "use when…" description); you don't wire them per feature.
+
+---
+
+## What OptiFlow is
 OptiFlow is a **multi-tenant SaaS** that helps manufacturing plants manage **machine
 downtime** efficiently. When a workstation stops for any reason, OptiFlow drives a workflow
 that tracks the incident from detection all the way to a validated return to production, and
@@ -9,9 +30,6 @@ feeds plant **KPIs** with the data collected along the way.
 Each plant / organization is a **tenant** with strictly isolated data.
 
 ## Core domain workflow — the downtime lifecycle
-When a workstation goes down for any specific reason, a **downtime workflow** is triggered
-and followed until resolution:
-
 1. **Detection** — a workstation stops working; a downtime **ticket** is opened.
 2. **Notify** — the proper **responders** (the responsible maintenance technicians/team for
    that station) are notified of the issue.
@@ -28,7 +46,7 @@ and followed until resolution:
 - Tenant scoping / isolation mechanism in Firestore: `⟨TBD — confirm the model⟩`.
 
 ## KPIs (fed by the downtime lifecycle)
-Key plant metrics derived from ticket + downtime data. Typical set (confirm the exact list):
+Typical set (confirm the exact list):
 - **MTTR** (mean time to repair), **MTBF** (mean time between failures)
 - **Downtime duration**, **availability / OEE**
 - Tickets by **cause / line / shift / station**, acknowledge & resolution SLA adherence
@@ -67,8 +85,3 @@ frontend/   React web app                       (see frontend/README.md)
 mobile/     React Native app                    (see mobile/README.md)
 .claude/    The AI dev factory that builds all three (orchestrator, sub-factories, agents, skills)
 ```
-
-## How work gets built
-All development runs through the orchestrator defined in `.claude/ORCHESTRATOR.md`: every task
-passes a binary Gate (small change vs. full multi-factory pipeline), and feature work is
-decomposed into Work Units dispatched across the **backend / frontend / mobile** sub-factories.

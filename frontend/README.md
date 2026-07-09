@@ -20,5 +20,4 @@ component. Store shapes mirror the backend `ApiResponse` contract exactly.
 ## Governed by
 
 - Sub-factory: `.claude/factories/frontend.md`
-- Agents: `fe-store-agent`, `fe-component-agent`, `fe-page-agent`, `fe-review-agent`, `fe-test-agent` (pending)
 - Skill: `.claude/skills/frontend/SKILL.md`

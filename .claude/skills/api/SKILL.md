@@ -11,3 +11,4 @@ Create new endpoint:
 3. The response model of the endpoint should always of type ApiResponse
 4. Create the base model of model response in modelsOut within the same router of the code.
 5. Create the logic of the endpoint in the file services of the same folder of the router of the endpoint.
+6. Treat every endpoint as a single atomic transaction. Any failure must trigger a complete rollback of all operations performed by that endpoint, including database changes and any resources created during execution whenever possible. The endpoint should either complete successfully or leave the system unchanged.

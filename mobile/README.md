@@ -19,5 +19,4 @@ for the same resource.
 
 ## Governed by
 - Sub-factory: `.claude/factories/mobile.md`
-- Agents: `mob-store-agent`, `mob-component-agent`, `mob-screen-agent`, `mob-review-agent`, `mob-test-agent` (pending)
 - Skill: `.claude/skills/mobile/SKILL.md`
