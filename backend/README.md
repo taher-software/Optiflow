@@ -6,7 +6,7 @@ No relational ORM / migrations — Firestore is schemaless.
 ## Structure
 ```
 src/app/
-  routers/        One folder per resource: router + modelsIn + modelsOut + services (see api skill)
+  routers/        One folder per resource: __init__.py (endpoints) + modelsIn + modelsOut + services (see api skill)
   async_jobs/     Background job handlers + __init__.py dispatch mapping (see async skill)
   globals/enum/   Shared enums (e.g. JobType)
   core/           Settings + GCP clients (Firestore, Pub/Sub, Cloud Tasks)

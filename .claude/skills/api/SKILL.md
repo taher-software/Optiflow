@@ -5,10 +5,22 @@ context: fork
 disable-model-invocation: false
 ---
 
-Create new endpoint:
-1. Create all input base model in modelsIn file within the same router of endpoint
-2. Add rich documentation for the endpoint
-3. The response model of the endpoint should always of type ApiResponse
-4. Create the base model of model response in modelsOut within the same router of the code.
-5. Create the logic of the endpoint in the file services of the same folder of the router of the endpoint.
-6. Treat every endpoint as a single atomic transaction. Any failure must trigger a complete rollback of all operations performed by that endpoint, including database changes and any resources created during execution whenever possible. The endpoint should either complete successfully or leave the system unchanged.
+# Endpoint structure
+
+Each resource gets a router **folder**. Everything for that resource lives in that folder,
+and the endpoints are declared in the folder's **`__init__.py`** — do NOT create a separate
+router/endpoint file.
+
+Files in the router folder:
+- **`__init__.py`** — the `APIRouter` and its endpoint(s). This is where routes are defined.
+- **`modelsIn`** — all request/input base models.
+- **`modelsOut`** — all response base models. Every endpoint's `response_model` is `ApiResponse`.
+- **`services`** — the endpoint's business logic.
+
+Rules for every endpoint:
+1. Rich documentation (summary, description, error `responses`).
+2. Response model is always `ApiResponse`.
+3. Treat the endpoint as a single **atomic transaction**: any failure must trigger a complete
+   rollback of everything it did — datastore writes and any resources created during
+   execution, whenever possible. The endpoint either completes fully or leaves the system
+   unchanged.
