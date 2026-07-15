@@ -4,5 +4,4 @@ export const BRAND = {
   /** Split for the two-tone wordmark (Opti + Flow). */
   nameLead: "Opti",
   nameAccent: "Flow",
-  tagline: "Keep production flowing.",
 } as const;

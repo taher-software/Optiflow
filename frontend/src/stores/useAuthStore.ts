@@ -41,9 +41,10 @@ export const useAuthStore = create<AuthState>((set) => ({
     set({ status: "loading", error: null });
 
     if (!email || !password) {
+      // `error` holds an i18n key; the component translates it.
       set({
         status: "unauthenticated",
-        error: "Email et mot de passe requis.",
+        error: "login.errors.required",
       });
       return;
     }
@@ -61,7 +62,7 @@ export const useAuthStore = create<AuthState>((set) => ({
         tenantId: "stub-tenant",
       });
     } catch {
-      set({ status: "unauthenticated", error: "Échec de la connexion." });
+      set({ status: "unauthenticated", error: "login.errors.failed" });
     }
   },
 

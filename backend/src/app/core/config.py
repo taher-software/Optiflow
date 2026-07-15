@@ -12,8 +12,8 @@ class Settings(BaseSettings):
     frontend_url: str = "http://localhost:5173/"
 
     # Resend (transactional email).
-    resend_api_key: str = ""
-    email_from: str = "OptiFlow <onboarding@optiflow.app>"
+    resend_api_key: str = "re_REQ5ayRn_WZoktpg3E6i9NCtiyPDLQfks"
+    email_from: str = "bodor@bodor.tn"
 
     # Security — signs the email-confirmation token.
     secret_key: str = "change-me-in-production"

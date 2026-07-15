@@ -4,6 +4,10 @@ export const ROUTES = {
   prospect: "/",
   /** Sign-in page. */
   login: "/login",
+  /** Account registration (create a new namespace). */
+  register: "/register",
+  /** Email/account confirmation landing (reads ?token=). */
+  confirmAccount: "/confirm-account",
   /** Protected operations area (tenant-scoped). */
   app: "/app",
 } as const;

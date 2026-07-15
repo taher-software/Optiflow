@@ -1,12 +1,15 @@
 import { useState, type FormEvent } from "react";
-import { useNavigate } from "react-router-dom";
+import { useTranslation } from "react-i18next";
+import { Link, useNavigate } from "react-router-dom";
 
 import { BrandLogo } from "../components/BrandLogo";
+import { LanguageSwitcher } from "../components/LanguageSwitcher";
 import { ROUTES } from "../constants/routes";
 import { useAuthStore } from "../stores/useAuthStore";
 
 /** Sign-in page. Entry point into the protected operations app. */
 export function LoginPage() {
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const signIn = useAuthStore((s) => s.signIn);
   const status = useAuthStore((s) => s.status);
@@ -26,16 +29,19 @@ export function LoginPage() {
   };
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-slate-950 px-6">
+    <div className="relative flex min-h-screen items-center justify-center bg-slate-950 px-6">
+      <div className="absolute right-4 top-4">
+        <LanguageSwitcher />
+      </div>
       <div className="w-full max-w-sm">
         <div className="flex justify-center">
           <BrandLogo />
         </div>
         <h1 className="mt-8 text-center text-xl font-semibold text-white">
-          Se connecter
+          {t("login.title")}
         </h1>
         <p className="mt-1 text-center text-sm text-slate-400">
-          Accédez à votre espace de production.
+          {t("login.subtitle")}
         </p>
 
         <form onSubmit={onSubmit} className="mt-8 space-y-4">
@@ -44,7 +50,7 @@ export function LoginPage() {
               htmlFor="email"
               className="mb-1 block text-sm font-medium text-slate-300"
             >
-              Email
+              {t("login.emailLabel")}
             </label>
             <input
               id="email"
@@ -62,7 +68,7 @@ export function LoginPage() {
               htmlFor="password"
               className="mb-1 block text-sm font-medium text-slate-300"
             >
-              Mot de passe
+              {t("login.passwordLabel")}
             </label>
             <input
               id="password"
@@ -75,16 +81,26 @@ export function LoginPage() {
             />
           </div>
 
-          {error && <p className="text-sm text-red-400">{error}</p>}
+          {error && <p className="text-sm text-red-400">{t(error)}</p>}
 
           <button
             type="submit"
             disabled={loading}
             className="w-full rounded-xl bg-teal-400 px-4 py-3 text-sm font-semibold text-slate-950 transition-colors hover:bg-teal-300 disabled:opacity-60"
           >
-            {loading ? "Connexion…" : "Se connecter"}
+            {loading ? t("login.submitting") : t("login.submit")}
           </button>
         </form>
+
+        <p className="mt-6 text-center text-sm text-slate-400">
+          {t("login.noAccount")}{" "}
+          <Link
+            to={ROUTES.register}
+            className="font-medium text-teal-400 hover:text-teal-300"
+          >
+            {t("login.createAccount")}
+          </Link>
+        </p>
       </div>
     </div>
   );

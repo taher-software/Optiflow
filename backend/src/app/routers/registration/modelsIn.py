@@ -37,3 +37,11 @@ class ConfirmAccountIn(BaseModel):
     """Payload to confirm an account and finalize it."""
 
     token: str = Field(..., min_length=1, description="Account-confirmation token.")
+
+
+class ResendConfirmationIn(BaseModel):
+    """Payload to resend the account-confirmation email."""
+
+    email: EmailStr = Field(
+        ..., description="Email of the account to resend the confirmation to."
+    )

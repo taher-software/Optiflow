@@ -1,10 +1,10 @@
 from fastapi import APIRouter, status
 
-from app.core.api_response import ApiResponse
+from src.app.core.api_response import ApiResponse
 
-from . import services
-from .modelsIn import ConfirmAccountIn, RegisterAccountIn
-from .modelsOut import ConfirmAccountOut, RegisterAccountOut
+from src.app.routers.registration import services
+from src.app.routers.registration.modelsIn import ConfirmAccountIn, RegisterAccountIn, ResendConfirmationIn
+from src.app.routers.registration.modelsOut import ConfirmAccountOut, RegisterAccountOut, ResendConfirmationOut
 
 router = APIRouter(prefix="/registration", tags=["registration"])
 
@@ -44,5 +44,26 @@ async def confirm_account(payload: ConfirmAccountIn) -> ApiResponse[ConfirmAccou
     result = services.confirm_account(payload.token)
     return ApiResponse(
         message="Account confirmed. Credentials have been sent by email.",
+        data=result,
+    )
+
+
+@router.post(
+    "/resend",
+    response_model=ApiResponse[ResendConfirmationOut],
+    summary="Resend the account-confirmation email",
+    description=(
+        "Resends the confirmation email for a still-unconfirmed account (e.g. after "
+        "the link expired). Returns 404 if no pending account matches the email, 403 "
+        "if the user is not the account owner, and 409 if the account is already "
+        "confirmed."
+    ),
+)
+async def resend_confirmation(
+    payload: ResendConfirmationIn,
+) -> ApiResponse[ResendConfirmationOut]:
+    result = services.resend_confirmation(payload.email)
+    return ApiResponse(
+        message="Confirmation email resent.",
         data=result,
     )

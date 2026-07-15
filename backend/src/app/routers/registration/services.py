@@ -4,19 +4,19 @@ from typing import Any
 from fastapi import HTTPException, status
 from itsdangerous import BadSignature, SignatureExpired
 
-from app.core import email as email_service
-from app.core.config import get_settings
-from app.core.firestore import NAMESPACE_COLLECTION, USERS_COLLECTION, get_db
-from app.core.security import (
+from src.app.core import email as email_service
+from src.app.core.config import get_settings
+from src.app.core.firestore import NAMESPACE_COLLECTION, USERS_COLLECTION, get_db
+from src.app.core.security import (
     generate_password,
     hash_password,
     make_confirmation_token,
     read_confirmation_token,
 )
-from app.globals.enum import Role
+from src.app.globals.enum import Role
 
-from .modelsIn import RegisterAccountIn
-from .modelsOut import ConfirmAccountOut, RegisterAccountOut
+from src.app.routers.registration.modelsIn import RegisterAccountIn
+from src.app.routers.registration.modelsOut import ConfirmAccountOut, RegisterAccountOut, ResendConfirmationOut
 
 
 def _safe_delete(ref: Any) -> None:
@@ -27,17 +27,25 @@ def _safe_delete(ref: Any) -> None:
         pass
 
 
+def _send_confirmation(user_id: str, namespace_id: str, email: str) -> None:
+    """Build the confirmation link and send the confirmation email.
+
+    Shared by registration and resend so the email communication stays consistent.
+    """
+    settings = get_settings()
+    token = make_confirmation_token({"user_id": user_id, "namespace_id": namespace_id})
+    confirm_url = f"{settings.frontend_url.rstrip('/')}/confirm-account?token={token}"
+    email_service.send_confirmation_email(email, confirm_url)
+
+
 def create_account(payload: RegisterAccountIn) -> RegisterAccountOut:
     """Create a namespace (account) + owner user, then email a confirmation link.
 
-    The two Firestore writes and the email are attempted together: if anything
-    fails, both documents are removed so the registration can be retried cleanly
-    (idempotency). The confirmation email is only sent once the writes succeed.
+    Atomic: if any write or the email fails, both documents are removed so the
+    registration can be retried cleanly.
     """
     db = get_db()
-    settings = get_settings()
 
-    # Reject a duplicate owner email up front.
     existing = (
         db.collection(USERS_COLLECTION)
         .where("email", "==", str(payload.owner.email))
@@ -82,7 +90,6 @@ def create_account(payload: RegisterAccountIn) -> RegisterAccountOut:
             }
         )
     except Exception as exc:
-        # Any write failure: remove both documents to keep registration idempotent.
         _safe_delete(namespace_ref)
         _safe_delete(user_ref)
         raise HTTPException(
@@ -90,16 +97,8 @@ def create_account(payload: RegisterAccountIn) -> RegisterAccountOut:
             detail="Failed to create the account. Please retry.",
         ) from exc
     else:
-        # Writes succeeded — send the confirmation email. If it fails, roll back
-        # so no orphaned, unconfirmed account remains.
         try:
-            token = make_confirmation_token(
-                {"user_id": user_id, "namespace_id": namespace_id}
-            )
-            confirm_url = (
-                f"{settings.frontend_url.rstrip('/')}/confirm-account?token={token}"
-            )
-            email_service.send_confirmation_email(str(payload.owner.email), confirm_url)
+            _send_confirmation(user_id, namespace_id, str(payload.owner.email))
         except Exception as exc:
             _safe_delete(namespace_ref)
             _safe_delete(user_ref)
@@ -109,6 +108,49 @@ def create_account(payload: RegisterAccountIn) -> RegisterAccountOut:
             ) from exc
 
     return RegisterAccountOut(namespace_id=namespace_id, email=payload.owner.email)
+
+
+def resend_confirmation(email: str) -> ResendConfirmationOut:
+    """Resend the confirmation email for a still-unconfirmed account.
+
+    Returns a generic result regardless of whether an account exists / is already
+    confirmed, to avoid leaking which emails are registered.
+    """
+    db = get_db()
+
+    matches = (
+        db.collection(USERS_COLLECTION).where("email", "==", str(email)).limit(1).get()
+    )
+    if not matches:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No pending account found for this email.",
+        )
+
+    user = matches[0].to_dict() or {}
+    if user.get("role") != Role.OWNER.value:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only the account owner can request a confirmation email.",
+        )
+
+    namespace_id = user.get("namespace_id")
+    if not namespace_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No pending account found for this email.",
+        )
+
+    namespace_snap = db.collection(NAMESPACE_COLLECTION).document(namespace_id).get()
+    namespace = namespace_snap.to_dict() or {} if namespace_snap.exists else {}
+    if namespace.get("confirmed"):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This account has already been confirmed.",
+        )
+
+    _send_confirmation(user["id"], namespace_id, user["email"])
+    return ResendConfirmationOut(email=email)
 
 
 def confirm_account(token: str) -> ConfirmAccountOut:
@@ -151,6 +193,11 @@ def confirm_account(token: str) -> ConfirmAccountOut:
             status_code=status.HTTP_404_NOT_FOUND, detail="Owner user not found."
         )
     user = user_snap.to_dict() or {}
+    if user.get("role") != Role.OWNER.value:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only the account owner can confirm the account.",
+        )
 
     password = generate_password()
     user_ref.update({"password": hash_password(password)})
