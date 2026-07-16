@@ -80,8 +80,8 @@ def create_account(payload: RegisterAccountIn) -> RegisterAccountOut:
         user_ref.set(
             {
                 "id": user_id,
-                "firstname": payload.owner.firstname,
-                "lastname": payload.owner.lastname,
+                "first_name": payload.owner.firstname,
+                "last_name": payload.owner.lastname,
                 "email": str(payload.owner.email),
                 "avatar_url": payload.owner.avatar_url,
                 "role": Role.OWNER.value,

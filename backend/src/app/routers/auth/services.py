@@ -51,8 +51,8 @@ def login(payload: LoginIn) -> LoginOut:
         user=AuthUserOut(
             id=user["id"],
             email=user["email"],
-            firstname=user.get("firstname", ""),
-            lastname=user.get("lastname", ""),
+            first_name=user.get("first_name", ""),
+            last_name=user.get("last_name", ""),
             role=user.get("role", ""),
             namespace_id=user.get("namespace_id", ""),
             avatar_url=user.get("avatar_url"),

@@ -4,6 +4,11 @@ const fr = {
 
     language: { fr: "Français", en: "English" },
 
+    common: {
+      showPassword: "Afficher le mot de passe",
+      hidePassword: "Masquer le mot de passe",
+    },
+
     prospect: {
       badge: "La gestion des arrêts pour les usines modernes",
       hero: {
@@ -127,6 +132,99 @@ const fr = {
       subtitle:
         "Votre tableau de bord de production arrive bientôt — tickets d'arrêt, intervenants et KPIs de l'usine.",
       signOut: "Se déconnecter",
+    },
+
+    nav: { dashboard: "Tableau de bord", users: "Utilisateurs" },
+
+    users: {
+      title: "Utilisateurs",
+      add: "Ajouter un utilisateur",
+      empty: "Aucun utilisateur pour le moment.",
+      loading: "Chargement…",
+      edit: "Modifier",
+      table: {
+        name: "Nom",
+        role: "Rôle",
+        email: "Email",
+        securityCode: "Code de sécurité",
+        actions: "Actions",
+      },
+      form: {
+        createTitle: "Nouvel utilisateur",
+        editTitle: "Modifier l'utilisateur",
+        firstName: "Prénom",
+        lastName: "Nom",
+        role: "Rôle",
+        roleLocked: "ne peut pas être modifié",
+        email: "Email",
+        optional: "optionnel",
+        password: "Mot de passe",
+        passwordEdit: "Nouveau mot de passe",
+        passwordEditHint: "Laisser vide pour ne pas changer",
+        save: "Enregistrer",
+        creating: "Création…",
+        saving: "Enregistrement…",
+        cancel: "Annuler",
+        loadError: "Impossible de charger l'utilisateur.",
+        saveError: "Impossible d'enregistrer l'utilisateur.",
+      },
+      roles: {
+        owner: {
+          name: "Propriétaire",
+          description:
+            "Possède l'organisation. Accès illimité à toutes les fonctionnalités, la facturation, les abonnements, les paramètres de l'organisation, les sites, les utilisateurs et les permissions.",
+        },
+        admin: {
+          name: "Administrateur",
+          description:
+            "Gère la configuration de l'organisation, les utilisateurs, les permissions, les sites, les structures de production et les paramètres système. Accès opérationnel complet, mais ne possède pas l'organisation.",
+        },
+        manager: {
+          name: "Manager",
+          description:
+            "Responsable de département ou d'usine, en charge de la performance opérationnelle globale. Visibilité sur plusieurs ateliers, lignes de production et équipes, avec l'autorité de suivre les KPIs, allouer les ressources et prendre des décisions stratégiques.",
+        },
+        production_supervisor: {
+          name: "Superviseur de production",
+          description:
+            "Supervise les activités de production sur un ou plusieurs ateliers. Coordonne les agents de production, suit la performance, résout les problèmes escaladés et garantit l'atteinte des objectifs de production.",
+        },
+        production_agent: {
+          name: "Agent de production",
+          description:
+            "Responsable terrain de la production, en charge des opérations quotidiennes d'une zone de production. Peut représenter un chef d'équipe, un chef de poste, un responsable d'UAP, un responsable d'îlot ou tout responsable opérationnel gérant directement la production et signalant les incidents.",
+        },
+        quality_supervisor: {
+          name: "Superviseur qualité",
+          description:
+            "Supervise les activités qualité, coordonne les agents qualité, valide les inspections, suit les KPIs qualité et assure la conformité aux normes qualité.",
+        },
+        quality_agent: {
+          name: "Agent qualité",
+          description:
+            "Responsable terrain de la qualité, en charge des inspections, audits, gestion des non-conformités et activités de contrôle qualité dans une zone assignée.",
+        },
+        maintenance_supervisor: {
+          name: "Superviseur maintenance",
+          description:
+            "Supervise les opérations de maintenance, priorise les interventions, coordonne les agents de maintenance et assure la fiabilité des équipements et la planification de la maintenance.",
+        },
+        maintenance_agent: {
+          name: "Agent de maintenance",
+          description:
+            "Responsable terrain de la maintenance, en charge de coordonner les travaux de maintenance dans un atelier, une ligne de production ou une zone technique. Peut représenter un chef d'équipe maintenance ou un coordinateur de zone.",
+        },
+        logistic_supervisor: {
+          name: "Superviseur logistique",
+          description:
+            "Supervise les opérations logistiques, les activités d'entrepôt, les flux de matières et coordonne les agents logistiques.",
+        },
+        logistic_agent: {
+          name: "Agent logistique",
+          description:
+            "Responsable terrain de la logistique, en charge des opérations d'entrepôt, de l'approvisionnement, des expéditions, des réceptions ou des activités d'inventaire dans une zone assignée.",
+        },
+      },
     },
   },
 };

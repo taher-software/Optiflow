@@ -6,8 +6,8 @@ import { API_URL } from "../constants/api";
 export interface AuthUser {
   id: string;
   email: string;
-  firstname: string;
-  lastname: string;
+  first_name: string;
+  last_name: string;
   role: string;
   namespace_id: string;
   avatar_url?: string | null;

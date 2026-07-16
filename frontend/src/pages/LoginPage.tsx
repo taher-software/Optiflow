@@ -4,6 +4,7 @@ import { Link, useNavigate } from "react-router-dom";
 
 import { BrandLogo } from "../components/BrandLogo";
 import { LanguageSwitcher } from "../components/LanguageSwitcher";
+import { PasswordField } from "../components/PasswordField";
 import { ROUTES } from "../constants/routes";
 import { useAuthStore } from "../stores/useAuthStore";
 
@@ -63,23 +64,14 @@ export function LoginPage() {
             />
           </div>
 
-          <div>
-            <label
-              htmlFor="password"
-              className="mb-1 block text-sm font-medium text-slate-300"
-            >
-              {t("login.passwordLabel")}
-            </label>
-            <input
-              id="password"
-              type="password"
-              autoComplete="current-password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              className="w-full rounded-xl border border-slate-700 bg-slate-900 px-4 py-3 text-sm text-white placeholder-slate-500 focus:border-teal-400 focus:outline-none"
-              placeholder="••••••••"
-            />
-          </div>
+          <PasswordField
+            id="password"
+            label={t("login.passwordLabel")}
+            value={password}
+            onChange={setPassword}
+            autoComplete="current-password"
+            placeholder="••••••••"
+          />
 
           {error && <p className="text-sm text-red-400">{t(error)}</p>}
 

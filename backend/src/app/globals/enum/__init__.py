@@ -1,3 +1,3 @@
-from .roles import Role
+from .roles import ASSIGNABLE_ROLES, EMAIL_REQUIRED_ROLES, Role
 
-__all__ = ["Role"]
+__all__ = ["ASSIGNABLE_ROLES", "EMAIL_REQUIRED_ROLES", "Role"]

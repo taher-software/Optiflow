@@ -8,8 +8,8 @@ class AuthUserOut(BaseModel):
 
     id: str = Field(..., description="User id.")
     email: EmailStr = Field(..., description="User email / username.")
-    firstname: str = Field(..., description="User first name.")
-    lastname: str = Field(..., description="User last name.")
+    first_name: str = Field(..., description="User first name.")
+    last_name: str = Field(..., description="User last name.")
     role: str = Field(..., description="User role.")
     namespace_id: str = Field(..., description="Tenant (namespace) the user belongs to.")
     avatar_url: Optional[str] = Field(default=None, description="Optional avatar URL.")

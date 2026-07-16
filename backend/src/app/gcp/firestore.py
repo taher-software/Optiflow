@@ -29,13 +29,13 @@ class FirestoreClient:
         print(f"Created document with ID: {doc_id}")
     """
 
-    def __init__(self, project_id: str = None, database_id: str = "(default)"):
+    def __init__(self, project_id: str = None, database_id: str = "(optiflow)"):
         """
         Initialize Firestore client.
 
         Args:
             project_id: GCP project ID (auto-detected if None)
-            database_id: Firestore database ID (default: "(default)")
+            database_id: Firestore database ID (default: "(optiflow)")
 
         Raises:
             exceptions.PermissionDenied: If credentials lack necessary permissions

@@ -7,6 +7,8 @@ import DashboardPage from "../pages/DashboardPage";
 import LoginPage from "../pages/LoginPage";
 import ProspectPage from "../pages/ProspectPage";
 import RegisterPage from "../pages/RegisterPage";
+import UserFormPage from "../pages/UserFormPage";
+import UsersPage from "../pages/UsersPage";
 
 /**
  * App routes:
@@ -24,6 +26,9 @@ export function AppRouter() {
         <Route path={ROUTES.confirmAccount} element={<ConfirmAccountPage />} />
         <Route element={<ProtectedRoute />}>
           <Route path={ROUTES.app} element={<DashboardPage />} />
+          <Route path={ROUTES.users} element={<UsersPage />} />
+          <Route path={ROUTES.newUser} element={<UserFormPage />} />
+          <Route path={`${ROUTES.users}/:id`} element={<UserFormPage />} />
         </Route>
       </Routes>
     </BrowserRouter>

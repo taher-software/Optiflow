@@ -10,4 +10,8 @@ export const ROUTES = {
   confirmAccount: "/confirm-account",
   /** Protected operations area (tenant-scoped). */
   app: "/app",
+  /** User management (owner/admin). */
+  users: "/app/users",
+  /** New-user form. */
+  newUser: "/app/users/new",
 } as const;
