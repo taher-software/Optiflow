@@ -1,9 +1,16 @@
 import { create } from "zustand";
+import { persist } from "zustand/middleware";
+
+import { API_URL } from "../constants/api";
 
 export interface AuthUser {
   id: string;
   email: string;
-  displayName: string;
+  firstname: string;
+  lastname: string;
+  role: string;
+  namespace_id: string;
+  avatar_url?: string | null;
 }
 
 export type AuthStatus =
@@ -11,63 +18,97 @@ export type AuthStatus =
 
 interface AuthState {
   status: AuthStatus;
+  /** Bearer access token, sent as Authorization on authenticated requests. */
+  token: string | null;
   user: AuthUser | null;
   /** The tenant (plant/organization) the signed-in user belongs to. */
   tenantId: string | null;
   error: string | null;
-  signIn: (email: string, password: string) => Promise<void>;
+  signIn: (username: string, password: string) => Promise<void>;
   signOut: () => void;
 }
 
+interface LoginResponse {
+  data: { access_token: string; token_type: string; user: AuthUser };
+}
+
 /**
- * Authentication state for the app.
- *
- * NOTE: `signIn`/`signOut` are STUBBED for now so the entry flow is
- * demonstrable without external config. Replace the marked sections with
- * Firebase Authentication when the Firebase project is ready:
- *   - signIn  -> signInWithEmailAndPassword(auth, email, password),
- *               then resolve the tenant from the user's custom claims
- *               (or a Firestore users/{uid} mapping).
- *   - signOut -> firebaseSignOut(auth)
- *   - add onAuthStateChanged(...) on app start to restore the session.
+ * Authentication state. The access token is persisted to localStorage so the
+ * session survives reloads and can authorize subsequent API calls (see
+ * `authHeader` below). `error` holds an i18n key that the component translates.
  */
-export const useAuthStore = create<AuthState>((set) => ({
-  status: "unauthenticated",
-  user: null,
-  tenantId: null,
-  error: null,
+export const useAuthStore = create<AuthState>()(
+  persist(
+    (set) => ({
+      status: "unauthenticated",
+      token: null,
+      user: null,
+      tenantId: null,
+      error: null,
 
-  signIn: async (email, password) => {
-    set({ status: "loading", error: null });
+      signIn: async (username, password) => {
+        set({ status: "loading", error: null });
 
-    if (!email || !password) {
-      // `error` holds an i18n key; the component translates it.
-      set({
-        status: "unauthenticated",
-        error: "login.errors.required",
-      });
-      return;
-    }
+        if (!username || !password) {
+          set({ status: "unauthenticated", error: "login.errors.required" });
+          return;
+        }
 
-    try {
-      // TODO(auth): replace this stub with Firebase Authentication + tenant resolution.
-      await new Promise((resolve) => setTimeout(resolve, 600));
-      set({
-        status: "authenticated",
-        user: {
-          id: "stub-user",
-          email,
-          displayName: email.split("@")[0],
-        },
-        tenantId: "stub-tenant",
-      });
-    } catch {
-      set({ status: "unauthenticated", error: "login.errors.failed" });
-    }
-  },
+        try {
+          const res = await fetch(`${API_URL}/auth/login`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ username, password }),
+          });
 
-  signOut: () => {
-    // TODO(auth): call Firebase signOut(auth).
-    set({ status: "unauthenticated", user: null, tenantId: null, error: null });
-  },
-}));
+          if (!res.ok) {
+            const error =
+              res.status === 403
+                ? "login.errors.notConfirmed"
+                : res.status === 401
+                  ? "login.errors.invalidCredentials"
+                  : "login.errors.failed";
+            set({ status: "unauthenticated", error });
+            return;
+          }
+
+          const body = (await res.json()) as LoginResponse;
+          set({
+            status: "authenticated",
+            token: body.data.access_token,
+            user: body.data.user,
+            tenantId: body.data.user.namespace_id,
+            error: null,
+          });
+        } catch {
+          set({ status: "unauthenticated", error: "login.errors.failed" });
+        }
+      },
+
+      signOut: () => {
+        set({
+          status: "unauthenticated",
+          token: null,
+          user: null,
+          tenantId: null,
+          error: null,
+        });
+      },
+    }),
+    {
+      name: "optiflow-auth",
+      partialize: (s) => ({
+        status: s.status,
+        token: s.token,
+        user: s.user,
+        tenantId: s.tenantId,
+      }),
+    },
+  ),
+);
+
+/** Authorization header for authenticated API calls (used by other stores). */
+export function authHeader(): Record<string, string> {
+  const { token } = useAuthStore.getState();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}

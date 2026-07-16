@@ -42,3 +42,19 @@ def read_confirmation_token(token: str) -> dict[str, str]:
     BadSignature on expiry / tampering."""
     max_age = get_settings().confirm_token_max_age_seconds
     return _serializer().loads(token, max_age=max_age)
+
+
+def _access_serializer() -> URLSafeTimedSerializer:
+    return URLSafeTimedSerializer(get_settings().secret_key, salt="auth-access")
+
+
+def make_access_token(data: dict[str, str]) -> str:
+    """Create a signed access token (bearer) carrying the given claims."""
+    return _access_serializer().dumps(data)
+
+
+def read_access_token(token: str) -> dict[str, str]:
+    """Decode an access token. Raises itsdangerous.SignatureExpired /
+    BadSignature on expiry / tampering."""
+    max_age = get_settings().access_token_max_age_seconds
+    return _access_serializer().loads(token, max_age=max_age)

@@ -54,6 +54,9 @@ const fr = {
       createAccount: "Créer un compte",
       errors: {
         required: "Email et mot de passe requis.",
+        invalidCredentials: "Nom d'utilisateur ou mot de passe invalide.",
+        notConfirmed:
+          "Veuillez confirmer votre compte avant de vous connecter.",
         failed: "Échec de la connexion.",
       },
     },

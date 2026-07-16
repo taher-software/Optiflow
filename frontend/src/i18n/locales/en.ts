@@ -54,6 +54,8 @@ const en = {
       createAccount: "Create an account",
       errors: {
         required: "Email and password are required.",
+        invalidCredentials: "Invalid username or password.",
+        notConfirmed: "Please confirm your account before signing in.",
         failed: "Sign-in failed.",
       },
     },

@@ -15,9 +15,10 @@ class Settings(BaseSettings):
     resend_api_key: str = "re_REQ5ayRn_WZoktpg3E6i9NCtiyPDLQfks"
     email_from: str = "bodor@bodor.tn"
 
-    # Security — signs the email-confirmation token.
+    # Security — signs the email-confirmation and access tokens.
     secret_key: str = "change-me-in-production"
     confirm_token_max_age_seconds: int = 60 * 60 * 24  # 24 hours
+    access_token_max_age_seconds: int = 60 * 60 * 24 * 7  # 7 days
 
 
 @lru_cache
