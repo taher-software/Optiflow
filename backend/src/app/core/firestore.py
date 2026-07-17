@@ -6,6 +6,7 @@ if TYPE_CHECKING:
 
 NAMESPACE_COLLECTION = "namespace"
 USERS_COLLECTION = "Users"
+UAP_COLLECTION = "uap"
 
 
 @lru_cache

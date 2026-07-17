@@ -7,6 +7,8 @@ import DashboardPage from "../pages/DashboardPage";
 import LoginPage from "../pages/LoginPage";
 import ProspectPage from "../pages/ProspectPage";
 import RegisterPage from "../pages/RegisterPage";
+import UapFormPage from "../pages/UapFormPage";
+import UapsPage from "../pages/UapsPage";
 import UserFormPage from "../pages/UserFormPage";
 import UsersPage from "../pages/UsersPage";
 
@@ -29,6 +31,9 @@ export function AppRouter() {
           <Route path={ROUTES.users} element={<UsersPage />} />
           <Route path={ROUTES.newUser} element={<UserFormPage />} />
           <Route path={`${ROUTES.users}/:id`} element={<UserFormPage />} />
+          <Route path={ROUTES.uaps} element={<UapsPage />} />
+          <Route path={ROUTES.newUap} element={<UapFormPage />} />
+          <Route path={`${ROUTES.uaps}/:id`} element={<UapFormPage />} />
         </Route>
       </Routes>
     </BrowserRouter>

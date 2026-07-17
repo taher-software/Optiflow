@@ -14,6 +14,8 @@ export function AppHeader() {
   const signOut = useAuthStore((s) => s.signOut);
 
   const canManageUsers = user?.role === "owner" || user?.role === "admin";
+  const canManageUaps =
+    canManageUsers || user?.role === "production supervisor";
 
   const onSignOut = () => {
     signOut();
@@ -31,6 +33,14 @@ export function AppHeader() {
           >
             {t("nav.dashboard")}
           </Link>
+          {canManageUaps && (
+            <Link
+              to={ROUTES.uaps}
+              className="font-medium text-slate-300 transition-colors hover:text-white"
+            >
+              {t("nav.uaps")}
+            </Link>
+          )}
           {canManageUsers && (
             <Link
               to={ROUTES.users}

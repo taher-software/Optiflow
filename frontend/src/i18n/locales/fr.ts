@@ -134,7 +134,42 @@ const fr = {
       signOut: "Se déconnecter",
     },
 
-    nav: { dashboard: "Tableau de bord", users: "Utilisateurs" },
+    nav: {
+      dashboard: "Tableau de bord",
+      users: "Utilisateurs",
+      uaps: "Zones de production",
+    },
+
+    uaps: {
+      title: "Zones de production",
+      add: "Ajouter une zone de production",
+      empty: "Aucune zone de production pour le moment.",
+      loading: "Chargement…",
+      edit: "Modifier",
+      memberCount: "{{count}} ressource",
+      memberCount_other: "{{count}} ressources",
+      form: {
+        createTitle: "Nouvelle zone de production",
+        editTitle: "Modifier la zone de production",
+        name: "Nom",
+        namePlaceholder: "ex. Ligne d'assemblage A",
+        description: "Description",
+        descriptionPlaceholder: "Ce que couvre cette zone…",
+        resources: "Ressources affectées",
+        noMembers: "Aucun utilisateur avec ce rôle pour le moment.",
+        save: "Enregistrer",
+        creating: "Création…",
+        saving: "Enregistrement…",
+        cancel: "Annuler",
+        delete: "Supprimer",
+        deleting: "Suppression…",
+        confirmDelete:
+          "Supprimer cette zone de production ? Cette action est irréversible.",
+        loadError: "Impossible de charger la zone de production.",
+        saveError: "Impossible d'enregistrer la zone de production.",
+        deleteError: "Impossible de supprimer la zone de production.",
+      },
+    },
 
     users: {
       title: "Utilisateurs",

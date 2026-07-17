@@ -14,4 +14,8 @@ export const ROUTES = {
   users: "/app/users",
   /** New-user form. */
   newUser: "/app/users/new",
+  /** Production areas (owner/admin/production-supervisor). */
+  uaps: "/app/uaps",
+  /** New production-area form. */
+  newUap: "/app/uaps/new",
 } as const;

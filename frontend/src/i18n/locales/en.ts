@@ -130,7 +130,37 @@ const en = {
       signOut: "Sign out",
     },
 
-    nav: { dashboard: "Dashboard", users: "Users" },
+    nav: { dashboard: "Dashboard", users: "Users", uaps: "Production areas" },
+
+    uaps: {
+      title: "Production areas",
+      add: "Add a production area",
+      empty: "No production areas yet.",
+      loading: "Loading…",
+      edit: "Edit",
+      memberCount: "{{count}} resource",
+      memberCount_other: "{{count}} resources",
+      form: {
+        createTitle: "New production area",
+        editTitle: "Edit production area",
+        name: "Name",
+        namePlaceholder: "e.g. Assembly line A",
+        description: "Description",
+        descriptionPlaceholder: "What this area covers…",
+        resources: "Assigned resources",
+        noMembers: "No users with this role yet.",
+        save: "Save",
+        creating: "Creating…",
+        saving: "Saving…",
+        cancel: "Cancel",
+        delete: "Delete",
+        deleting: "Deleting…",
+        confirmDelete: "Delete this production area? This cannot be undone.",
+        loadError: "Could not load the production area.",
+        saveError: "Could not save the production area.",
+        deleteError: "Could not delete the production area.",
+      },
+    },
 
     users: {
       title: "Users",
