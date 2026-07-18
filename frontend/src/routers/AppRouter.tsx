@@ -8,10 +8,14 @@ import DashboardPage from "../pages/DashboardPage";
 import LoginPage from "../pages/LoginPage";
 import ProspectPage from "../pages/ProspectPage";
 import RegisterPage from "../pages/RegisterPage";
+import ProductionLineFormPage from "../pages/ProductionLineFormPage";
+import ProductionLinesPage from "../pages/ProductionLinesPage";
 import UapFormPage from "../pages/UapFormPage";
 import UapsPage from "../pages/UapsPage";
 import UserFormPage from "../pages/UserFormPage";
 import UsersPage from "../pages/UsersPage";
+import WorkstationFormPage from "../pages/WorkstationFormPage";
+import WorkstationsPage from "../pages/WorkstationsPage";
 
 /**
  * App routes:
@@ -36,6 +40,18 @@ export function AppRouter() {
             <Route path={ROUTES.uaps} element={<UapsPage />} />
             <Route path={ROUTES.newUap} element={<UapFormPage />} />
             <Route path={`${ROUTES.uaps}/:id`} element={<UapFormPage />} />
+            <Route path={ROUTES.lines} element={<ProductionLinesPage />} />
+            <Route path={ROUTES.newLine} element={<ProductionLineFormPage />} />
+            <Route
+              path={`${ROUTES.lines}/:id`}
+              element={<ProductionLineFormPage />}
+            />
+            <Route path={ROUTES.stations} element={<WorkstationsPage />} />
+            <Route path={ROUTES.newStation} element={<WorkstationFormPage />} />
+            <Route
+              path={`${ROUTES.stations}/:id`}
+              element={<WorkstationFormPage />}
+            />
           </Route>
         </Route>
       </Routes>

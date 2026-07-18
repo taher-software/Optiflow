@@ -7,6 +7,8 @@ if TYPE_CHECKING:
 NAMESPACE_COLLECTION = "namespace"
 USERS_COLLECTION = "Users"
 UAP_COLLECTION = "uap"
+PRODUCTION_LINE_COLLECTION = "production_line"
+WORKSTATION_COLLECTION = "workstation"
 
 
 @lru_cache

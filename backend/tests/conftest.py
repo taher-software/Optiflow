@@ -18,11 +18,19 @@ if str(BACKEND_ROOT) not in sys.path:
 
 import src.app.core.deps as deps_module
 import src.app.routers.uap.services as uap_services_module
-from src.app.core.firestore import USERS_COLLECTION
+import src.app.routers.production_line.services as production_line_services_module
+import src.app.routers.workstation.services as workstation_services_module
+from src.app.core.firestore import (
+    PRODUCTION_LINE_COLLECTION,
+    UAP_COLLECTION,
+    USERS_COLLECTION,
+)
 from src.app.core.security import make_access_token
 from src.app.main import app
 
 from tests.fake_firestore import FakeFirestore
+from tests.factories.production_line import ProductionLineDocFactory
+from tests.factories.uap import UapDocFactory
 from tests.factories.user import UserFactory
 
 
@@ -34,6 +42,8 @@ def fake_db(monkeypatch):
     db = FakeFirestore()
     monkeypatch.setattr(deps_module, "get_db", lambda: db)
     monkeypatch.setattr(uap_services_module, "get_db", lambda: db)
+    monkeypatch.setattr(production_line_services_module, "get_db", lambda: db)
+    monkeypatch.setattr(workstation_services_module, "get_db", lambda: db)
     return db
 
 
@@ -50,6 +60,35 @@ def seed_user(fake_db):
         user = UserFactory(**overrides)
         fake_db.collection(USERS_COLLECTION).document(user["id"]).set(user)
         return user
+
+    return _seed
+
+
+@pytest.fixture
+def seed_uap(fake_db):
+    """Factory fixture: seed_uap(namespace_id=...) -> UAP doc dict, seeded
+    directly into the fake Firestore `uap` collection (bypasses the /uaps
+    endpoint since these tests exercise production_line/workstation, not UAP
+    itself)."""
+
+    def _seed(**overrides) -> dict:
+        uap = UapDocFactory(**overrides)
+        fake_db.collection(UAP_COLLECTION).document(uap["id"]).set(uap)
+        return uap
+
+    return _seed
+
+
+@pytest.fixture
+def seed_production_line(fake_db):
+    """Factory fixture: seed_production_line(namespace_id=..., uap_id=...) ->
+    production line doc dict, seeded directly into the fake Firestore
+    `production_line` collection."""
+
+    def _seed(**overrides) -> dict:
+        line = ProductionLineDocFactory(**overrides)
+        fake_db.collection(PRODUCTION_LINE_COLLECTION).document(line["id"]).set(line)
+        return line
 
     return _seed
 

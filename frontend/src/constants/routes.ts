@@ -18,4 +18,12 @@ export const ROUTES = {
   uaps: "/app/uaps",
   /** New production-area form. */
   newUap: "/app/uaps/new",
+  /** Production lines. */
+  lines: "/app/production-lines",
+  /** New production-line form. */
+  newLine: "/app/production-lines/new",
+  /** Work stations. */
+  stations: "/app/workstations",
+  /** New workstation form. */
+  newStation: "/app/workstations/new",
 } as const;

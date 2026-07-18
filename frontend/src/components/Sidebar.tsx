@@ -64,6 +64,18 @@ export function Sidebar() {
       icon: icon("M3 21V7l6-4 6 4v14M3 21h18M15 21V11l6 4v6"),
       show: canManageUaps,
     },
+    {
+      to: ROUTES.lines,
+      label: t("nav.lines"),
+      icon: icon("M4 7h16M4 12h16M4 17h16M7 4v16"),
+      show: canManageUaps,
+    },
+    {
+      to: ROUTES.stations,
+      label: t("nav.stations"),
+      icon: icon("M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z"),
+      show: canManageUaps,
+    },
   ];
 
   const onSignOut = () => {
