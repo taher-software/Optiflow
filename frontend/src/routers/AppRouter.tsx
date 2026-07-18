@@ -1,5 +1,6 @@
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 
+import { AppLayout } from "../components/AppLayout";
 import { ProtectedRoute } from "../components/ProtectedRoute";
 import { ROUTES } from "../constants/routes";
 import ConfirmAccountPage from "../pages/ConfirmAccountPage";
@@ -27,13 +28,15 @@ export function AppRouter() {
         <Route path={ROUTES.register} element={<RegisterPage />} />
         <Route path={ROUTES.confirmAccount} element={<ConfirmAccountPage />} />
         <Route element={<ProtectedRoute />}>
-          <Route path={ROUTES.app} element={<DashboardPage />} />
-          <Route path={ROUTES.users} element={<UsersPage />} />
-          <Route path={ROUTES.newUser} element={<UserFormPage />} />
-          <Route path={`${ROUTES.users}/:id`} element={<UserFormPage />} />
-          <Route path={ROUTES.uaps} element={<UapsPage />} />
-          <Route path={ROUTES.newUap} element={<UapFormPage />} />
-          <Route path={`${ROUTES.uaps}/:id`} element={<UapFormPage />} />
+          <Route element={<AppLayout />}>
+            <Route path={ROUTES.app} element={<DashboardPage />} />
+            <Route path={ROUTES.users} element={<UsersPage />} />
+            <Route path={ROUTES.newUser} element={<UserFormPage />} />
+            <Route path={`${ROUTES.users}/:id`} element={<UserFormPage />} />
+            <Route path={ROUTES.uaps} element={<UapsPage />} />
+            <Route path={ROUTES.newUap} element={<UapFormPage />} />
+            <Route path={`${ROUTES.uaps}/:id`} element={<UapFormPage />} />
+          </Route>
         </Route>
       </Routes>
     </BrowserRouter>

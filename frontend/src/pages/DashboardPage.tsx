@@ -1,6 +1,5 @@
 import { useTranslation } from "react-i18next";
 
-import { AppHeader } from "../components/AppHeader";
 import { useAuthStore } from "../stores/useAuthStore";
 
 /**
@@ -12,15 +11,12 @@ export function DashboardPage() {
   const user = useAuthStore((s) => s.user);
 
   return (
-    <div className="min-h-screen bg-slate-950 text-white">
-      <AppHeader />
-      <main className="mx-auto max-w-6xl px-6 py-16">
-        <h1 className="text-2xl font-bold tracking-tight">
-          {t("dashboard.greeting")}
-          {user ? `, ${user.first_name}` : ""}.
-        </h1>
-        <p className="mt-2 text-sm text-slate-400">{t("dashboard.subtitle")}</p>
-      </main>
+    <div className="mx-auto max-w-6xl px-6 py-16">
+      <h1 className="text-2xl font-bold tracking-tight">
+        {t("dashboard.greeting")}
+        {user ? `, ${user.first_name}` : ""}.
+      </h1>
+      <p className="mt-2 text-sm text-slate-400">{t("dashboard.subtitle")}</p>
     </div>
   );
 }

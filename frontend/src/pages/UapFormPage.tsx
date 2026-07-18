@@ -2,7 +2,6 @@ import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { useNavigate, useParams } from "react-router-dom";
 
-import { AppHeader } from "../components/AppHeader";
 import { MemberGroupSelect } from "../components/MemberGroupSelect";
 import { TextField } from "../components/TextField";
 import { ROUTES } from "../constants/routes";
@@ -110,95 +109,92 @@ export function UapFormPage() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-950 text-white">
-      <AppHeader />
-      <main className="mx-auto max-w-3xl px-6 py-10">
-        <h1 className="text-2xl font-bold tracking-tight">
-          {isEdit ? t("uaps.form.editTitle") : t("uaps.form.createTitle")}
-        </h1>
+    <div className="mx-auto max-w-3xl px-6 py-10">
+      <h1 className="text-2xl font-bold tracking-tight">
+        {isEdit ? t("uaps.form.editTitle") : t("uaps.form.createTitle")}
+      </h1>
 
-        {!loaded ? (
-          <p className="mt-8 text-sm text-slate-400">{t("uaps.loading")}</p>
-        ) : (
-          <form onSubmit={submit} className="mt-8 space-y-6">
-            <TextField
-              id="name"
-              label={t("uaps.form.name")}
-              required
-              value={name}
-              onChange={setName}
-              placeholder={t("uaps.form.namePlaceholder")}
+      {!loaded ? (
+        <p className="mt-8 text-sm text-slate-400">{t("uaps.loading")}</p>
+      ) : (
+        <form onSubmit={submit} className="mt-8 space-y-6">
+          <TextField
+            id="name"
+            label={t("uaps.form.name")}
+            required
+            value={name}
+            onChange={setName}
+            placeholder={t("uaps.form.namePlaceholder")}
+          />
+
+          <div>
+            <label
+              htmlFor="description"
+              className="mb-1 block text-sm font-medium text-slate-300"
+            >
+              {t("uaps.form.description")}
+            </label>
+            <textarea
+              id="description"
+              rows={3}
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              className="w-full rounded-xl border border-slate-700 bg-slate-900 px-4 py-3 text-sm text-white placeholder-slate-500 focus:border-teal-400 focus:outline-none"
+              placeholder={t("uaps.form.descriptionPlaceholder")}
             />
+          </div>
 
-            <div>
-              <label
-                htmlFor="description"
-                className="mb-1 block text-sm font-medium text-slate-300"
-              >
-                {t("uaps.form.description")}
-              </label>
-              <textarea
-                id="description"
-                rows={3}
-                value={description}
-                onChange={(e) => setDescription(e.target.value)}
-                className="w-full rounded-xl border border-slate-700 bg-slate-900 px-4 py-3 text-sm text-white placeholder-slate-500 focus:border-teal-400 focus:outline-none"
-                placeholder={t("uaps.form.descriptionPlaceholder")}
-              />
+          <div>
+            <span className="mb-3 block text-sm font-medium text-slate-300">
+              {t("uaps.form.resources")}
+            </span>
+            <div className="space-y-3">
+              {UAP_MEMBER_GROUPS.map((g) => (
+                <MemberGroupSelect
+                  key={g.field}
+                  role={g.role}
+                  users={usersByRole[g.role] ?? []}
+                  selected={members[g.field]}
+                  onToggle={(userId) => toggleMember(g.field, userId)}
+                />
+              ))}
             </div>
+          </div>
 
-            <div>
-              <span className="mb-3 block text-sm font-medium text-slate-300">
-                {t("uaps.form.resources")}
-              </span>
-              <div className="space-y-3">
-                {UAP_MEMBER_GROUPS.map((g) => (
-                  <MemberGroupSelect
-                    key={g.field}
-                    role={g.role}
-                    users={usersByRole[g.role] ?? []}
-                    selected={members[g.field]}
-                    onToggle={(userId) => toggleMember(g.field, userId)}
-                  />
-                ))}
-              </div>
-            </div>
+          {error && <p className="text-sm text-red-400">{error}</p>}
 
-            {error && <p className="text-sm text-red-400">{error}</p>}
-
-            <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={() => navigate(ROUTES.uaps)}
+              className="rounded-xl border border-slate-700 px-4 py-3 text-sm font-medium text-slate-200 transition-colors hover:border-slate-500 hover:text-white"
+            >
+              {t("uaps.form.cancel")}
+            </button>
+            <button
+              type="submit"
+              disabled={submitting || !valid}
+              className="rounded-xl bg-teal-400 px-6 py-3 text-sm font-semibold text-slate-950 transition-colors hover:bg-teal-300 disabled:opacity-60"
+            >
+              {submitting
+                ? isEdit
+                  ? t("uaps.form.saving")
+                  : t("uaps.form.creating")
+                : t("uaps.form.save")}
+            </button>
+            {isEdit && (
               <button
                 type="button"
-                onClick={() => navigate(ROUTES.uaps)}
-                className="rounded-xl border border-slate-700 px-4 py-3 text-sm font-medium text-slate-200 transition-colors hover:border-slate-500 hover:text-white"
+                onClick={remove}
+                disabled={deleting}
+                className="ml-auto rounded-xl border border-red-500/50 px-4 py-3 text-sm font-medium text-red-400 transition-colors hover:border-red-500 hover:text-red-300 disabled:opacity-60"
               >
-                {t("uaps.form.cancel")}
+                {deleting ? t("uaps.form.deleting") : t("uaps.form.delete")}
               </button>
-              <button
-                type="submit"
-                disabled={submitting || !valid}
-                className="rounded-xl bg-teal-400 px-6 py-3 text-sm font-semibold text-slate-950 transition-colors hover:bg-teal-300 disabled:opacity-60"
-              >
-                {submitting
-                  ? isEdit
-                    ? t("uaps.form.saving")
-                    : t("uaps.form.creating")
-                  : t("uaps.form.save")}
-              </button>
-              {isEdit && (
-                <button
-                  type="button"
-                  onClick={remove}
-                  disabled={deleting}
-                  className="ml-auto rounded-xl border border-red-500/50 px-4 py-3 text-sm font-medium text-red-400 transition-colors hover:border-red-500 hover:text-red-300 disabled:opacity-60"
-                >
-                  {deleting ? t("uaps.form.deleting") : t("uaps.form.delete")}
-                </button>
-              )}
-            </div>
-          </form>
-        )}
-      </main>
+            )}
+          </div>
+        </form>
+      )}
     </div>
   );
 }
