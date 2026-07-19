@@ -3,7 +3,9 @@ from typing import Any
 
 from fastapi import HTTPException, status
 
-from src.app.core.firestore import PRODUCTION_LINE_COLLECTION, UAP_COLLECTION, get_db
+from src.app.core.firestore import PRODUCTION_LINE_COLLECTION, UAP_COLLECTION
+from src.app.gcp import get_firestore_client
+from src.app.gcp.firestore import FirestoreClient
 
 from src.app.routers.production_line.modelsIn import (
     CreateProductionLineIn,
@@ -22,7 +24,7 @@ def _to_out(line: dict[str, Any]) -> ProductionLineOut:
     )
 
 
-def _validate_uap_id(db: Any, namespace_id: str, uap_id: str) -> None:
+def _validate_uap_id(client: FirestoreClient, namespace_id: str, uap_id: str) -> None:
     """Ensure `uap_id` refers to an existing UAP in the caller's namespace.
     Raises HTTPException(422) otherwise. Never lets a blank id reach the
     Firestore SDK (`.document("")` would otherwise blow up unhandled)."""
@@ -32,8 +34,7 @@ def _validate_uap_id(db: Any, namespace_id: str, uap_id: str) -> None:
             detail="uap_id: no such production area in this namespace.",
         )
 
-    snapshot = db.collection(UAP_COLLECTION).document(uap_id).get()
-    uap = snapshot.to_dict() or {} if snapshot.exists else None
+    uap = client.get_document(UAP_COLLECTION, uap_id)
     if not uap or uap.get("namespace_id") != namespace_id:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -44,8 +45,8 @@ def _validate_uap_id(db: Any, namespace_id: str, uap_id: str) -> None:
 def create_production_line(
     payload: CreateProductionLineIn, namespace_id: str
 ) -> ProductionLineOut:
-    db = get_db()
-    _validate_uap_id(db, namespace_id, payload.uap_id)
+    client = get_firestore_client()
+    _validate_uap_id(client, namespace_id, payload.uap_id)
 
     line_id = str(uuid.uuid4())
     doc: dict[str, Any] = {
@@ -55,23 +56,22 @@ def create_production_line(
         "uap_id": payload.uap_id,
         "namespace_id": namespace_id,
     }
-    db.collection(PRODUCTION_LINE_COLLECTION).document(line_id).set(doc)
+    client.create_document(PRODUCTION_LINE_COLLECTION, doc, document_id=line_id)
     return _to_out(doc)
 
 
 def list_production_lines(namespace_id: str) -> list[ProductionLineOut]:
-    db = get_db()
-    rows = (
-        db.collection(PRODUCTION_LINE_COLLECTION)
-        .where("namespace_id", "==", namespace_id)
-        .get()
+    client = get_firestore_client()
+    rows = client.find_documents(
+        PRODUCTION_LINE_COLLECTION, {"namespace_id": namespace_id}
     )
-    return [_to_out(r.to_dict() or {}) for r in rows]
+    return [_to_out(r) for r in rows]
 
 
-def _load_scoped(db: Any, line_id: str, namespace_id: str) -> dict[str, Any]:
-    snapshot = db.collection(PRODUCTION_LINE_COLLECTION).document(line_id).get()
-    line = snapshot.to_dict() or {} if snapshot.exists else {}
+def _load_scoped(
+    client: FirestoreClient, line_id: str, namespace_id: str
+) -> dict[str, Any]:
+    line = client.get_document(PRODUCTION_LINE_COLLECTION, line_id)
     if not line or line.get("namespace_id") != namespace_id:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Production line not found."
@@ -80,17 +80,17 @@ def _load_scoped(db: Any, line_id: str, namespace_id: str) -> dict[str, Any]:
 
 
 def get_production_line(line_id: str, namespace_id: str) -> ProductionLineOut:
-    return _to_out(_load_scoped(get_db(), line_id, namespace_id))
+    return _to_out(_load_scoped(get_firestore_client(), line_id, namespace_id))
 
 
 def update_production_line(
     line_id: str, payload: UpdateProductionLineIn, namespace_id: str
 ) -> ProductionLineOut:
-    db = get_db()
-    line = _load_scoped(db, line_id, namespace_id)
+    client = get_firestore_client()
+    line = _load_scoped(client, line_id, namespace_id)
 
     if payload.uap_id is not None:
-        _validate_uap_id(db, namespace_id, payload.uap_id)
+        _validate_uap_id(client, namespace_id, payload.uap_id)
 
     updates: dict[str, Any] = {}
     if payload.name is not None:
@@ -101,12 +101,12 @@ def update_production_line(
         updates["uap_id"] = payload.uap_id
 
     if updates:
-        db.collection(PRODUCTION_LINE_COLLECTION).document(line_id).update(updates)
+        client.update_document(PRODUCTION_LINE_COLLECTION, line_id, updates)
     return _to_out({**line, **updates})
 
 
 def delete_production_line(line_id: str, namespace_id: str) -> ProductionLineOut:
-    db = get_db()
-    line = _load_scoped(db, line_id, namespace_id)
-    db.collection(PRODUCTION_LINE_COLLECTION).document(line_id).delete()
+    client = get_firestore_client()
+    line = _load_scoped(client, line_id, namespace_id)
+    client.delete_document(PRODUCTION_LINE_COLLECTION, line_id)
     return _to_out(line)

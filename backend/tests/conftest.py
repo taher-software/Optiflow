@@ -1,9 +1,10 @@
 """Shared pytest fixtures for the API test suite.
 
-Firestore is never hit for real: `get_db()` is monkeypatched, module-by-module,
-to return a shared `FakeFirestore` instance (see `tests/fake_firestore.py`).
-Each test gets a fresh instance (function-scoped `fake_db` fixture) so tests
-are independent and can run in any order.
+Firestore is never hit for real: `get_firestore_client()` is monkeypatched,
+module-by-module, to return a `FirestoreClient` wrapping a shared
+`FakeFirestore` instance (see `tests/fake_firestore.py`). Each test gets a
+fresh instance (function-scoped `fake_db` fixture) so tests are independent
+and can run in any order.
 """
 
 import sys
@@ -17,7 +18,10 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 import src.app.core.deps as deps_module
+import src.app.routers.auth.services as auth_services_module
+import src.app.routers.registration.services as registration_services_module
 import src.app.routers.uap.services as uap_services_module
+import src.app.routers.user.services as user_services_module
 import src.app.routers.production_line.services as production_line_services_module
 import src.app.routers.workstation.services as workstation_services_module
 from src.app.core.firestore import (
@@ -26,6 +30,7 @@ from src.app.core.firestore import (
     USERS_COLLECTION,
 )
 from src.app.core.security import make_access_token
+from src.app.gcp.firestore import FirestoreClient
 from src.app.main import app
 
 from tests.fake_firestore import FakeFirestore
@@ -37,13 +42,28 @@ from tests.factories.user import UserFactory
 @pytest.fixture
 def fake_db(monkeypatch):
     """A fresh in-memory Firestore double, wired into every module that holds
-    its own imported reference to `get_db` (each `from ... import get_db`
-    binds its own name, so each call site must be patched individually)."""
+    its own imported reference to `get_firestore_client` (each
+    `from ... import get_firestore_client` binds its own name, so each call
+    site must be patched individually). The raw `FakeFirestore` is wrapped in
+    a real `FirestoreClient` so services exercise the actual client methods
+    (`find_document`, `get_documents`, ...) against the fake, and exposed
+    directly (not the wrapper) so `seed_*` fixtures can keep writing through
+    the raw `collection(...).document(...).set(...)` surface."""
     db = FakeFirestore()
-    monkeypatch.setattr(deps_module, "get_db", lambda: db)
-    monkeypatch.setattr(uap_services_module, "get_db", lambda: db)
-    monkeypatch.setattr(production_line_services_module, "get_db", lambda: db)
-    monkeypatch.setattr(workstation_services_module, "get_db", lambda: db)
+    client = FirestoreClient(client=db)
+    monkeypatch.setattr(deps_module, "get_firestore_client", lambda: client)
+    monkeypatch.setattr(uap_services_module, "get_firestore_client", lambda: client)
+    monkeypatch.setattr(
+        production_line_services_module, "get_firestore_client", lambda: client
+    )
+    monkeypatch.setattr(
+        workstation_services_module, "get_firestore_client", lambda: client
+    )
+    monkeypatch.setattr(auth_services_module, "get_firestore_client", lambda: client)
+    monkeypatch.setattr(
+        registration_services_module, "get_firestore_client", lambda: client
+    )
+    monkeypatch.setattr(user_services_module, "get_firestore_client", lambda: client)
     return db
 
 

@@ -6,8 +6,9 @@ from fastapi import HTTPException, status
 from src.app.core.firestore import (
     PRODUCTION_LINE_COLLECTION,
     WORKSTATION_COLLECTION,
-    get_db,
 )
+from src.app.gcp import get_firestore_client
+from src.app.gcp.firestore import FirestoreClient
 
 from src.app.routers.workstation.modelsIn import CreateWorkstationIn, UpdateWorkstationIn
 from src.app.routers.workstation.modelsOut import WorkstationOut
@@ -25,7 +26,7 @@ def _to_out(station: dict[str, Any]) -> WorkstationOut:
 
 
 def _validate_production_line_id(
-    db: Any, namespace_id: str, production_line_id: str
+    client: FirestoreClient, namespace_id: str, production_line_id: str
 ) -> None:
     """Ensure `production_line_id` refers to an existing production line in
     the caller's namespace. Raises HTTPException(422) otherwise. Never lets a
@@ -38,8 +39,7 @@ def _validate_production_line_id(
             detail="production_line_id: no such production line in this namespace.",
         )
 
-    snapshot = db.collection(PRODUCTION_LINE_COLLECTION).document(production_line_id).get()
-    line = snapshot.to_dict() or {} if snapshot.exists else None
+    line = client.get_document(PRODUCTION_LINE_COLLECTION, production_line_id)
     if not line or line.get("namespace_id") != namespace_id:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -48,10 +48,10 @@ def _validate_production_line_id(
 
 
 def create_workstation(payload: CreateWorkstationIn, namespace_id: str) -> WorkstationOut:
-    db = get_db()
+    client = get_firestore_client()
 
     if payload.production_line_id is not None:
-        _validate_production_line_id(db, namespace_id, payload.production_line_id)
+        _validate_production_line_id(client, namespace_id, payload.production_line_id)
 
     station_id = str(uuid.uuid4())
     doc: dict[str, Any] = {
@@ -62,23 +62,22 @@ def create_workstation(payload: CreateWorkstationIn, namespace_id: str) -> Works
         "type": payload.type.value,
         "namespace_id": namespace_id,
     }
-    db.collection(WORKSTATION_COLLECTION).document(station_id).set(doc)
+    client.create_document(WORKSTATION_COLLECTION, doc, document_id=station_id)
     return _to_out(doc)
 
 
 def list_workstations(namespace_id: str) -> list[WorkstationOut]:
-    db = get_db()
-    rows = (
-        db.collection(WORKSTATION_COLLECTION)
-        .where("namespace_id", "==", namespace_id)
-        .get()
+    client = get_firestore_client()
+    rows = client.find_documents(
+        WORKSTATION_COLLECTION, {"namespace_id": namespace_id}
     )
-    return [_to_out(r.to_dict() or {}) for r in rows]
+    return [_to_out(r) for r in rows]
 
 
-def _load_scoped(db: Any, station_id: str, namespace_id: str) -> dict[str, Any]:
-    snapshot = db.collection(WORKSTATION_COLLECTION).document(station_id).get()
-    station = snapshot.to_dict() or {} if snapshot.exists else {}
+def _load_scoped(
+    client: FirestoreClient, station_id: str, namespace_id: str
+) -> dict[str, Any]:
+    station = client.get_document(WORKSTATION_COLLECTION, station_id)
     if not station or station.get("namespace_id") != namespace_id:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Workstation not found."
@@ -87,14 +86,14 @@ def _load_scoped(db: Any, station_id: str, namespace_id: str) -> dict[str, Any]:
 
 
 def get_workstation(station_id: str, namespace_id: str) -> WorkstationOut:
-    return _to_out(_load_scoped(get_db(), station_id, namespace_id))
+    return _to_out(_load_scoped(get_firestore_client(), station_id, namespace_id))
 
 
 def update_workstation(
     station_id: str, payload: UpdateWorkstationIn, namespace_id: str
 ) -> WorkstationOut:
-    db = get_db()
-    station = _load_scoped(db, station_id, namespace_id)
+    client = get_firestore_client()
+    station = _load_scoped(client, station_id, namespace_id)
 
     fields_set = payload.model_fields_set
     updates: dict[str, Any] = {}
@@ -108,16 +107,16 @@ def update_workstation(
     if "production_line_id" in fields_set:
         new_line_id: Optional[str] = payload.production_line_id
         if new_line_id is not None:
-            _validate_production_line_id(db, namespace_id, new_line_id)
+            _validate_production_line_id(client, namespace_id, new_line_id)
         updates["production_line_id"] = new_line_id
 
     if updates:
-        db.collection(WORKSTATION_COLLECTION).document(station_id).update(updates)
+        client.update_document(WORKSTATION_COLLECTION, station_id, updates)
     return _to_out({**station, **updates})
 
 
 def delete_workstation(station_id: str, namespace_id: str) -> WorkstationOut:
-    db = get_db()
-    station = _load_scoped(db, station_id, namespace_id)
-    db.collection(WORKSTATION_COLLECTION).document(station_id).delete()
+    client = get_firestore_client()
+    station = _load_scoped(client, station_id, namespace_id)
+    client.delete_document(WORKSTATION_COLLECTION, station_id)
     return _to_out(station)

@@ -1,8 +1,8 @@
 # OptiFlow — Factory Orchestrator
 
 The orchestrator (the main Claude thread) runs on **every task**. It decides *how* the task
-is built and, when useful, dispatches work to the sub-factories: **backend**, **frontend**,
-**mobile**. It writes code itself **only in Lane B**.
+is built and, when useful, dispatches work to the sub-factories: **backend**, **frontend**, **mobile**. 
+It writes code itself **only in Lane B**.
 
 ## The Gate — first thing on every task
 
@@ -12,9 +12,7 @@ The Factory exists to improve **quality, cost, and time**. Decide on that value 
 on how many sub-factories are involved.
 
 - **Lane B — do it inline.** Trivial, localized, low-risk change where running the pipeline
-  would cost more than it saves (copy/style tweak, small bug fix, rename, config). The
-  orchestrator writes it directly on the current branch — **still loading and following the
-  relevant skill(s).**
+  would cost more than it saves (copy/style tweak, small bug fix, rename, config). The orchestrator writes it directly on the current branch — **still loading and following the relevant skill(s).**
 - **Lane FACTORY — run the pipeline.** The change is substantial or consequential enough that
   decomposition + specialized agents + QC gates clearly pay off — **even if it touches only
   one sub-factory** (e.g. a real backend feature).

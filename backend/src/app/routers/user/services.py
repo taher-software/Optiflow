@@ -1,17 +1,17 @@
-import secrets
 import uuid
 from typing import Any
 
 from fastapi import HTTPException, status
 
-from src.app.core.firestore import USERS_COLLECTION, get_db
+from src.app.core.firestore import USERS_COLLECTION
 from src.app.core.security import hash_password
+from src.app.core.security_code import generate_security_code
+from src.app.gcp import get_firestore_client
+from src.app.gcp.firestore import FirestoreClient
 from src.app.globals.enum import EMAIL_REQUIRED_ROLES, Role
 
 from src.app.routers.user.modelsIn import CreateUserIn, UpdateUserIn
 from src.app.routers.user.modelsOut import UserOut
-
-_MAX_CODE_ATTEMPTS = 100
 
 
 def _to_out(user: dict[str, Any]) -> UserOut:
@@ -26,29 +26,8 @@ def _to_out(user: dict[str, Any]) -> UserOut:
     )
 
 
-def _generate_security_code(db: Any, namespace_id: str) -> str:
-    """Allocate a unique 4-digit security code within the namespace."""
-    for _ in range(_MAX_CODE_ATTEMPTS):
-        code = f"{secrets.randbelow(10000):04d}"
-        clash = (
-            db.collection(USERS_COLLECTION)
-            .where("namespace_id", "==", namespace_id)
-            .where("security_code", "==", code)
-            .limit(1)
-            .get()
-        )
-        if not clash:
-            return code
-    raise HTTPException(
-        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        detail="Could not allocate a unique security code. Please retry.",
-    )
-
-
-def _assert_email_available(db: Any, email: str) -> None:
-    existing = (
-        db.collection(USERS_COLLECTION).where("email", "==", email).limit(1).get()
-    )
+def _assert_email_available(client: FirestoreClient, email: str) -> None:
+    existing = client.find_document(USERS_COLLECTION, {"email": email})
     if existing:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -57,13 +36,13 @@ def _assert_email_available(db: Any, email: str) -> None:
 
 
 def create_user(payload: CreateUserIn, namespace_id: str) -> UserOut:
-    db = get_db()
+    client = get_firestore_client()
 
     if payload.email:
-        _assert_email_available(db, str(payload.email))
+        _assert_email_available(client, str(payload.email))
 
     user_id = str(uuid.uuid4())
-    code = _generate_security_code(db, namespace_id)
+    code = generate_security_code(client, namespace_id)
     doc = {
         "id": user_id,
         "first_name": payload.first_name,
@@ -74,23 +53,20 @@ def create_user(payload: CreateUserIn, namespace_id: str) -> UserOut:
         "security_code": code,
         "namespace_id": namespace_id,
     }
-    db.collection(USERS_COLLECTION).document(user_id).set(doc)
+    client.create_document(USERS_COLLECTION, doc, document_id=user_id)
     return _to_out(doc)
 
 
 def list_users(namespace_id: str) -> list[UserOut]:
-    db = get_db()
-    rows = (
-        db.collection(USERS_COLLECTION)
-        .where("namespace_id", "==", namespace_id)
-        .get()
-    )
-    return [_to_out(r.to_dict() or {}) for r in rows]
+    client = get_firestore_client()
+    rows = client.find_documents(USERS_COLLECTION, {"namespace_id": namespace_id})
+    return [_to_out(r) for r in rows]
 
 
-def _load_scoped(db: Any, user_id: str, namespace_id: str) -> dict[str, Any]:
-    snapshot = db.collection(USERS_COLLECTION).document(user_id).get()
-    user = snapshot.to_dict() or {} if snapshot.exists else {}
+def _load_scoped(
+    client: FirestoreClient, user_id: str, namespace_id: str
+) -> dict[str, Any]:
+    user = client.get_document(USERS_COLLECTION, user_id)
     if not user or user.get("namespace_id") != namespace_id:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="User not found."
@@ -99,12 +75,12 @@ def _load_scoped(db: Any, user_id: str, namespace_id: str) -> dict[str, Any]:
 
 
 def get_user(user_id: str, namespace_id: str) -> UserOut:
-    return _to_out(_load_scoped(get_db(), user_id, namespace_id))
+    return _to_out(_load_scoped(get_firestore_client(), user_id, namespace_id))
 
 
 def update_user(user_id: str, payload: UpdateUserIn, namespace_id: str) -> UserOut:
-    db = get_db()
-    user = _load_scoped(db, user_id, namespace_id)
+    client = get_firestore_client()
+    user = _load_scoped(client, user_id, namespace_id)
 
     if user.get("role") == Role.OWNER.value and payload.role is not None:
         raise HTTPException(
@@ -120,7 +96,7 @@ def update_user(user_id: str, payload: UpdateUserIn, namespace_id: str) -> UserO
     if payload.role is not None:
         updates["role"] = payload.role.value
     if payload.email is not None and str(payload.email) != user.get("email"):
-        _assert_email_available(db, str(payload.email))
+        _assert_email_available(client, str(payload.email))
         updates["email"] = str(payload.email)
     if payload.password:
         updates["password"] = hash_password(payload.password)
@@ -136,5 +112,5 @@ def update_user(user_id: str, payload: UpdateUserIn, namespace_id: str) -> UserO
         )
 
     if updates:
-        db.collection(USERS_COLLECTION).document(user_id).update(updates)
+        client.update_document(USERS_COLLECTION, user_id, updates)
     return _to_out({**user, **updates})

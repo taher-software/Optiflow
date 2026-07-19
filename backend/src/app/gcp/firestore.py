@@ -5,9 +5,7 @@ This module provides a FirestoreClient class that follows the same pattern
 as other GCP service classes (CloudTask, PubSubInteraction).
 """
 
-from google.cloud import firestore
 from google.api_core import exceptions
-from src.settings import settings
 import logging
 
 logger = logging.getLogger(__name__)
@@ -20,8 +18,13 @@ class FirestoreClient:
     Follows the same pattern as CloudTask and PubSubInteraction classes.
     Collections are created implicitly when first document is added (standard Firestore behavior).
 
+    The underlying `google.cloud.firestore.Client` connection is created lazily
+    (only on first use) and can be injected — this keeps importing/instantiating
+    this class free of any import-time GCP connection, and lets tests substitute
+    a fake client.
+
     Example:
-        # Create a client
+        # Create a client (lazily connects to Firestore via ADC on first use)
         client = FirestoreClient()
 
         # Create a document with auto-generated ID
@@ -29,60 +32,28 @@ class FirestoreClient:
         print(f"Created document with ID: {doc_id}")
     """
 
-    def __init__(self, project_id: str = None, database_id: str = "(optiflow)"):
+    def __init__(self, client=None):
         """
-        Initialize Firestore client.
+        Initialize the Firestore client wrapper.
 
         Args:
-            project_id: GCP project ID (auto-detected if None)
-            database_id: Firestore database ID (default: "(optiflow)")
-
-        Raises:
-            exceptions.PermissionDenied: If credentials lack necessary permissions
-            exceptions.Unauthenticated: If credentials are missing or invalid
-            Exception: On other initialization errors
+            client: An already-constructed Firestore client (or a test double)
+                to use. If not provided, a real `google.cloud.firestore.Client`
+                is created lazily on first access via `self.client`, using the
+                default Application Default Credentials (mirrors the previous
+                `get_db()` behavior — no project/database is forced).
         """
-        try:
-            # Use provided project_id or auto-detect from settings
-            self.project_id = project_id or settings.google_project_id
-            self.database_id = database_id
+        self._client = client
 
-            logger.info(
-                f"Initializing Firestore client for project: {self.project_id}, "
-                f"database: {self.database_id}"
-            )
+    @property
+    def client(self):
+        """Lazily create (and cache) the underlying Firestore client on first use."""
+        if self._client is None:
+            from google.cloud import firestore
 
-            # Initialize Firestore client (connects to existing database)
-            self.client = firestore.Client(
-                project=self.project_id, database=self.database_id
-            )
-
-            logger.info(
-                f"Successfully initialized Firestore client for project {self.project_id}"
-            )
-
-        except exceptions.PermissionDenied as e:
-            logger.error(
-                f"Permission denied when initializing Firestore client. "
-                f"Check service account permissions: {str(e)}",
-                exc_info=True,
-            )
-            raise
-
-        except exceptions.Unauthenticated as e:
-            logger.error(
-                f"Authentication failed when initializing Firestore client. "
-                f"Check credentials configuration: {str(e)}",
-                exc_info=True,
-            )
-            raise
-
-        except Exception as e:
-            logger.error(
-                f"Unexpected error initializing Firestore client: {str(e)}",
-                exc_info=True,
-            )
-            raise
+            logger.info("Initializing Firestore client (default ADC project/database)")
+            self._client = firestore.Client()
+        return self._client
 
     def create_document(
         self, collection_name: str, data: dict, document_id: str = None
@@ -269,6 +240,95 @@ class FirestoreClient:
             )
             raise
 
+    def find_documents(
+        self, collection_name: str, params: dict | None = None
+    ) -> list[dict]:
+        """
+        Find every document in a collection that matches all provided parameters.
+
+        Uses AND logic - a document must match ALL provided parameters to be
+        included. With no (or empty) `params`, every document in the collection
+        is returned. Backs the `list_*` endpoints (e.g. listing all users /
+        UAPs / production lines / workstations scoped to a namespace).
+
+        Args:
+            collection_name: Name of the collection to search (e.g., "users", "orders")
+            params: Optional dictionary of field-value pairs to match
+                (e.g., {"namespace_id": "abc"}). If omitted, returns all documents.
+
+        Returns:
+            list[dict]: Document data (including 'id') for every match, in no
+                particular order.
+
+        Raises:
+            ValueError: If collection_name is invalid
+            exceptions.PermissionDenied: If credentials lack read permissions
+            exceptions.DeadlineExceeded: If operation times out
+            Exception: On other Firestore API errors
+
+        Example:
+            # All users in a namespace
+            users = client.find_documents("users", {"namespace_id": "abc"})
+
+            # Every document in a collection
+            all_orders = client.find_documents("orders")
+        """
+        # Validate inputs
+        if not collection_name or not isinstance(collection_name, str):
+            raise ValueError("collection_name must be a non-empty string")
+
+        if params is not None and not isinstance(params, dict):
+            raise ValueError("params must be a dictionary or None")
+
+        try:
+            logger.info(
+                f"Listing documents in collection '{collection_name}' with params: {params}"
+            )
+
+            query = self.client.collection(collection_name)
+            for field, value in (params or {}).items():
+                query = query.where(field, "==", value)
+
+            results = []
+            for doc in query.stream():
+                doc_data = doc.to_dict()
+                doc_data["id"] = doc.id
+                results.append(doc_data)
+
+            logger.info(
+                f"Found {len(results)} document(s) in collection '{collection_name}'"
+            )
+            return results
+
+        except exceptions.PermissionDenied as e:
+            logger.error(
+                f"Permission denied when listing collection '{collection_name}'. "
+                f"Check Firestore IAM permissions: {str(e)}",
+                exc_info=True,
+            )
+            raise
+
+        except exceptions.Unauthenticated as e:
+            logger.error(
+                f"Authentication failed when listing collection '{collection_name}': {str(e)}",
+                exc_info=True,
+            )
+            raise
+
+        except exceptions.DeadlineExceeded as e:
+            logger.error(
+                f"Timeout when listing collection '{collection_name}': {str(e)}",
+                exc_info=True,
+            )
+            raise
+
+        except Exception as e:
+            logger.error(
+                f"Unexpected error listing collection '{collection_name}': {str(e)}",
+                exc_info=True,
+            )
+            raise
+
     def get_document(self, collection_name: str, document_id: str) -> dict | None:
         """
         Retrieve a document by its ID from a specific collection.
@@ -355,6 +415,99 @@ class FirestoreClient:
         except Exception as e:
             logger.error(
                 f"Unexpected error retrieving document '{document_id}' from collection '{collection_name}': {str(e)}",
+                exc_info=True,
+            )
+            raise
+
+    def get_documents(
+        self, collection_name: str, document_ids: list[str]
+    ) -> dict[str, dict]:
+        """
+        Batch-retrieve several documents by id from a collection in a single
+        round-trip (uses the underlying client's `get_all`).
+
+        Args:
+            collection_name: Name of the collection (e.g., "users")
+            document_ids: List of document ids to fetch. Duplicates and blanks
+                are tolerated (blanks are simply skipped — callers that need
+                to reject blank ids should validate before calling this).
+
+        Returns:
+            dict[str, dict]: Mapping of `document_id -> document data
+                (including 'id')` for every id that exists. Ids that don't
+                exist (or were blank) are simply absent from the result — the
+                caller decides how to react to a missing id.
+
+        Raises:
+            ValueError: If collection_name is invalid
+            exceptions.PermissionDenied: If credentials lack read permissions
+            exceptions.DeadlineExceeded: If operation times out
+            Exception: On other Firestore API errors
+
+        Example:
+            users_by_id = client.get_documents("users", ["id1", "id2", "id1"])
+            missing = [i for i in ["id1", "id2"] if i not in users_by_id]
+        """
+        if not collection_name or not isinstance(collection_name, str):
+            raise ValueError("collection_name must be a non-empty string")
+
+        if not isinstance(document_ids, list):
+            raise ValueError("document_ids must be a list")
+
+        # De-dupe while preserving no particular order requirement, skip blanks.
+        ids = sorted({doc_id for doc_id in document_ids if doc_id})
+        if not ids:
+            return {}
+
+        try:
+            logger.info(
+                f"Batch-retrieving {len(ids)} document(s) from collection '{collection_name}'"
+            )
+
+            collection_ref = self.client.collection(collection_name)
+            refs = [collection_ref.document(doc_id) for doc_id in ids]
+
+            results: dict[str, dict] = {}
+            for snapshot in self.client.get_all(refs):
+                if snapshot.exists:
+                    doc_data = snapshot.to_dict() or {}
+                    doc_data["id"] = snapshot.id
+                    results[snapshot.id] = doc_data
+
+            logger.info(
+                f"Successfully batch-retrieved {len(results)}/{len(ids)} document(s) "
+                f"from collection '{collection_name}'"
+            )
+            return results
+
+        except exceptions.PermissionDenied as e:
+            logger.error(
+                f"Permission denied when batch-retrieving documents from collection "
+                f"'{collection_name}'. Check Firestore IAM permissions: {str(e)}",
+                exc_info=True,
+            )
+            raise
+
+        except exceptions.Unauthenticated as e:
+            logger.error(
+                f"Authentication failed when batch-retrieving documents from collection "
+                f"'{collection_name}': {str(e)}",
+                exc_info=True,
+            )
+            raise
+
+        except exceptions.DeadlineExceeded as e:
+            logger.error(
+                f"Timeout when batch-retrieving documents from collection "
+                f"'{collection_name}': {str(e)}",
+                exc_info=True,
+            )
+            raise
+
+        except Exception as e:
+            logger.error(
+                f"Unexpected error batch-retrieving documents from collection "
+                f"'{collection_name}': {str(e)}",
                 exc_info=True,
             )
             raise

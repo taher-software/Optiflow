@@ -36,8 +36,14 @@ class FakeDocumentRef:
     def get(self) -> FakeSnapshot:
         return FakeSnapshot(self.id, self._store.get(self.id))
 
-    def set(self, data: dict[str, Any]) -> None:
-        self._store[self.id] = dict(data)
+    def set(self, data: dict[str, Any], merge: bool = False) -> None:
+        """Mimics `DocumentReference.set(data, merge=...)`: with `merge=True`,
+        shallow-merges `data` into any existing document instead of replacing
+        it wholesale (used by `FirestoreClient.update_document`)."""
+        if merge and self.id in self._store:
+            self._store[self.id].update(data)
+        else:
+            self._store[self.id] = dict(data)
 
     def update(self, data: dict[str, Any]) -> None:
         if self.id not in self._store:
@@ -84,6 +90,11 @@ class FakeQuery:
             results = results[: self._limit]
         return results
 
+    def stream(self) -> list[FakeSnapshot]:
+        """Mimics `Query.stream()` (used by `FirestoreClient.find_document` /
+        `find_documents`), an iterator over the same results as `.get()`."""
+        return self.get()
+
 
 class FakeCollection:
     """Mimics `google.cloud.firestore.CollectionReference`."""
@@ -99,6 +110,11 @@ class FakeCollection:
 
     def get(self) -> list[FakeSnapshot]:
         return [FakeSnapshot(doc_id, data) for doc_id, data in self._store.items()]
+
+    def stream(self) -> list[FakeSnapshot]:
+        """Mimics `CollectionReference.stream()` (used by
+        `FirestoreClient.find_documents` when no params are given)."""
+        return self.get()
 
 
 class FakeFirestore:

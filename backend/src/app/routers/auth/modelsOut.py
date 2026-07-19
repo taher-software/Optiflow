@@ -7,7 +7,9 @@ class AuthUserOut(BaseModel):
     """The authenticated user returned on login."""
 
     id: str = Field(..., description="User id.")
-    email: EmailStr = Field(..., description="User email / username.")
+    email: Optional[EmailStr] = Field(
+        default=None, description="User email / username, if any."
+    )
     first_name: str = Field(..., description="User first name.")
     last_name: str = Field(..., description="User last name.")
     role: str = Field(..., description="User role.")

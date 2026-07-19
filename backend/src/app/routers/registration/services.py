@@ -1,28 +1,29 @@
 import uuid
-from typing import Any
 
 from fastapi import HTTPException, status
 from itsdangerous import BadSignature, SignatureExpired
 
 from src.app.core import email as email_service
 from src.app.core.config import get_settings
-from src.app.core.firestore import NAMESPACE_COLLECTION, USERS_COLLECTION, get_db
+from src.app.core.firestore import NAMESPACE_COLLECTION, USERS_COLLECTION
 from src.app.core.security import (
     generate_password,
     hash_password,
     make_confirmation_token,
     read_confirmation_token,
 )
+from src.app.gcp import get_firestore_client
+from src.app.gcp.firestore import FirestoreClient
 from src.app.globals.enum import Role
 
 from src.app.routers.registration.modelsIn import RegisterAccountIn
 from src.app.routers.registration.modelsOut import ConfirmAccountOut, RegisterAccountOut, ResendConfirmationOut
 
 
-def _safe_delete(ref: Any) -> None:
+def _safe_delete(client: FirestoreClient, collection_name: str, document_id: str) -> None:
     """Best-effort delete used to roll back partial writes (idempotency)."""
     try:
-        ref.delete()
+        client.delete_document(collection_name, document_id)
     except Exception:
         pass
 
@@ -44,13 +45,10 @@ def create_account(payload: RegisterAccountIn) -> RegisterAccountOut:
     Atomic: if any write or the email fails, both documents are removed so the
     registration can be retried cleanly.
     """
-    db = get_db()
+    client = get_firestore_client()
 
-    existing = (
-        db.collection(USERS_COLLECTION)
-        .where("email", "==", str(payload.owner.email))
-        .limit(1)
-        .get()
+    existing = client.find_document(
+        USERS_COLLECTION, {"email": str(payload.owner.email)}
     )
     if existing:
         raise HTTPException(
@@ -60,11 +58,10 @@ def create_account(payload: RegisterAccountIn) -> RegisterAccountOut:
 
     namespace_id = str(uuid.uuid4())
     user_id = str(uuid.uuid4())
-    namespace_ref = db.collection(NAMESPACE_COLLECTION).document(namespace_id)
-    user_ref = db.collection(USERS_COLLECTION).document(user_id)
 
     try:
-        namespace_ref.set(
+        client.create_document(
+            NAMESPACE_COLLECTION,
             {
                 "id": namespace_id,
                 "company_name": payload.company.company_name,
@@ -75,9 +72,11 @@ def create_account(payload: RegisterAccountIn) -> RegisterAccountOut:
                 "country": payload.company.country,
                 "city": payload.company.city,
                 "confirmed": False,
-            }
+            },
+            document_id=namespace_id,
         )
-        user_ref.set(
+        client.create_document(
+            USERS_COLLECTION,
             {
                 "id": user_id,
                 "first_name": payload.owner.firstname,
@@ -87,11 +86,12 @@ def create_account(payload: RegisterAccountIn) -> RegisterAccountOut:
                 "role": Role.OWNER.value,
                 "password": None,  # set (hashed) only after account confirmation
                 "namespace_id": namespace_id,
-            }
+            },
+            document_id=user_id,
         )
     except Exception as exc:
-        _safe_delete(namespace_ref)
-        _safe_delete(user_ref)
+        _safe_delete(client, NAMESPACE_COLLECTION, namespace_id)
+        _safe_delete(client, USERS_COLLECTION, user_id)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to create the account. Please retry.",
@@ -100,8 +100,8 @@ def create_account(payload: RegisterAccountIn) -> RegisterAccountOut:
         try:
             _send_confirmation(user_id, namespace_id, str(payload.owner.email))
         except Exception as exc:
-            _safe_delete(namespace_ref)
-            _safe_delete(user_ref)
+            _safe_delete(client, NAMESPACE_COLLECTION, namespace_id)
+            _safe_delete(client, USERS_COLLECTION, user_id)
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail="Could not send the confirmation email. Please retry.",
@@ -116,18 +116,15 @@ def resend_confirmation(email: str) -> ResendConfirmationOut:
     Returns a generic result regardless of whether an account exists / is already
     confirmed, to avoid leaking which emails are registered.
     """
-    db = get_db()
+    client = get_firestore_client()
 
-    matches = (
-        db.collection(USERS_COLLECTION).where("email", "==", str(email)).limit(1).get()
-    )
-    if not matches:
+    user = client.find_document(USERS_COLLECTION, {"email": str(email)})
+    if not user:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="No pending account found for this email.",
         )
 
-    user = matches[0].to_dict() or {}
     if user.get("role") != Role.OWNER.value:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -141,8 +138,7 @@ def resend_confirmation(email: str) -> ResendConfirmationOut:
             detail="No pending account found for this email.",
         )
 
-    namespace_snap = db.collection(NAMESPACE_COLLECTION).document(namespace_id).get()
-    namespace = namespace_snap.to_dict() or {} if namespace_snap.exists else {}
+    namespace = client.get_document(NAMESPACE_COLLECTION, namespace_id) or {}
     if namespace.get("confirmed"):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -157,7 +153,7 @@ def confirm_account(token: str) -> ConfirmAccountOut:
     """Confirm an account: validate the token, generate + hash the owner's
     password, mark the account (namespace) confirmed, and email the credentials.
     """
-    db = get_db()
+    client = get_firestore_client()
 
     try:
         data = read_confirmation_token(token)
@@ -172,27 +168,23 @@ def confirm_account(token: str) -> ConfirmAccountOut:
             detail="Invalid confirmation link.",
         ) from exc
 
-    namespace_ref = db.collection(NAMESPACE_COLLECTION).document(data["namespace_id"])
-    namespace_snap = namespace_ref.get()
-    if not namespace_snap.exists:
+    namespace = client.get_document(NAMESPACE_COLLECTION, data["namespace_id"])
+    if namespace is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Account not found."
         )
 
-    namespace = namespace_snap.to_dict() or {}
     if namespace.get("confirmed"):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="This account has already been confirmed.",
         )
 
-    user_ref = db.collection(USERS_COLLECTION).document(data["user_id"])
-    user_snap = user_ref.get()
-    if not user_snap.exists:
+    user = client.get_document(USERS_COLLECTION, data["user_id"])
+    if user is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Owner user not found."
         )
-    user = user_snap.to_dict() or {}
     if user.get("role") != Role.OWNER.value:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -200,8 +192,10 @@ def confirm_account(token: str) -> ConfirmAccountOut:
         )
 
     password = generate_password()
-    user_ref.update({"password": hash_password(password)})
-    namespace_ref.update({"confirmed": True})
+    client.update_document(
+        USERS_COLLECTION, data["user_id"], {"password": hash_password(password)}
+    )
+    client.update_document(NAMESPACE_COLLECTION, data["namespace_id"], {"confirmed": True})
 
     email_service.send_welcome_email(user["email"], user["email"], password)
 

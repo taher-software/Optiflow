@@ -3,6 +3,7 @@
 **Stack:** React Native · TypeScript · TailwindCSS (NativeWind) · Zustand.
 
 ## Structure
+
 ```
 src/
   screens/      Route-level screens (mobile "pages"); compose components; wiring only
@@ -18,5 +19,6 @@ shapes mirror the backend `ApiResponse` contract — the **same shape** the web 
 for the same resource.
 
 ## Governed by
+
 - Sub-factory: `.claude/factories/mobile.md`
 - Skill: `.claude/skills/mobile/SKILL.md`

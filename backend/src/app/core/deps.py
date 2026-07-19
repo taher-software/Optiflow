@@ -4,8 +4,9 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from itsdangerous import BadSignature, SignatureExpired
 
-from src.app.core.firestore import USERS_COLLECTION, get_db
+from src.app.core.firestore import USERS_COLLECTION
 from src.app.core.security import read_access_token
+from src.app.gcp import get_firestore_client
 from src.app.globals.enum import Role
 
 _bearer = HTTPBearer(auto_error=False)
@@ -27,12 +28,13 @@ def get_current_user(
             detail="Invalid or expired token.",
         ) from exc
 
-    snapshot = get_db().collection(USERS_COLLECTION).document(claims["user_id"]).get()
-    if not snapshot.exists:
+    client = get_firestore_client()
+    user = client.get_document(USERS_COLLECTION, claims["user_id"])
+    if user is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found."
         )
-    return snapshot.to_dict() or {}
+    return user
 
 
 def require_roles(*roles: Role) -> Callable[..., dict]:

@@ -5,7 +5,7 @@ create/list/get/update/delete, `uap_id` cross-reference validation
 (existence + namespace scoping + blank rejection), namespace isolation, and
 the `require_roles(OWNER, ADMIN, PRODUCTION_SUPERVISOR)` guard.
 
-No real Firestore/network is touched — `get_db()` is monkeypatched to an
+No real Firestore/network is touched — `get_firestore_client()` is monkeypatched to an
 in-memory fake (see `tests/conftest.py::fake_db`). No timestamps are part of
 the ProductionLine contract, so `freezegun` is not needed here.
 """
