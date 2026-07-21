@@ -1,7 +1,7 @@
 import logging
 from google.cloud import tasks_v2
 from google.api_core import exceptions as gcp_exceptions
-from src.settings import settings
+from src.app.core.config import get_settings
 import json
 import uuid
 from datetime import datetime, timedelta
@@ -50,6 +50,7 @@ class CloudTask:
             Unauthenticated: If authentication fails
             DeadlineExceeded: If request times out
         """
+        settings = get_settings()
         if not settings.google_project_id:
             logger.warning(
                 "Google Project ID is not set. Skipping Cloud Tasks queue initialization."
@@ -71,7 +72,7 @@ class CloudTask:
             # Queue doesn't exist - this is the ONLY case where we should create it
             try:
                 parent = self.client.common_location_path(
-                    settings.google_project_id, self.location
+                    get_settings().google_project_id, self.location
                 )
                 queue = tasks_v2.Queue(name=queue_path)
                 self.client.create_queue(request={"parent": parent, "queue": queue})
@@ -173,6 +174,7 @@ class CloudTask:
         # Construct the task. Naming the task after our UUID makes it
         # addressable for deletion later; a fresh UUID per call avoids the
         # Cloud Tasks name-reuse (tombstone) restriction.
+        settings = get_settings()
         worker_url = f"{settings.worker_url}/cloud_job"
         task = tasks_v2.Task(
             name=f"{self.queue_path}/tasks/{task_id}",

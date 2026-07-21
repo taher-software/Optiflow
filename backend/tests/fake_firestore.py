@@ -27,11 +27,27 @@ class FakeSnapshot:
 
 
 class FakeDocumentRef:
-    """Mimics `google.cloud.firestore.DocumentReference`."""
+    """Mimics `google.cloud.firestore.DocumentReference`.
 
-    def __init__(self, store: dict[str, dict[str, Any]], doc_id: str):
+    Also supports opening a subcollection off this document (mirrors real
+    Firestore's `document.collection(name)`), so tests can exercise nested
+    paths like `down_time/{namespace_id}/issues/{issue_id}`. Subcollections
+    are stored in `root`, a dict shared with the owning `FakeFirestore`,
+    keyed by the full dotted path so distinct parents never collide.
+    """
+
+    def __init__(
+        self,
+        store: dict[str, dict[str, Any]],
+        doc_id: str,
+        root: Optional[dict[str, dict[str, dict[str, Any]]]] = None,
+        path: Optional[str] = None,
+    ):
         self._store = store
         self.id = doc_id
+        # `root` maps a full subcollection path -> its doc-id-keyed store.
+        self._root = root
+        self._path = path or doc_id
 
     def get(self) -> FakeSnapshot:
         return FakeSnapshot(self.id, self._store.get(self.id))
@@ -52,6 +68,18 @@ class FakeDocumentRef:
 
     def delete(self) -> None:
         self._store.pop(self.id, None)
+
+    def collection(self, name: str) -> "FakeCollection":
+        """Mimics `DocumentReference.collection(name)`: opens/creates a
+        subcollection nested under this document."""
+        if self._root is None:
+            raise NotImplementedError(
+                "This FakeDocumentRef was not created with a root registry; "
+                "subcollections are unavailable."
+            )
+        sub_path = f"{self._path}/{name}"
+        sub_store = self._root.setdefault(sub_path, {})
+        return FakeCollection(sub_store, root=self._root, path=sub_path)
 
 
 def _matches(data: dict[str, Any], field: str, op: str, value: Any) -> bool:
@@ -99,11 +127,20 @@ class FakeQuery:
 class FakeCollection:
     """Mimics `google.cloud.firestore.CollectionReference`."""
 
-    def __init__(self, store: dict[str, dict[str, Any]]):
+    def __init__(
+        self,
+        store: dict[str, dict[str, Any]],
+        root: Optional[dict[str, dict[str, dict[str, Any]]]] = None,
+        path: Optional[str] = None,
+    ):
         self._store = store
+        self._root = root
+        self._path = path
 
     def document(self, doc_id: Optional[str] = None) -> FakeDocumentRef:
-        return FakeDocumentRef(self._store, doc_id or str(uuid.uuid4()))
+        doc_id = doc_id or str(uuid.uuid4())
+        doc_path = f"{self._path}/{doc_id}" if self._path else doc_id
+        return FakeDocumentRef(self._store, doc_id, root=self._root, path=doc_path)
 
     def where(self, field: str, op: str, value: Any) -> FakeQuery:
         return FakeQuery(self._store).where(field, op, value)
@@ -125,7 +162,9 @@ class FakeFirestore:
         self._collections: dict[str, dict[str, dict[str, Any]]] = {}
 
     def collection(self, name: str) -> FakeCollection:
-        return FakeCollection(self._collections.setdefault(name, {}))
+        return FakeCollection(
+            self._collections.setdefault(name, {}), root=self._collections, path=name
+        )
 
     def get_all(self, refs: list[FakeDocumentRef]) -> list[FakeSnapshot]:
         """Mimics `google.cloud.firestore.Client.get_all`: a single batched

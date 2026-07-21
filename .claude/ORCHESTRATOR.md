@@ -12,12 +12,31 @@ The Factory exists to improve **quality, cost, and time**. Decide on that value 
 on how many sub-factories are involved.
 
 - **Lane B — do it inline.** Trivial, localized, low-risk change where running the pipeline
-  would cost more than it saves (copy/style tweak, small bug fix, rename, config). The orchestrator writes it directly on the current branch — **still loading and following the relevant skill(s).**
+  would cost more than it saves (copy/style tweak, small bug fix, rename, config). The orchestrator writes it directly on the **`main` branch** — **still loading and following the relevant skill(s).**
 - **Lane FACTORY — run the pipeline.** The change is substantial or consequential enough that
   decomposition + specialized agents + QC gates clearly pay off — **even if it touches only
   one sub-factory** (e.g. a real backend feature).
 
 > When unsure, prefer **Lane FACTORY**.
+
+## Branching & in-flight changes
+
+**Lane B** changes always go on the **`main`** branch. Every **Lane FACTORY** change runs on
+its own `feature/<name>` branch — never directly on `main`.
+
+When a new prompt arrives, first decide how it relates to work already in flight:
+
+1. **Linked to a change on an existing `feature/*` branch** (a rework, fix, or improvement of
+   it):
+   - **That work is finished** → continue on that same branch; re-run only the affected Work
+     Units.
+   - **That work is still running** → reason about quality/cost/time and choose one:
+     - **Stop & restart** the in-flight units with the new requirements/constraints folded in
+       (when the new input invalidates work in progress), or
+     - **Let it finish, then extend** with the new requirements as follow-up units (when the
+       current work is still valid and nearly done).
+2. **Independent of anything in flight** → run it through the Gate: do it in **Lane B** on
+   `main`, or cut a **new `feature/<name>` branch** for a Lane FACTORY change.
 
 ## Automatic activation
 
@@ -31,8 +50,8 @@ right ones **from the task itself** — no manual per-feature wiring.
 
 ## Factory lane
 
-1. **Intent** — new capability → cut `feature/<name>`; reworking in-flight work → stay on its
-   `feature/*` branch and re-run only the affected units.
+1. **Intent** — work on the change's `feature/<name>` branch (see **Branching & in-flight
+   changes** for which branch a new prompt belongs to).
 2. **Contract (BOM)** — list every artifact that crosses a sub-factory boundary (REST
    endpoints + their schemas, Pub/Sub events, shared TS types), one owner each. Single source
    of truth.

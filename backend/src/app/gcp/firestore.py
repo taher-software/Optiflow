@@ -697,3 +697,507 @@ class FirestoreClient:
                 exc_info=True,
             )
             raise
+
+    # ------------------------------------------------------------------
+    # Subcollection support.
+    #
+    # Mirrors the top-level methods above, but operates on a document's
+    # subcollection (e.g. `down_time/{namespace_id}/issues/{issue_id}`).
+    # Each method takes the parent path parts (`parent_collection`,
+    # `parent_id`, `sub_collection`) plus the same arguments as its
+    # top-level counterpart.
+    # ------------------------------------------------------------------
+
+    def _sub_collection_ref(
+        self, parent_collection: str, parent_id: str, sub_collection: str
+    ):
+        """Resolve `parent_collection/parent_id/sub_collection` to a
+        Firestore collection reference, validating every path part."""
+        if not parent_collection or not isinstance(parent_collection, str):
+            raise ValueError("parent_collection must be a non-empty string")
+
+        if not parent_id or not isinstance(parent_id, str):
+            raise ValueError("parent_id must be a non-empty string")
+
+        if not sub_collection or not isinstance(sub_collection, str):
+            raise ValueError("sub_collection must be a non-empty string")
+
+        return (
+            self.client.collection(parent_collection)
+            .document(parent_id)
+            .collection(sub_collection)
+        )
+
+    def create_subdocument(
+        self,
+        parent_collection: str,
+        parent_id: str,
+        sub_collection: str,
+        data: dict,
+        document_id: str = None,
+    ) -> str:
+        """
+        Create a new document in `parent_collection/parent_id/sub_collection`.
+
+        Args:
+            parent_collection: Name of the top-level collection (e.g. "down_time")
+            parent_id: Id of the parent document (e.g. a namespace id)
+            sub_collection: Name of the subcollection (e.g. "issues")
+            data: Dictionary containing document data
+            document_id: Optional document ID. Auto-generated if not provided.
+
+        Returns:
+            str: Document ID (provided or auto-generated)
+
+        Raises:
+            ValueError: If any path part or data is invalid
+            Exception: On Firestore API errors (see top-level `create_document`)
+
+        Example:
+            issue_id = client.create_subdocument(
+                "down_time", namespace_id, "issues", {"status": "pending"}
+            )
+        """
+        if not isinstance(data, dict):
+            raise ValueError("data must be a dictionary")
+
+        if not data:
+            raise ValueError("data dictionary cannot be empty")
+
+        try:
+            collection_ref = self._sub_collection_ref(
+                parent_collection, parent_id, sub_collection
+            )
+
+            logger.info(
+                f"Creating document in subcollection "
+                f"'{parent_collection}/{parent_id}/{sub_collection}'"
+            )
+
+            if document_id:
+                doc_ref = collection_ref.document(document_id)
+                doc_ref.set(data)
+            else:
+                _, doc_ref = collection_ref.add(data)
+
+            logger.info(
+                f"Successfully created document with ID '{doc_ref.id}' in "
+                f"subcollection '{parent_collection}/{parent_id}/{sub_collection}'"
+            )
+
+            return doc_ref.id
+
+        except exceptions.PermissionDenied as e:
+            logger.error(
+                f"Permission denied when creating document in subcollection "
+                f"'{parent_collection}/{parent_id}/{sub_collection}'. "
+                f"Check Firestore IAM permissions: {str(e)}",
+                exc_info=True,
+            )
+            raise
+
+        except exceptions.Unauthenticated as e:
+            logger.error(
+                f"Authentication failed when creating document in subcollection "
+                f"'{parent_collection}/{parent_id}/{sub_collection}': {str(e)}",
+                exc_info=True,
+            )
+            raise
+
+        except exceptions.DeadlineExceeded as e:
+            logger.error(
+                f"Timeout when creating document in subcollection "
+                f"'{parent_collection}/{parent_id}/{sub_collection}': {str(e)}",
+                exc_info=True,
+            )
+            raise
+
+        except Exception as e:
+            logger.error(
+                f"Unexpected error creating document in subcollection "
+                f"'{parent_collection}/{parent_id}/{sub_collection}': {str(e)}",
+                exc_info=True,
+            )
+            raise
+
+    def get_subdocument(
+        self,
+        parent_collection: str,
+        parent_id: str,
+        sub_collection: str,
+        document_id: str,
+    ) -> dict | None:
+        """
+        Retrieve a document by id from `parent_collection/parent_id/sub_collection`.
+
+        Args:
+            parent_collection: Name of the top-level collection (e.g. "down_time")
+            parent_id: Id of the parent document (e.g. a namespace id)
+            sub_collection: Name of the subcollection (e.g. "issues")
+            document_id: Firestore document ID to retrieve
+
+        Returns:
+            dict | None: Document data including 'id' field if found, None if
+                document doesn't exist
+
+        Raises:
+            ValueError: If any path part is invalid
+            Exception: On Firestore API errors (see top-level `get_document`)
+
+        Example:
+            issue = client.get_subdocument("down_time", namespace_id, "issues", issue_id)
+        """
+        if not document_id or not isinstance(document_id, str):
+            raise ValueError("document_id must be a non-empty string")
+
+        try:
+            collection_ref = self._sub_collection_ref(
+                parent_collection, parent_id, sub_collection
+            )
+
+            logger.info(
+                f"Retrieving document '{document_id}' from subcollection "
+                f"'{parent_collection}/{parent_id}/{sub_collection}'"
+            )
+
+            doc = collection_ref.document(document_id).get()
+
+            if not doc.exists:
+                logger.info(
+                    f"Document '{document_id}' not found in subcollection "
+                    f"'{parent_collection}/{parent_id}/{sub_collection}'"
+                )
+                return None
+
+            doc_data = doc.to_dict()
+            doc_data["id"] = doc.id
+
+            logger.info(
+                f"Successfully retrieved document '{document_id}' from "
+                f"subcollection '{parent_collection}/{parent_id}/{sub_collection}'"
+            )
+
+            return doc_data
+
+        except exceptions.PermissionDenied as e:
+            logger.error(
+                f"Permission denied when retrieving document '{document_id}' from "
+                f"subcollection '{parent_collection}/{parent_id}/{sub_collection}'. "
+                f"Check Firestore IAM permissions: {str(e)}",
+                exc_info=True,
+            )
+            raise
+
+        except exceptions.Unauthenticated as e:
+            logger.error(
+                f"Authentication failed when retrieving document '{document_id}' "
+                f"from subcollection '{parent_collection}/{parent_id}/{sub_collection}': {str(e)}",
+                exc_info=True,
+            )
+            raise
+
+        except exceptions.DeadlineExceeded as e:
+            logger.error(
+                f"Timeout when retrieving document '{document_id}' from "
+                f"subcollection '{parent_collection}/{parent_id}/{sub_collection}': {str(e)}",
+                exc_info=True,
+            )
+            raise
+
+        except Exception as e:
+            logger.error(
+                f"Unexpected error retrieving document '{document_id}' from "
+                f"subcollection '{parent_collection}/{parent_id}/{sub_collection}': {str(e)}",
+                exc_info=True,
+            )
+            raise
+
+    def find_subdocuments(
+        self,
+        parent_collection: str,
+        parent_id: str,
+        sub_collection: str,
+        params: dict | None = None,
+    ) -> list[dict]:
+        """
+        Find every document in `parent_collection/parent_id/sub_collection`
+        that matches all provided parameters (AND logic). With no (or empty)
+        `params`, every document in the subcollection is returned.
+
+        Args:
+            parent_collection: Name of the top-level collection (e.g. "down_time")
+            parent_id: Id of the parent document (e.g. a namespace id)
+            sub_collection: Name of the subcollection (e.g. "issues")
+            params: Optional dictionary of field-value pairs to match
+
+        Returns:
+            list[dict]: Document data (including 'id') for every match, in no
+                particular order.
+
+        Raises:
+            ValueError: If any path part or params is invalid
+            Exception: On Firestore API errors (see top-level `find_documents`)
+
+        Example:
+            open_issues = client.find_subdocuments(
+                "down_time", namespace_id, "issues", {"status": "ongoing"}
+            )
+        """
+        if params is not None and not isinstance(params, dict):
+            raise ValueError("params must be a dictionary or None")
+
+        try:
+            collection_ref = self._sub_collection_ref(
+                parent_collection, parent_id, sub_collection
+            )
+
+            logger.info(
+                f"Listing documents in subcollection "
+                f"'{parent_collection}/{parent_id}/{sub_collection}' with params: {params}"
+            )
+
+            query = collection_ref
+            for field, value in (params or {}).items():
+                query = query.where(field, "==", value)
+
+            results = []
+            for doc in query.stream():
+                doc_data = doc.to_dict()
+                doc_data["id"] = doc.id
+                results.append(doc_data)
+
+            logger.info(
+                f"Found {len(results)} document(s) in subcollection "
+                f"'{parent_collection}/{parent_id}/{sub_collection}'"
+            )
+            return results
+
+        except exceptions.PermissionDenied as e:
+            logger.error(
+                f"Permission denied when listing subcollection "
+                f"'{parent_collection}/{parent_id}/{sub_collection}'. "
+                f"Check Firestore IAM permissions: {str(e)}",
+                exc_info=True,
+            )
+            raise
+
+        except exceptions.Unauthenticated as e:
+            logger.error(
+                f"Authentication failed when listing subcollection "
+                f"'{parent_collection}/{parent_id}/{sub_collection}': {str(e)}",
+                exc_info=True,
+            )
+            raise
+
+        except exceptions.DeadlineExceeded as e:
+            logger.error(
+                f"Timeout when listing subcollection "
+                f"'{parent_collection}/{parent_id}/{sub_collection}': {str(e)}",
+                exc_info=True,
+            )
+            raise
+
+        except Exception as e:
+            logger.error(
+                f"Unexpected error listing subcollection "
+                f"'{parent_collection}/{parent_id}/{sub_collection}': {str(e)}",
+                exc_info=True,
+            )
+            raise
+
+    def update_subdocument(
+        self,
+        parent_collection: str,
+        parent_id: str,
+        sub_collection: str,
+        document_id: str,
+        data: dict,
+    ) -> bool:
+        """
+        Merge `data` into an existing document in
+        `parent_collection/parent_id/sub_collection` (uses `set(merge=True)`,
+        same semantics as top-level `update_document`).
+
+        Args:
+            parent_collection: Name of the top-level collection (e.g. "down_time")
+            parent_id: Id of the parent document (e.g. a namespace id)
+            sub_collection: Name of the subcollection (e.g. "issues")
+            document_id: Firestore document ID to update
+            data: Dictionary of field-value pairs to merge into the document
+
+        Returns:
+            bool: True if the document existed and was updated, False if no
+                document with `document_id` exists (nothing is written).
+
+        Raises:
+            ValueError: If any path part or data is invalid
+            Exception: On Firestore API errors (see top-level `update_document`)
+
+        Example:
+            updated = client.update_subdocument(
+                "down_time", namespace_id, "issues", issue_id, {"status": "resolved"}
+            )
+        """
+        if not document_id or not isinstance(document_id, str):
+            raise ValueError("document_id must be a non-empty string")
+
+        if not isinstance(data, dict):
+            raise ValueError("data must be a dictionary")
+
+        if not data:
+            raise ValueError("data dictionary cannot be empty")
+
+        try:
+            collection_ref = self._sub_collection_ref(
+                parent_collection, parent_id, sub_collection
+            )
+
+            logger.info(
+                f"Updating document '{document_id}' in subcollection "
+                f"'{parent_collection}/{parent_id}/{sub_collection}'"
+            )
+
+            doc_ref = collection_ref.document(document_id)
+
+            if not doc_ref.get().exists:
+                logger.info(
+                    f"Document '{document_id}' not found in subcollection "
+                    f"'{parent_collection}/{parent_id}/{sub_collection}', "
+                    f"nothing to update"
+                )
+                return False
+
+            doc_ref.set(data, merge=True)
+
+            logger.info(
+                f"Successfully updated document '{document_id}' in "
+                f"subcollection '{parent_collection}/{parent_id}/{sub_collection}'"
+            )
+
+            return True
+
+        except exceptions.PermissionDenied as e:
+            logger.error(
+                f"Permission denied when updating document '{document_id}' in "
+                f"subcollection '{parent_collection}/{parent_id}/{sub_collection}'. "
+                f"Check Firestore IAM permissions: {str(e)}",
+                exc_info=True,
+            )
+            raise
+
+        except exceptions.Unauthenticated as e:
+            logger.error(
+                f"Authentication failed when updating document '{document_id}' in "
+                f"subcollection '{parent_collection}/{parent_id}/{sub_collection}': {str(e)}",
+                exc_info=True,
+            )
+            raise
+
+        except exceptions.DeadlineExceeded as e:
+            logger.error(
+                f"Timeout when updating document '{document_id}' in "
+                f"subcollection '{parent_collection}/{parent_id}/{sub_collection}': {str(e)}",
+                exc_info=True,
+            )
+            raise
+
+        except Exception as e:
+            logger.error(
+                f"Unexpected error updating document '{document_id}' in "
+                f"subcollection '{parent_collection}/{parent_id}/{sub_collection}': {str(e)}",
+                exc_info=True,
+            )
+            raise
+
+    def delete_subdocument(
+        self,
+        parent_collection: str,
+        parent_id: str,
+        sub_collection: str,
+        document_id: str,
+    ) -> bool:
+        """
+        Delete a document by id from `parent_collection/parent_id/sub_collection`.
+
+        Args:
+            parent_collection: Name of the top-level collection (e.g. "down_time")
+            parent_id: Id of the parent document (e.g. a namespace id)
+            sub_collection: Name of the subcollection (e.g. "issues")
+            document_id: Firestore document ID to delete
+
+        Returns:
+            bool: True if document was deleted, False if document didn't exist
+
+        Raises:
+            ValueError: If any path part is invalid
+            Exception: On Firestore API errors (see top-level `delete_document`)
+
+        Example:
+            deleted = client.delete_subdocument(
+                "down_time", namespace_id, "issues", issue_id
+            )
+        """
+        if not document_id or not isinstance(document_id, str):
+            raise ValueError("document_id must be a non-empty string")
+
+        try:
+            collection_ref = self._sub_collection_ref(
+                parent_collection, parent_id, sub_collection
+            )
+
+            logger.info(
+                f"Deleting document '{document_id}' from subcollection "
+                f"'{parent_collection}/{parent_id}/{sub_collection}'"
+            )
+
+            doc_ref = collection_ref.document(document_id)
+            doc = doc_ref.get()
+            if not doc.exists:
+                logger.info(
+                    f"Document '{document_id}' not found in subcollection "
+                    f"'{parent_collection}/{parent_id}/{sub_collection}', "
+                    f"nothing to delete"
+                )
+                return False
+
+            doc_ref.delete()
+
+            logger.info(
+                f"Successfully deleted document '{document_id}' from "
+                f"subcollection '{parent_collection}/{parent_id}/{sub_collection}'"
+            )
+
+            return True
+
+        except exceptions.PermissionDenied as e:
+            logger.error(
+                f"Permission denied when deleting document '{document_id}' from "
+                f"subcollection '{parent_collection}/{parent_id}/{sub_collection}'. "
+                f"Check Firestore IAM permissions: {str(e)}",
+                exc_info=True,
+            )
+            raise
+
+        except exceptions.Unauthenticated as e:
+            logger.error(
+                f"Authentication failed when deleting document '{document_id}' from "
+                f"subcollection '{parent_collection}/{parent_id}/{sub_collection}': {str(e)}",
+                exc_info=True,
+            )
+            raise
+
+        except exceptions.DeadlineExceeded as e:
+            logger.error(
+                f"Timeout when deleting document '{document_id}' from "
+                f"subcollection '{parent_collection}/{parent_id}/{sub_collection}': {str(e)}",
+                exc_info=True,
+            )
+            raise
+
+        except Exception as e:
+            logger.error(
+                f"Unexpected error deleting document '{document_id}' from "
+                f"subcollection '{parent_collection}/{parent_id}/{sub_collection}': {str(e)}",
+                exc_info=True,
+            )
+            raise

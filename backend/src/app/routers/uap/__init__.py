@@ -14,6 +14,12 @@ router = APIRouter(prefix="/uaps", tags=["uaps"])
 # Production / production areas).
 _uap_scope = require_roles(Role.OWNER, Role.ADMIN, Role.PRODUCTION_SUPERVISOR)
 
+# Read-only access (list/get) is additionally opened to production agents,
+# who need it for the mobile declare-downtime cascading pickers.
+_uap_read_scope = require_roles(
+    Role.OWNER, Role.ADMIN, Role.PRODUCTION_SUPERVISOR, Role.PRODUCTION_AGENT
+)
+
 
 @router.post(
     "",
@@ -51,11 +57,11 @@ async def create_uap(
     summary="List UAPs",
     description=(
         "Lists all UAPs in the caller's namespace. Restricted to "
-        "owner/admin/production supervisor."
+        "owner/admin/production supervisor/production agent."
     ),
 )
 async def list_uaps(
-    current: dict = Depends(_uap_scope),
+    current: dict = Depends(_uap_read_scope),
 ) -> ApiResponse[list[UapOut]]:
     return ApiResponse(data=services.list_uaps(current["namespace_id"]))
 
@@ -66,13 +72,13 @@ async def list_uaps(
     summary="Get a UAP",
     description=(
         "Fetches one UAP by id. Restricted to owner/admin/production "
-        "supervisor."
+        "supervisor/production agent."
     ),
     responses={404: {"description": "UAP not found in the caller's namespace."}},
 )
 async def get_uap(
     uap_id: str,
-    current: dict = Depends(_uap_scope),
+    current: dict = Depends(_uap_read_scope),
 ) -> ApiResponse[UapOut]:
     return ApiResponse(data=services.get_uap(uap_id, current["namespace_id"]))
 

@@ -13,6 +13,12 @@ router = APIRouter(prefix="/workstations", tags=["workstations"])
 # Owners, admins and production supervisors manage workstations.
 _workstation_scope = require_roles(Role.OWNER, Role.ADMIN, Role.PRODUCTION_SUPERVISOR)
 
+# Read-only access (list/get) is additionally opened to production agents,
+# who need it for the mobile declare-downtime cascading pickers.
+_workstation_read_scope = require_roles(
+    Role.OWNER, Role.ADMIN, Role.PRODUCTION_SUPERVISOR, Role.PRODUCTION_AGENT
+)
+
 
 @router.post(
     "",
@@ -51,11 +57,11 @@ async def create_workstation(
     summary="List workstations",
     description=(
         "Lists all workstations in the caller's namespace. Restricted to "
-        "owner/admin/production supervisor."
+        "owner/admin/production supervisor/production agent."
     ),
 )
 async def list_workstations(
-    current: dict = Depends(_workstation_scope),
+    current: dict = Depends(_workstation_read_scope),
 ) -> ApiResponse[list[WorkstationOut]]:
     return ApiResponse(data=services.list_workstations(current["namespace_id"]))
 
@@ -66,13 +72,13 @@ async def list_workstations(
     summary="Get a workstation",
     description=(
         "Fetches one workstation by id. Restricted to owner/admin/production "
-        "supervisor."
+        "supervisor/production agent."
     ),
     responses={404: {"description": "Workstation not found in the caller's namespace."}},
 )
 async def get_workstation(
     station_id: str,
-    current: dict = Depends(_workstation_scope),
+    current: dict = Depends(_workstation_read_scope),
 ) -> ApiResponse[WorkstationOut]:
     return ApiResponse(data=services.get_workstation(station_id, current["namespace_id"]))
 

@@ -20,6 +20,12 @@ class Settings(BaseSettings):
     confirm_token_max_age_seconds: int = 60 * 60 * 24  # 24 hours
     access_token_max_age_seconds: int = 60 * 60 * 24 * 7  # 7 days
 
+    # GCP — backs Pub/Sub topics and Cloud Tasks queues.
+    google_project_id: str = ""
+    # Cloud Tasks target: base URL of the worker service (task is POSTed to
+    # `{worker_url}/cloud_job`).
+    worker_url: str = "http://localhost:8000"
+
 
 @lru_cache
 def get_settings() -> Settings:

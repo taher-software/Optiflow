@@ -7,6 +7,7 @@ fresh instance (function-scoped `fake_db` fixture) so tests are independent
 and can run in any order.
 """
 
+import importlib
 import sys
 from pathlib import Path
 
@@ -19,24 +20,36 @@ if str(BACKEND_ROOT) not in sys.path:
 
 import src.app.core.deps as deps_module
 import src.app.routers.auth.services as auth_services_module
+import src.app.routers.down_time.services as down_time_services_module
 import src.app.routers.registration.services as registration_services_module
 import src.app.routers.uap.services as uap_services_module
 import src.app.routers.user.services as user_services_module
 import src.app.routers.production_line.services as production_line_services_module
 import src.app.routers.workstation.services as workstation_services_module
 from src.app.core.firestore import (
+    NAMESPACE_COLLECTION,
     PRODUCTION_LINE_COLLECTION,
     UAP_COLLECTION,
     USERS_COLLECTION,
+    WORKSTATION_COLLECTION,
 )
 from src.app.core.security import make_access_token
 from src.app.gcp.firestore import FirestoreClient
 from src.app.main import app
 
+# `add_down_time` is re-exported by the `src.app.async_jobs` package
+# (`__init__.py: from .add_down_time import add_down_time`), so patching the
+# name off the package would rebind the package's own imported reference, not
+# the one `add_down_time()` actually calls at runtime. Import the submodule
+# directly so the patch lands on the name the function body resolves.
+add_down_time_module = importlib.import_module("src.app.async_jobs.add_down_time")
+
 from tests.fake_firestore import FakeFirestore
+from tests.factories.namespace import NamespaceDocFactory
 from tests.factories.production_line import ProductionLineDocFactory
 from tests.factories.uap import UapDocFactory
 from tests.factories.user import UserFactory
+from tests.factories.workstation import WorkstationDocFactory
 
 
 @pytest.fixture
@@ -64,6 +77,17 @@ def fake_db(monkeypatch):
         registration_services_module, "get_firestore_client", lambda: client
     )
     monkeypatch.setattr(user_services_module, "get_firestore_client", lambda: client)
+    monkeypatch.setattr(
+        down_time_services_module, "get_firestore_client", lambda: client
+    )
+    # `dispatch_job` runs `add_down_time` in-process (see
+    # `src/app/async_jobs/__init__.py`), so `POST /down-times` actually
+    # executes the handler synchronously during the request — its own
+    # `get_firestore_client` reference must be patched too (via the
+    # submodule, not the package re-export; see the import comment above).
+    monkeypatch.setattr(
+        add_down_time_module, "get_firestore_client", lambda: client
+    )
     return db
 
 
@@ -109,6 +133,39 @@ def seed_production_line(fake_db):
         line = ProductionLineDocFactory(**overrides)
         fake_db.collection(PRODUCTION_LINE_COLLECTION).document(line["id"]).set(line)
         return line
+
+    return _seed
+
+
+@pytest.fixture
+def seed_workstation(fake_db):
+    """Factory fixture: seed_workstation(namespace_id=..., production_line_id=...)
+    -> workstation doc dict, seeded directly into the fake Firestore
+    `workstation` collection."""
+
+    def _seed(**overrides) -> dict:
+        station = WorkstationDocFactory(**overrides)
+        fake_db.collection(WORKSTATION_COLLECTION).document(station["id"]).set(
+            station
+        )
+        return station
+
+    return _seed
+
+
+@pytest.fixture
+def seed_namespace(fake_db):
+    """Factory fixture: seed_namespace(id=..., timezone=...) -> namespace doc
+    dict, seeded directly into the fake Firestore `namespace` collection
+    (used by `add_down_time` handler tests to control the tenant's IANA
+    timezone)."""
+
+    def _seed(**overrides) -> dict:
+        namespace = NamespaceDocFactory(**overrides)
+        fake_db.collection(NAMESPACE_COLLECTION).document(namespace["id"]).set(
+            namespace
+        )
+        return namespace
 
     return _seed
 

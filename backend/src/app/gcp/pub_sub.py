@@ -1,7 +1,7 @@
 from functools import lru_cache
 import logging
 from google.cloud import pubsub_v1
-from src.settings import settings
+from src.app.core.config import get_settings
 from google.api_core import exceptions as gcp_exceptions
 import json
 import uuid
@@ -28,6 +28,7 @@ class PubSubInteraction:
         different failure reasons (NotFound vs PermissionDenied, NetworkError, etc.)
         """
 
+        settings = get_settings()
         if not settings.google_project_id:
             logger.warning(
                 "Google Project ID is not set. Skipping Pub/Sub topic initialization."

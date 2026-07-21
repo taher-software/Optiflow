@@ -18,6 +18,12 @@ _production_line_scope = require_roles(
     Role.OWNER, Role.ADMIN, Role.PRODUCTION_SUPERVISOR
 )
 
+# Read-only access (list/get) is additionally opened to production agents,
+# who need it for the mobile declare-downtime cascading pickers.
+_production_line_read_scope = require_roles(
+    Role.OWNER, Role.ADMIN, Role.PRODUCTION_SUPERVISOR, Role.PRODUCTION_AGENT
+)
+
 
 @router.post(
     "",
@@ -50,11 +56,11 @@ async def create_production_line(
     summary="List production lines",
     description=(
         "Lists all production lines in the caller's namespace. Restricted to "
-        "owner/admin/production supervisor."
+        "owner/admin/production supervisor/production agent."
     ),
 )
 async def list_production_lines(
-    current: dict = Depends(_production_line_scope),
+    current: dict = Depends(_production_line_read_scope),
 ) -> ApiResponse[list[ProductionLineOut]]:
     return ApiResponse(data=services.list_production_lines(current["namespace_id"]))
 
@@ -65,7 +71,7 @@ async def list_production_lines(
     summary="Get a production line",
     description=(
         "Fetches one production line by id. Restricted to owner/admin/"
-        "production supervisor."
+        "production supervisor/production agent."
     ),
     responses={
         404: {"description": "Production line not found in the caller's namespace."}
@@ -73,7 +79,7 @@ async def list_production_lines(
 )
 async def get_production_line(
     line_id: str,
-    current: dict = Depends(_production_line_scope),
+    current: dict = Depends(_production_line_read_scope),
 ) -> ApiResponse[ProductionLineOut]:
     return ApiResponse(
         data=services.get_production_line(line_id, current["namespace_id"])

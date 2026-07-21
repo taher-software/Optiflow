@@ -12,6 +12,7 @@ from src.app.core.security import (
     make_confirmation_token,
     read_confirmation_token,
 )
+from src.app.core.security_code import generate_security_code
 from src.app.gcp import get_firestore_client
 from src.app.gcp.firestore import FirestoreClient
 from src.app.globals.enum import Role
@@ -192,8 +193,14 @@ def confirm_account(token: str) -> ConfirmAccountOut:
         )
 
     password = generate_password()
+    security_code = generate_security_code(client, data["namespace_id"])
     client.update_document(
-        USERS_COLLECTION, data["user_id"], {"password": hash_password(password)}
+        USERS_COLLECTION,
+        data["user_id"],
+        {
+            "password": hash_password(password),
+            "security_code": security_code,
+        },
     )
     client.update_document(NAMESPACE_COLLECTION, data["namespace_id"], {"confirmed": True})
 
