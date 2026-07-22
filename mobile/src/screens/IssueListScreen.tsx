@@ -1,7 +1,13 @@
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useCallback } from "react";
 import { useTranslation } from "react-i18next";
-import { FlatList, Pressable, Text, View } from "react-native";
+import {
+  ActivityIndicator,
+  FlatList,
+  Pressable,
+  Text,
+  View,
+} from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import {
@@ -23,7 +29,9 @@ export function IssueListScreen({ route, navigation }: Props) {
   const insets = useSafeAreaInsets();
   const issues = useDownTimeStore((s) => s.issues);
   const loading = useDownTimeStore((s) => s.loadingIssues);
+  const loadingMore = useDownTimeStore((s) => s.loadingMore);
   const fetchIssues = useDownTimeStore((s) => s.fetchIssues);
+  const fetchMoreIssues = useDownTimeStore((s) => s.fetchMoreIssues);
 
   useFocusRefresh(
     useCallback(() => {
@@ -58,12 +66,19 @@ export function IssueListScreen({ route, navigation }: Props) {
         }}
         refreshing={loading}
         onRefresh={() => void fetchIssues(status)}
+        onEndReached={() => void fetchMoreIssues()}
+        onEndReachedThreshold={0.4}
         ListEmptyComponent={
           loading ? null : (
             <Text className="mt-10 text-center text-sm text-slate-400">
               {t("downtime.list.empty")}
             </Text>
           )
+        }
+        ListFooterComponent={
+          loadingMore ? (
+            <ActivityIndicator className="my-4" color="#2dd4bf" />
+          ) : null
         }
         renderItem={({ item }) => (
           <IssueRow

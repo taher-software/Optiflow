@@ -127,9 +127,22 @@ class DownTimeSummaryOut(BaseModel):
     Averages: `pending` = mean(now - created_at); `ongoing` = mean(now -
     acknowledged_at) (skipping issues missing `acknowledged_at`); `resolved` =
     mean(resolved_at - acknowledged_at); `closed` = mean(closed_at -
-    resolved_at)."""
+    resolved_at). `now` is the current time in the namespace's timezone."""
 
     pending: DownTimeStatusSummaryOut
     ongoing: DownTimeStatusSummaryOut
     resolved: DownTimeStatusSummaryOut
     closed: DownTimeStatusSummaryOut
+
+
+class DownTimePageOut(BaseModel):
+    """A page of downtime tickets plus the pagination envelope."""
+
+    items: list[DownTimeOut] = Field(
+        default_factory=list, description="The tickets on this page (newest first)."
+    )
+    total: int = Field(
+        ..., description="Total number of visible (filtered) tickets across all pages."
+    )
+    limit: int = Field(..., description="Page size applied.")
+    offset: int = Field(..., description="Offset applied.")

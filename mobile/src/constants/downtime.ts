@@ -63,6 +63,14 @@ export interface DownTimeSummary {
   closed: DownTimeStatusSummary;
 }
 
+/** A page of downtime issues (mirrors the backend DownTimePageOut). */
+export interface DownTimePage {
+  items: DownTime[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
 /** Production scope of a downtime declaration. */
 export const PRODUCTION_SCOPES = [
   "plant",

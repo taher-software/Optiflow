@@ -11,6 +11,7 @@ from src.app.routers.down_time.modelsIn import CreateDownTimeIn
 from src.app.routers.down_time.modelsOut import (
     DownTimeAckOut,
     DownTimeOut,
+    DownTimePageOut,
     DownTimeSummaryOut,
 )
 
@@ -94,21 +95,23 @@ async def get_down_time_summary(
 
 @router.get(
     "",
-    response_model=ApiResponse[list[DownTimeOut]],
+    response_model=ApiResponse[DownTimePageOut],
     summary="List downtime tickets",
     description=(
         "Lists downtime tickets in the caller's namespace, newest first, "
-        "optionally filtered by `status`. Visibility: `owner`, `admin`, "
-        "`manager`, `production supervisor`, and `production agent` see "
-        "every issue in their namespace; every other role (maintenance/"
-        "quality/logistic supervisor & agent) only sees issues whose "
-        "`process` matches their own (derived from their role, e.g. "
-        "'maintenance agent' -> 'maintenance'). Each issue includes "
-        "resolved actor names, the caller's own permission flags "
+        "optionally filtered by `status`, paginated via `limit`/`offset` "
+        "(the response carries the page `items` plus `total`/`limit`/"
+        "`offset`). Visibility: `owner`, `admin`, `manager`, `production "
+        "supervisor`, and `production agent` see every issue in their "
+        "namespace; every other role (maintenance/quality/logistic "
+        "supervisor & agent) only sees issues whose `process` matches their "
+        "own (derived from their role, e.g. 'maintenance agent' -> "
+        "'maintenance'). Each issue includes resolved actor names, the "
+        "caller's own permission flags "
         "(`can_acknowledge`/`can_resolve`/`can_close`/`can_delete`), and "
-        "`time_in_status_seconds`. Any authenticated user may call this; "
-        "the visibility filter above does the narrowing, not a role "
-        "allow-list."
+        "`time_in_status_seconds` (measured against the namespace's local "
+        "now). Any authenticated user may call this; the visibility filter "
+        "above does the narrowing, not a role allow-list."
     ),
 )
 async def list_down_times(
@@ -117,10 +120,17 @@ async def list_down_times(
         alias="status",
         description="Optional lifecycle status to filter by.",
     ),
+    limit: int = Query(
+        default=20, ge=1, le=100, description="Page size (max 100)."
+    ),
+    offset: int = Query(default=0, ge=0, description="Number of items to skip."),
     current: dict = Depends(get_current_user),
-) -> ApiResponse[list[DownTimeOut]]:
+) -> ApiResponse[DownTimePageOut]:
     result = services.list_down_times(
-        current, status_filter.value if status_filter else None
+        current,
+        status_filter.value if status_filter else None,
+        limit=limit,
+        offset=offset,
     )
     return ApiResponse(message="Downtime tickets.", data=result)
 

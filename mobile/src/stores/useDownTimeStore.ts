@@ -3,19 +3,32 @@ import { create } from "zustand";
 import type {
   CreateDownTimePayload,
   DownTime,
+  DownTimePage,
   DownTimeStatus,
   DownTimeSummary,
 } from "../constants/downtime";
 import { apiRequest, type ApiResult } from "./apiClient";
 
+const PAGE_SIZE = 1;
+
 interface DownTimeState {
   summary: DownTimeSummary | null;
   issues: DownTime[];
+  /** Total number of issues across all pages for the current filter. */
+  issuesTotal: number;
+  /** The status filter the loaded issues belong to (undefined = all). */
+  issuesStatus?: DownTimeStatus;
   loadingSummary: boolean;
+  /** First-page (reset) load. */
   loadingIssues: boolean;
+  /** Appending the next page. */
+  loadingMore: boolean;
   error: string | null;
   fetchSummary: () => Promise<void>;
+  /** Load the first page for `status` (replaces the list). */
   fetchIssues: (status?: DownTimeStatus) => Promise<void>;
+  /** Append the next page (no-op when all issues are loaded). */
+  fetchMoreIssues: () => Promise<void>;
   getIssue: (id: string) => Promise<ApiResult<DownTime>>;
   createDownTime: (
     payload: CreateDownTimePayload,
@@ -26,13 +39,25 @@ interface DownTimeState {
   remove: (id: string) => Promise<ApiResult<DownTime>>;
 }
 
-/** Owns downtime data: the home summary, the issue list (by status), and the
- * create + lifecycle command actions. */
-export const useDownTimeStore = create<DownTimeState>((set) => ({
+function pagePath(status: DownTimeStatus | undefined, offset: number): string {
+  const params = new URLSearchParams({
+    limit: String(PAGE_SIZE),
+    offset: String(offset),
+  });
+  if (status) params.set("status", status);
+  return `/down-times?${params.toString()}`;
+}
+
+/** Owns downtime data: the home summary, the paginated issue list (by status),
+ * and the create + lifecycle command actions. */
+export const useDownTimeStore = create<DownTimeState>((set, get) => ({
   summary: null,
   issues: [],
+  issuesTotal: 0,
+  issuesStatus: undefined,
   loadingSummary: false,
   loadingIssues: false,
+  loadingMore: false,
   error: null,
 
   fetchSummary: async () => {
@@ -43,13 +68,44 @@ export const useDownTimeStore = create<DownTimeState>((set) => ({
   },
 
   fetchIssues: async (status) => {
-    set({ loadingIssues: true, error: null });
-    const path = status
-      ? `/down-times?status=${encodeURIComponent(status)}`
-      : "/down-times";
-    const res = await apiRequest<DownTime[]>(path);
-    if (res.ok) set({ issues: res.data ?? [], loadingIssues: false });
-    else set({ error: res.detail ?? "error", loadingIssues: false });
+    set({
+      loadingIssues: true,
+      error: null,
+      issuesStatus: status,
+      issues: [],
+      issuesTotal: 0,
+    });
+    const res = await apiRequest<DownTimePage>(pagePath(status, 0));
+    if (res.ok) {
+      set({
+        issues: res.data?.items ?? [],
+        issuesTotal: res.data?.total ?? 0,
+        loadingIssues: false,
+      });
+    } else {
+      set({ error: res.detail ?? "error", loadingIssues: false });
+    }
+  },
+
+  fetchMoreIssues: async () => {
+    const { issues, issuesTotal, issuesStatus, loadingIssues, loadingMore } =
+      get();
+    if (loadingIssues || loadingMore) return;
+    if (issues.length >= issuesTotal) return; // everything loaded
+
+    set({ loadingMore: true });
+    const res = await apiRequest<DownTimePage>(
+      pagePath(issuesStatus, issues.length),
+    );
+    if (res.ok) {
+      set({
+        issues: [...issues, ...(res.data?.items ?? [])],
+        issuesTotal: res.data?.total ?? issuesTotal,
+        loadingMore: false,
+      });
+    } else {
+      set({ loadingMore: false });
+    }
   },
 
   getIssue: (id) => apiRequest<DownTime>(`/down-times/${id}`),

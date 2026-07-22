@@ -71,7 +71,7 @@ class TestDownTimeReadVisibility:
         seed_issue("q1", process="quality")
         res = client.get("/down-times", headers=auth_headers(pa))
         assert res.status_code == 200
-        assert {i["id"] for i in res.json()["data"]} == {"m1", "q1"}
+        assert {i["id"] for i in res.json()["data"]["items"]} == {"m1", "q1"}
 
     def test_maintenance_agent_sees_only_maintenance(
         self, client, seed_user, seed_issue, auth_headers
@@ -81,7 +81,7 @@ class TestDownTimeReadVisibility:
         seed_issue("q1", process="quality")
         res = client.get("/down-times", headers=auth_headers(ma))
         assert res.status_code == 200
-        assert {i["id"] for i in res.json()["data"]} == {"m1"}
+        assert {i["id"] for i in res.json()["data"]["items"]} == {"m1"}
 
     def test_detail_404_when_not_visible(
         self, client, seed_user, seed_issue, auth_headers
@@ -97,7 +97,26 @@ class TestDownTimeReadVisibility:
         seed_issue("o1", status="ongoing")
         res = client.get("/down-times?status=ongoing", headers=auth_headers(pa))
         assert res.status_code == 200
-        assert {i["id"] for i in res.json()["data"]} == {"o1"}
+        assert {i["id"] for i in res.json()["data"]["items"]} == {"o1"}
+
+    def test_pagination_limit_offset(
+        self, client, seed_user, seed_issue, auth_headers
+    ):
+        pa = seed_user(namespace_id=NS, role=Role.PRODUCTION_AGENT.value)
+        # created_at newest-first when sorted desc: p0 (now) ... p4 (4 min ago).
+        for i in range(5):
+            seed_issue(f"p{i}", status="pending", created_at=_iso(i))
+
+        first = client.get("/down-times?limit=2&offset=0", headers=auth_headers(pa))
+        data = first.json()["data"]
+        assert data["total"] == 5
+        assert data["limit"] == 2 and data["offset"] == 0
+        assert [i["id"] for i in data["items"]] == ["p0", "p1"]
+
+        last = client.get("/down-times?limit=2&offset=4", headers=auth_headers(pa))
+        last_data = last.json()["data"]
+        assert last_data["total"] == 5
+        assert [i["id"] for i in last_data["items"]] == ["p4"]
 
 
 # --------------------------------------------------------------------------- #
@@ -236,3 +255,21 @@ class TestDownTimeTransitions:
         seed_issue("m1", process="maintenance", status="ongoing", created_by=pa["id"])
         res = client.delete("/down-times/m1", headers=auth_headers(pa))
         assert res.status_code == 409
+
+    def test_transition_timestamps_use_namespace_timezone(
+        self, client, fake_db, seed_user, seed_issue, seed_namespace, auth_headers
+    ):
+        # Paris is +01:00 / +02:00 — never UTC.
+        seed_namespace(id=NS, timezone="Europe/Paris")
+        ma = seed_user(namespace_id=NS, role=Role.MAINTENANCE_AGENT.value)
+        pa = seed_user(namespace_id=NS, role=Role.PRODUCTION_AGENT.value)
+        seed_issue("m1", process="maintenance", status="pending")
+
+        client.post("/down-times/m1/acknowledge", headers=auth_headers(ma))
+        client.post("/down-times/m1/resolve", headers=auth_headers(ma))
+        client.post("/down-times/m1/close", headers=auth_headers(pa))
+
+        stored = _read(fake_db, "m1")
+        for field in ("acknowledged_at", "resolved_at", "closed_at", "updated_at"):
+            offset = datetime.fromisoformat(stored[field]).utcoffset()
+            assert offset is not None and offset != timedelta(0), field

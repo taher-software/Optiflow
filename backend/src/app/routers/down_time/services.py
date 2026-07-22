@@ -17,7 +17,7 @@ permission-flag rules documented on each function below.
 
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any, Optional
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -41,6 +41,7 @@ from src.app.routers.down_time.modelsIn import CreateDownTimeIn
 from src.app.routers.down_time.modelsOut import (
     DownTimeAckOut,
     DownTimeOut,
+    DownTimePageOut,
     DownTimeStatusSummaryOut,
     DownTimeSummaryOut,
 )
@@ -49,6 +50,10 @@ from src.app.routers.down_time.modelsOut import (
 # `src.app.async_jobs.add_down_time.DOWN_TIME_COLLECTION` / `ISSUES_SUBCOLLECTION`.
 DOWN_TIME_COLLECTION = "down_time"
 ISSUES_SUBCOLLECTION = "issues"
+
+# Pagination bounds for list_down_times.
+_DEFAULT_PAGE_LIMIT = 20
+_MAX_PAGE_LIMIT = 100
 
 # Roles that see every issue in their namespace, regardless of process.
 _FULL_VISIBILITY_ROLES = {
@@ -280,9 +285,12 @@ def _parse_iso(value: Optional[str]) -> Optional[datetime]:
         return None
 
 
-def _time_in_status_seconds(issue: dict[str, Any]) -> Optional[float]:
+def _time_in_status_seconds(
+    issue: dict[str, Any], now: datetime
+) -> Optional[float]:
     """Seconds elapsed since `issue` entered its current status (see
-    `_STATUS_ENTRY_FIELD`); `None` when the entry timestamp is missing/
+    `_STATUS_ENTRY_FIELD`), measured against `now` (the current time in the
+    namespace's timezone); `None` when the entry timestamp is missing/
     unparsable."""
     entry_field = _STATUS_ENTRY_FIELD.get(issue.get("status"))
     if entry_field is None:
@@ -290,7 +298,7 @@ def _time_in_status_seconds(issue: dict[str, Any]) -> Optional[float]:
     entry_dt = _parse_iso(issue.get(entry_field))
     if entry_dt is None:
         return None
-    return (datetime.now(timezone.utc) - entry_dt).total_seconds()
+    return (now - entry_dt).total_seconds()
 
 
 def _batch_fetch_actor_names(
@@ -313,6 +321,7 @@ def _to_down_time_out(
     issue: dict[str, Any],
     current: dict[str, Any],
     users_by_id: dict[str, dict[str, Any]],
+    now: datetime,
 ) -> DownTimeOut:
     can_acknowledge, can_resolve, can_close, can_delete = _permission_flags(
         issue, current
@@ -344,15 +353,22 @@ def _to_down_time_out(
         can_resolve=can_resolve,
         can_close=can_close,
         can_delete=can_delete,
-        time_in_status_seconds=_time_in_status_seconds(issue),
+        time_in_status_seconds=_time_in_status_seconds(issue, now),
     )
 
 
 def list_down_times(
-    current: dict[str, Any], status_filter: Optional[str] = None
-) -> list[DownTimeOut]:
-    """List every downtime issue visible to `current` in their namespace,
-    newest first, optionally filtered to a single `status`."""
+    current: dict[str, Any],
+    status_filter: Optional[str] = None,
+    limit: int = _DEFAULT_PAGE_LIMIT,
+    offset: int = 0,
+) -> DownTimePageOut:
+    """List the downtime issues visible to `current` in their namespace,
+    newest first, optionally filtered to a single `status`, paginated with
+    `limit`/`offset`. `total` is the full count of visible (filtered) issues."""
+    limit = max(1, min(limit, _MAX_PAGE_LIMIT))
+    offset = max(0, offset)
+
     client = get_firestore_client()
     namespace_id = current["namespace_id"]
     issues = _fetch_visible_issues(client, namespace_id, current.get("role"))
@@ -362,8 +378,13 @@ def list_down_times(
 
     issues.sort(key=lambda issue: issue.get("created_at") or "", reverse=True)
 
-    users_by_id = _batch_fetch_actor_names(client, issues)
-    return [_to_down_time_out(issue, current, users_by_id) for issue in issues]
+    total = len(issues)
+    page = issues[offset : offset + limit]
+
+    now = _now_for_namespace(client, namespace_id)
+    users_by_id = _batch_fetch_actor_names(client, page)
+    items = [_to_down_time_out(issue, current, users_by_id, now) for issue in page]
+    return DownTimePageOut(items=items, total=total, limit=limit, offset=offset)
 
 
 def get_down_time(issue_id: str, current: dict[str, Any]) -> DownTimeOut:
@@ -383,8 +404,9 @@ def get_down_time(issue_id: str, current: dict[str, Any]) -> DownTimeOut:
             detail="Downtime ticket not found.",
         )
 
+    now = _now_for_namespace(client, namespace_id)
     users_by_id = _batch_fetch_actor_names(client, [issue])
-    return _to_down_time_out(issue, current, users_by_id)
+    return _to_down_time_out(issue, current, users_by_id, now)
 
 
 def _pending_duration(issue: dict[str, Any], now: datetime) -> Optional[float]:
@@ -446,10 +468,17 @@ def _resolve_timezone(namespace_id: str, namespace: Optional[dict[str, Any]]) ->
         return ZoneInfo("UTC")
 
 
-def _now_iso_for_namespace(client: FirestoreClient, namespace_id: str) -> str:
+def _now_for_namespace(client: FirestoreClient, namespace_id: str) -> datetime:
+    """Current time in the namespace's timezone — used for every elapsed-time
+    computation (time_in_status_seconds, summary averages) so durations are
+    measured against the tenant's local now."""
     namespace = client.get_document(NAMESPACE_COLLECTION, namespace_id)
     tz = _resolve_timezone(namespace_id, namespace)
-    return datetime.now(tz).isoformat()
+    return datetime.now(tz)
+
+
+def _now_iso_for_namespace(client: FirestoreClient, namespace_id: str) -> str:
+    return _now_for_namespace(client, namespace_id).isoformat()
 
 
 def _get_issue_or_404(
@@ -485,7 +514,8 @@ def acknowledge_down_time(issue_id: str, current: dict[str, Any]) -> DownTimeOut
             detail="Ticket is not pending.",
         )
 
-    now_iso = _now_iso_for_namespace(client, namespace_id)
+    now = _now_for_namespace(client, namespace_id)
+    now_iso = now.isoformat()
     updates = {
         "status": DownTimeStatus.ONGOING.value,
         "acknowledged_at": now_iso,
@@ -498,7 +528,7 @@ def acknowledge_down_time(issue_id: str, current: dict[str, Any]) -> DownTimeOut
     issue.update(updates)
 
     users_by_id = _batch_fetch_actor_names(client, [issue])
-    return _to_down_time_out(issue, current, users_by_id)
+    return _to_down_time_out(issue, current, users_by_id, now)
 
 
 def resolve_down_time(issue_id: str, current: dict[str, Any]) -> DownTimeOut:
@@ -520,7 +550,8 @@ def resolve_down_time(issue_id: str, current: dict[str, Any]) -> DownTimeOut:
             detail="Ticket is not ongoing.",
         )
 
-    now_iso = _now_iso_for_namespace(client, namespace_id)
+    now = _now_for_namespace(client, namespace_id)
+    now_iso = now.isoformat()
     updates = {
         "status": DownTimeStatus.RESOLVED.value,
         "resolved_at": now_iso,
@@ -533,7 +564,7 @@ def resolve_down_time(issue_id: str, current: dict[str, Any]) -> DownTimeOut:
     issue.update(updates)
 
     users_by_id = _batch_fetch_actor_names(client, [issue])
-    return _to_down_time_out(issue, current, users_by_id)
+    return _to_down_time_out(issue, current, users_by_id, now)
 
 
 def close_down_time(issue_id: str, current: dict[str, Any]) -> DownTimeOut:
@@ -554,7 +585,8 @@ def close_down_time(issue_id: str, current: dict[str, Any]) -> DownTimeOut:
             detail="Ticket is not resolved.",
         )
 
-    now_iso = _now_iso_for_namespace(client, namespace_id)
+    now = _now_for_namespace(client, namespace_id)
+    now_iso = now.isoformat()
     updates = {
         "status": DownTimeStatus.CLOSED.value,
         "closed_at": now_iso,
@@ -567,7 +599,7 @@ def close_down_time(issue_id: str, current: dict[str, Any]) -> DownTimeOut:
     issue.update(updates)
 
     users_by_id = _batch_fetch_actor_names(client, [issue])
-    return _to_down_time_out(issue, current, users_by_id)
+    return _to_down_time_out(issue, current, users_by_id, now)
 
 
 def delete_down_time(issue_id: str, current: dict[str, Any]) -> DownTimeOut:
@@ -592,8 +624,9 @@ def delete_down_time(issue_id: str, current: dict[str, Any]) -> DownTimeOut:
             detail="Ticket is not pending.",
         )
 
+    now = _now_for_namespace(client, namespace_id)
     users_by_id = _batch_fetch_actor_names(client, [issue])
-    result = _to_down_time_out(issue, current, users_by_id)
+    result = _to_down_time_out(issue, current, users_by_id, now)
 
     client.delete_subdocument(
         DOWN_TIME_COLLECTION, namespace_id, ISSUES_SUBCOLLECTION, issue_id
@@ -608,7 +641,7 @@ def get_down_time_summary(current: dict[str, Any]) -> DownTimeSummaryOut:
     client = get_firestore_client()
     namespace_id = current["namespace_id"]
     issues = _fetch_visible_issues(client, namespace_id, current.get("role"))
-    now = datetime.now(timezone.utc)
+    now = _now_for_namespace(client, namespace_id)
 
     return DownTimeSummaryOut(
         pending=_status_summary(
