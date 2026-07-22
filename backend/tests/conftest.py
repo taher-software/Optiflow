@@ -80,15 +80,38 @@ def fake_db(monkeypatch):
     monkeypatch.setattr(
         down_time_services_module, "get_firestore_client", lambda: client
     )
-    # `dispatch_job` runs `add_down_time` in-process (see
-    # `src/app/async_jobs/__init__.py`), so `POST /down-times` actually
-    # executes the handler synchronously during the request — its own
-    # `get_firestore_client` reference must be patched too (via the
-    # submodule, not the package re-export; see the import comment above).
+    # The worker route runs `add_down_time` (via the registry) with the same
+    # fake — its own `get_firestore_client` reference must be patched too (via
+    # the submodule, not the package re-export; see the import comment above).
     monkeypatch.setattr(
         add_down_time_module, "get_firestore_client", lambda: client
     )
     return db
+
+
+@pytest.fixture
+def publish_spy(monkeypatch):
+    """Replace the Pub/Sub publisher used by the down_time create endpoint with
+    a spy, so `POST /down-times` records the published job instead of hitting
+    real Pub/Sub. Returns the list of recorded publish calls."""
+    calls: list[dict] = []
+
+    class _FakePublisher:
+        def publish_job(self, job_type, namespace_id, payload, job_id=None):
+            calls.append(
+                {
+                    "job_type": job_type,
+                    "namespace_id": namespace_id,
+                    "payload": payload,
+                    "job_id": job_id,
+                }
+            )
+            return "fake-message-id"
+
+    monkeypatch.setattr(
+        down_time_services_module, "get_pubsub_publisher", lambda: _FakePublisher()
+    )
+    return calls
 
 
 @pytest.fixture

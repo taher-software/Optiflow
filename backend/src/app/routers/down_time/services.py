@@ -23,7 +23,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import HTTPException, status
 
-from src.app.async_jobs import dispatch_job
+from src.app.gcp import get_pubsub_publisher
 from src.app.core.firestore import (
     NAMESPACE_COLLECTION,
     PRODUCTION_LINE_COLLECTION,
@@ -182,11 +182,11 @@ def create_down_time(
         "department": payload.department.value if payload.department else None,
     }
 
-    # --- Swap point: today the job is dispatched in-process; a real
-    # Pub/Sub publish (get_pubsub_publisher().publish_job(...)) or Cloud
-    # Task can replace this single call site without touching anything
-    # else in this endpoint. ---
-    dispatch_job(JobType.ADD_DOWN_TIME, namespace_id, job_payload, job_id=job_id)
+    # Publish the job — the endpoint never runs the handler in-process. The
+    # worker route (`POST /cloud_job`) receives the push and dispatches it.
+    get_pubsub_publisher().publish_job(
+        JobType.ADD_DOWN_TIME, namespace_id, job_payload, job_id=job_id
+    )
 
     return DownTimeAckOut(job_id=job_id)
 

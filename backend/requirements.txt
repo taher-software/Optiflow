@@ -7,3 +7,4 @@ google-cloud-firestore>=2.19
 resend>=2.4
 bcrypt>=4.1
 itsdangerous>=2.2
+backoff

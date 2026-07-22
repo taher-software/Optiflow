@@ -82,3 +82,6 @@ Playbooks: `.claude/factories/{backend,frontend,mobile}.md`.
 - The **BOM** is the single source of truth for anything crossing a boundary.
 - Nothing crosses a boundary without its **firewall**; nothing is consumed without
   **auto-control**.
+- **Async work: the endpoint publishes; it never dispatches in-process.** Publishing goes to
+  Pub/Sub or Cloud Tasks depending on the task; the publish call is a BOM item with an owner.
+  Mock the publisher in tests — never substitute synchronous in-process execution.

@@ -5,9 +5,50 @@ context: fork
 disable-model-invocation: false
 ---
 
-Create new async job:
-1. Create a new file for the async job in the `src/app/async_jobs/` folder, e.g. `my_async_job.py` if the job is called `my_async_job` and the file file doesn' t exist yet.
-2. the async should use backoff strategy to retry, and the max retry times should be 3 by default.
-3. the async job should be idempotent, which means it can be retried without causing unintended side effects. This is crucial for ensuring that retries do not lead to duplicate processing or inconsistent states. 
-4. each async job handle functional failure and system failure separately. if the failure is caused by functional failure, which means the input data is invalid or some business logic condition is not met, the async job should log the error and skip the retry. if the failure is caused by system failure, which means some external system is down or some transient error happens, the async job should retry until the max retry times is reached. in case the max retry times is reached, the async job should log the error and return 200 response with error message in the body, so we can avoid the job requeud and retried for something that is not going to succeed.
-5. Ensure that a new job type is added to the Jobtype enum in `src/app/globals/enum` and his router get mapped in the `src/app/async_jobs/__init__.py` file.
+# Async jobs
+
+Flow: **endpoint publishes → worker route receives the push → registry routes to the
+handler.** The endpoint and the handler are coupled ONLY through the published message.
+Never run a handler in-process from an endpoint, and never hand-roll a retry loop.
+
+## Trigger — in the endpoint
+Publish the job; do not run it. Never import a handler or a dispatcher into an endpoint.
+The publisher depends on the task: use `get_pubsub_publisher().publish_job(...)` for a
+**Pub/Sub** job, or the Cloud Tasks caller for a **Cloud Task** job.
+```py
+get_pubsub_publisher().publish_job(JobType.X, namespace_id, payload, job_id)  # Pub/Sub
+```
+
+## Worker route — the ONLY entrypoint that runs jobs
+A single route `POST /cloud_job` (no app auth — infra OIDC only) receives the push from
+**Pub/Sub or Cloud Tasks**, parses `{job_id, job_type, namespace_id, payload}`, looks the
+handler up in the registry by `job_type`, calls it, and **returns the handler's response**
+(HTTP 200 — never a non-2xx, which would requeue). There is **no manual `dispatch_job`/retry
+orchestrator**: the registry in `src/app/async_jobs/__init__.py` is a plain
+`dict[JobType, handler]`.
+
+## Handler — one file per job in `src/app/async_jobs/`
+1. New job → new file `src/app/async_jobs/<job>.py`; add its value to the `JobType` enum
+   (`src/app/globals/enum`) and register `JobType.X -> handler` in `async_jobs/__init__.py`.
+2. **Retry = the `backoff` decorator — never a hand-rolled loop / `time.sleep`, and never a
+   `giveup` predicate.** Add `backoff` to `requirements.txt`. Wrap the handler body in
+   `try/except`:
+   - `FunctionalJobError` (invalid input / business rule) → **log and return OK** (no retry).
+   - any other (system / external API / transient) failure → let it propagate; the decorator
+     retries with backoff up to `max_tries=3`; on exhaustion `on_giveup` logs and the handler
+     returns OK to the broker (never requeue what cannot succeed).
+   ```py
+   @backoff.on_exception(
+       backoff.expo, Exception, max_tries=3,
+       on_giveup=_log_giveup, raise_on_giveup=False,
+   )
+   def my_job(namespace_id, payload, job_id):
+       try:
+           ...  # raise FunctionalJobError for bad input; let transient errors propagate
+           return {"status": "ok"}
+       except FunctionalJobError as e:
+           logger.warning(...); return {"status": "skipped", "reason": str(e)}
+   ```
+3. **Idempotent** — delivery is at-least-once; replaying the same `job_id` must cause no
+   duplicate side effects (e.g. use `job_id` as the document id and short-circuit if it
+   already exists).

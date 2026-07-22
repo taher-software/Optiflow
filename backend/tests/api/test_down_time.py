@@ -1,11 +1,10 @@
 """API tests for `POST /down-times` (report a downtime) and `POST /cloud_job`
 (the async worker entrypoint).
 
-Because `dispatch_job` runs `add_down_time` in-process, a successful
-`POST /down-times` synchronously writes the issue document and (best-effort)
-fires the push notification during the request — so these tests assert both the
-HTTP contract and the resulting `down_time/{namespace_id}/issues/{job_id}`
-subcollection document + notification targeting.
+`POST /down-times` only PUBLISHES the `add_down_time` job — it does not run it —
+so its tests assert the published message (via the `publish_spy`). The handler's
+effects (issue document + push notification) are exercised through the worker
+route `POST /cloud_job`, which looks the handler up in the registry and runs it.
 """
 
 import importlib
@@ -13,7 +12,7 @@ import importlib
 import pytest
 
 from src.app.gcp.firestore import FirestoreClient
-from src.app.globals.enum import DownTimeType, ProductionScope, Role
+from src.app.globals.enum import DownTimeType, JobType, ProductionScope, Role
 
 # The handler submodule (not the package re-export) is where `add_down_time`
 # resolves `send_push_notifications`, so that's where the spy must land.
@@ -26,6 +25,13 @@ NS = "ns-downtime"
 def _seed_namespace(seed_namespace):
     """The add_down_time handler now requires the namespace to exist."""
     seed_namespace(id=NS)
+
+
+@pytest.fixture(autouse=True)
+def _auto_publish(publish_spy):
+    """Activate the Pub/Sub publisher spy for every test: `POST /down-times`
+    publishes rather than running the handler, so real Pub/Sub is never hit."""
+    return publish_spy
 
 
 @pytest.fixture
@@ -56,13 +62,14 @@ def _agent(seed_user, **overrides):
 
 
 # --------------------------------------------------------------------------- #
-# Happy paths
+# Happy paths — the endpoint PUBLISHES the job (it does not run it in-process),
+# so we assert the published message, not a synchronous write.
 # --------------------------------------------------------------------------- #
 
 
 class TestCreateDownTime:
-    def test_plant_breakdown_returns_202_and_writes_pending_issue(
-        self, client, fake_db, seed_user, auth_headers, push_spy
+    def test_plant_breakdown_returns_202_and_publishes(
+        self, client, seed_user, auth_headers, publish_spy
     ):
         agent = _agent(seed_user)
         res = client.post(
@@ -77,19 +84,18 @@ class TestCreateDownTime:
         job_id = res.json()["data"]["job_id"]
         assert job_id
 
-        issue = _issue(fake_db, NS, job_id)
-        assert issue is not None
-        assert issue["status"] == "pending"
-        assert issue["process"] == "maintenance"  # break down -> maintenance
-        assert issue["down_time_scope"] == "plant"
-        assert issue["created_by"] == agent["id"]
-        assert issue["namespace_id"] == NS
-        assert issue["created_at"] and issue["updated_at"]
-        assert issue["uap_id"] is None
-        assert issue["workstation_id"] is None
+        assert len(publish_spy) == 1
+        call = publish_spy[0]
+        assert call["job_type"] == JobType.ADD_DOWN_TIME
+        assert call["namespace_id"] == NS
+        assert call["job_id"] == job_id
+        assert call["payload"]["created_by"] == agent["id"]
+        assert call["payload"]["production_scope"] == "plant"
+        assert call["payload"]["down_time_type"] == "break down"
+        assert call["payload"]["uap_id"] is None
 
-    def test_uap_scope_stores_uap_id(
-        self, client, fake_db, seed_user, seed_uap, auth_headers, push_spy
+    def test_uap_scope_publishes_uap_id(
+        self, client, seed_user, seed_uap, auth_headers, publish_spy
     ):
         agent = _agent(seed_user)
         uap = seed_uap(namespace_id=NS)
@@ -103,21 +109,18 @@ class TestCreateDownTime:
             },
         )
         assert res.status_code == 202, res.text
-        issue = _issue(fake_db, NS, res.json()["data"]["job_id"])
-        assert issue["down_time_scope"] == "uap"
-        assert issue["uap_id"] == uap["id"]
-        assert issue["process"] == "quality"
+        assert publish_spy[0]["payload"]["production_scope"] == "uap"
+        assert publish_spy[0]["payload"]["uap_id"] == uap["id"]
 
-    def test_workstation_scope_stores_full_chain(
+    def test_workstation_scope_publishes_full_chain(
         self,
         client,
-        fake_db,
         seed_user,
         seed_uap,
         seed_production_line,
         seed_workstation,
         auth_headers,
-        push_spy,
+        publish_spy,
     ):
         agent = _agent(seed_user)
         uap = seed_uap(namespace_id=NS)
@@ -135,13 +138,12 @@ class TestCreateDownTime:
             },
         )
         assert res.status_code == 202, res.text
-        issue = _issue(fake_db, NS, res.json()["data"]["job_id"])
-        assert issue["workstation_id"] == station["id"]
-        assert issue["production_line_id"] == line["id"]
-        assert issue["process"] == "logistic"  # material shortage -> logistic
+        payload = publish_spy[0]["payload"]
+        assert payload["workstation_id"] == station["id"]
+        assert payload["production_line_id"] == line["id"]
 
-    def test_setup_changeover_uses_department_as_process(
-        self, client, fake_db, seed_user, auth_headers, push_spy
+    def test_setup_changeover_publishes_department(
+        self, client, seed_user, auth_headers, publish_spy
     ):
         agent = _agent(seed_user)
         res = client.post(
@@ -154,9 +156,7 @@ class TestCreateDownTime:
             },
         )
         assert res.status_code == 202, res.text
-        issue = _issue(fake_db, NS, res.json()["data"]["job_id"])
-        assert issue["process"] == "maintenance"
-        assert issue["department"] == "maintenance"
+        assert publish_spy[0]["payload"]["department"] == "maintenance"
 
 
 # --------------------------------------------------------------------------- #
@@ -366,21 +366,37 @@ class TestCreateDownTimeAuthz:
 
 
 # --------------------------------------------------------------------------- #
-# Notification targeting
+# Notification targeting — driven through the worker route (which runs the
+# handler), since the create endpoint now only publishes.
 # --------------------------------------------------------------------------- #
+
+
+def _dispatch_breakdown(client, job_id="job-notif"):
+    return client.post(
+        "/cloud_job",
+        json={
+            "job_id": job_id,
+            "job_type": "add_down_time",
+            "namespace_id": NS,
+            "payload": {
+                "created_by": "opener",
+                "production_scope": "plant",
+                "down_time_type": DownTimeType.BREAKDOWN.value,
+            },
+        },
+    )
 
 
 class TestDownTimeNotifications:
     def test_notifies_only_online_process_agents_with_tokens(
-        self, client, seed_user, auth_headers, push_spy
+        self, client, seed_user, push_spy
     ):
-        agent = _agent(seed_user)
         # Target process for a break down is "maintenance".
-        online = seed_user(
+        seed_user(
             namespace_id=NS, role=Role.MAINTENANCE_AGENT.value,
             online=True, push_token="tok-online",
         )
-        default_online = seed_user(
+        seed_user(
             namespace_id=NS, role=Role.MAINTENANCE_AGENT.value,
             push_token="tok-default",  # no `online` field -> online by default
         )
@@ -401,37 +417,20 @@ class TestDownTimeNotifications:
             online=True, push_token="tok-supervisor",  # not an agent -> excluded
         )
 
-        res = client.post(
-            "/down-times",
-            headers=auth_headers(agent),
-            json={
-                "production_scope": "plant",
-                "down_time_type": DownTimeType.BREAKDOWN.value,
-            },
-        )
-        assert res.status_code == 202
+        res = _dispatch_breakdown(client)
+        assert res.status_code == 200
         assert len(push_spy) == 1
         assert set(push_spy[0]["tokens"]) == {"tok-online", "tok-default"}
         assert push_spy[0]["data"]["process"] == "maintenance"
 
-    def test_no_online_agents_still_succeeds(
-        self, client, seed_user, auth_headers, push_spy
-    ):
-        agent = _agent(seed_user)
+    def test_no_online_agents_still_succeeds(self, client, seed_user, push_spy):
         seed_user(
             namespace_id=NS, role=Role.MAINTENANCE_AGENT.value,
             online=False, push_token="tok",
         )
-        res = client.post(
-            "/down-times",
-            headers=auth_headers(agent),
-            json={
-                "production_scope": "plant",
-                "down_time_type": DownTimeType.BREAKDOWN.value,
-            },
-        )
-        assert res.status_code == 202
-        # No online maintenance agent -> push not sent, request still ok.
+        res = _dispatch_breakdown(client)
+        assert res.status_code == 200
+        # No online maintenance agent -> push not sent, job still acked.
         assert push_spy == []
 
 
@@ -461,6 +460,8 @@ class TestCloudJobWorker:
         )
         assert res.status_code == 200, res.text
         assert _issue(fake_db, NS, job_id) is not None
+        # The worker route surfaces the handler's own response.
+        assert res.json()["data"]["result"]["status"] == "created"
 
     def test_cloud_job_unknown_job_type_still_acks_200(self, client):
         res = client.post(

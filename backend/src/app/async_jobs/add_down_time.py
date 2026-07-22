@@ -15,6 +15,8 @@ import logging
 from datetime import datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+import backoff
+
 from src.app.core.firestore import NAMESPACE_COLLECTION, USERS_COLLECTION
 from src.app.core.push import send_push_notifications
 from src.app.gcp import get_firestore_client
@@ -99,25 +101,52 @@ def _notify_process_agents(firestore, namespace_id: str, process: Process, job_i
     )
 
 
-def add_down_time(namespace_id: str, payload: dict, job_id: str) -> None:
+def _on_giveup(details: dict) -> None:
+    """Log when a job exhausts its retries. `raise_on_giveup=False` means the
+    handler then returns normally, so the worker route still acks OK to the
+    broker (a job that keeps failing must not be requeued forever)."""
+    logger.error(
+        f"add_down_time: gave up after {details.get('tries')} attempt(s): "
+        f"{details.get('exception')}"
+    )
+
+
+@backoff.on_exception(
+    backoff.expo,
+    Exception,
+    max_tries=3,
+    on_giveup=_on_giveup,
+    raise_on_giveup=False,
+)
+def add_down_time(namespace_id: str, payload: dict, job_id: str) -> dict:
     """
     Declare a new downtime ticket and notify the responsible process agents.
 
-    Args:
-        namespace_id: Tenant (namespace/plant) the ticket belongs to.
-        payload: `{ created_by, production_scope, uap_id?, production_line_id?,
-            workstation_id?, down_time_type, department? }` — enum fields
-            arrive as their string values; optional ids/department are
-            `None`/absent when not applicable.
-        job_id: Idempotency key, used as the issue document id.
+    Retry model (per `.claude/skills/async`): the body is wrapped in
+    `try/except`. A `FunctionalJobError` (invalid input / business rule) is
+    logged and returns an OK result — it is NOT retried. Any other
+    (system/external/transient) failure propagates to the `backoff` decorator,
+    which retries up to 3 times; on exhaustion `_on_giveup` logs and the handler
+    returns (OK to the broker). The handler is idempotent (keyed on `job_id`).
 
-    Raises:
-        FunctionalJobError: input is invalid or a business rule isn't met
-            (e.g. missing department on a Setup/Changeover ticket). Not
-            retried by `dispatch_job`.
-        Exception: any other (system/transient) failure — retried by
-            `dispatch_job` per the async skill's contract.
+    Returns:
+        A small result dict (`{status, ...}`) describing the outcome, which the
+        worker route returns to the broker.
     """
+    try:
+        return _run_add_down_time(namespace_id, payload, job_id)
+    except FunctionalJobError as e:
+        logger.warning(
+            f"add_down_time: functional failure (job_id={job_id}): {e}. "
+            "Logged and acked — no retry."
+        )
+        return {"status": "skipped", "reason": str(e), "down_time_id": job_id}
+
+
+def _run_add_down_time(namespace_id: str, payload: dict, job_id: str) -> dict:
+    """The actual work. Raises `FunctionalJobError` for invalid input /
+    business-rule violations (caught and acked by `add_down_time`); lets any
+    system/transient error propagate to the retry decorator."""
     if not namespace_id:
         raise FunctionalJobError("add_down_time: 'namespace_id' is required.")
     if not job_id:
@@ -141,7 +170,7 @@ def add_down_time(namespace_id: str, payload: dict, job_id: str) -> None:
             f"add_down_time: issue '{job_id}' already exists in namespace "
             f"'{namespace_id}', skipping (idempotent replay)."
         )
-        return
+        return {"status": "skipped", "reason": "already processed", "down_time_id": job_id}
 
     try:
         down_time_type = DownTimeType(payload["down_time_type"])
@@ -193,3 +222,5 @@ def add_down_time(namespace_id: str, payload: dict, job_id: str) -> None:
     )
 
     _notify_process_agents(firestore, namespace_id, process, job_id)
+
+    return {"status": "created", "down_time_id": job_id}

@@ -16,14 +16,13 @@ router = APIRouter(tags=["workers"])
     summary="Async worker entrypoint (Cloud Tasks / Pub/Sub push)",
     description=(
         "Receives the push delivery for an async job (`job_type`, "
-        "`namespace_id`, optional `payload`/`job_id`) and dispatches it via "
-        "`dispatch_job`. **Unauthenticated by our bearer scheme** — this "
-        "route is reached only through Cloud Tasks / Pub/Sub push "
-        "subscriptions, which are authenticated at the infra layer via OIDC, "
-        "not via our application's bearer token. Always responds `200` "
-        "(retry/give-up is owned by `dispatch_job`, not by HTTP status: a "
-        "non-2xx here would make Cloud Tasks redeliver the message "
-        "indefinitely)."
+        "`namespace_id`, optional `payload`/`job_id`), looks the handler up in "
+        "the job registry and calls it. **Unauthenticated by our bearer "
+        "scheme** — this route is reached only through Cloud Tasks / Pub/Sub "
+        "push subscriptions, authenticated at the infra layer via OIDC, not by "
+        "our application's bearer token. Always responds `200` (retry is owned "
+        "by the handler's own `backoff` decorator, not by HTTP status: a "
+        "non-2xx here would make the transport redeliver indefinitely)."
     ),
 )
 async def cloud_job(payload: CloudJobIn) -> ApiResponse[CloudJobAckOut]:
