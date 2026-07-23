@@ -8,3 +8,4 @@ resend>=2.4
 bcrypt>=4.1
 itsdangerous>=2.2
 backoff
+requests>=2.32

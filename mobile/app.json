@@ -9,14 +9,31 @@
     "splash": {
       "backgroundColor": "#020617"
     },
-    "assetBundlePatterns": ["**/*"],
+    "assetBundlePatterns": [
+      "**/*"
+    ],
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.ttaherhagui.optiflow"
     },
-    "android": {},
+    "android": {
+      "package": "com.ttaherhagui.optiflow"
+    },
     "web": {
       "bundler": "metro"
     },
-    "plugins": ["expo-asset", "expo-localization", "expo-notifications"]
+    "plugins": [
+      "expo-asset",
+      "expo-localization",
+      [
+        "expo-notifications",
+        {
+          "sounds": [
+            "./assets/sounds/urgent.wav",
+            "./assets/sounds/standard.wav"
+          ]
+        }
+      ]
+    ]
   }
 }
