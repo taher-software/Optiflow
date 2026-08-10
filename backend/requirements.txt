@@ -9,3 +9,5 @@ bcrypt>=4.1
 itsdangerous>=2.2
 backoff
 requests>=2.32
+timezonefinder>=8.2
+geonamescache>=3.0

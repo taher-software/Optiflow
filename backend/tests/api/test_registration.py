@@ -83,3 +83,27 @@ class TestRegistrationLanguage:
         # Country is non-French-list, so language must still be "en" — the
         # attempted client-supplied "fr" must NOT have been persisted.
         assert _namespace(fake_db, namespace_id)["language"] == "en"
+
+
+class TestRegistrationTimezone:
+    """The registration router resolves the namespace `timezone` field
+    server-side from `company.country` + `company.city` (see
+    `src.app.core.geo_timezone.timezone_for_location`, called off the event
+    loop via `run_in_threadpool`) and passes it into `create_account`."""
+
+    def test_resolvable_country_and_city_persists_real_timezone(self, client, fake_db):
+        res = client.post(
+            REGISTER_URL, json=_payload(country="Tunisia", city="Tunis")
+        )
+        assert res.status_code == 201, res.text
+        namespace_id = res.json()["data"]["namespace_id"]
+        assert _namespace(fake_db, namespace_id)["timezone"] == "Africa/Tunis"
+
+    def test_unresolvable_country_persists_none(self, client, fake_db):
+        res = client.post(
+            REGISTER_URL,
+            json=_payload(country="Nowhereistan", city="Nowhereville"),
+        )
+        assert res.status_code == 201, res.text
+        namespace_id = res.json()["data"]["namespace_id"]
+        assert _namespace(fake_db, namespace_id)["timezone"] is None

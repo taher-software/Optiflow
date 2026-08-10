@@ -71,23 +71,26 @@ _FRENCH_DEFAULT_COUNTRY_NAMES: tuple[str, ...] = (
 )
 
 
-def _fold(value: str) -> str:
-    """Normalize a free-text country name for lookup/comparison.
+def fold_name(value: str) -> str:
+    """Normalize a free-text name for lookup/comparison.
 
     Strips surrounding whitespace, lowercases, and folds accents/diacritics
     (NFKD-decompose then drop combining marks) so "Algérie" and "Algerie"
     — or "Côte d'Ivoire" and "cote d'ivoire" — compare equal. Used to build
     `FRENCH_DEFAULT_COUNTRIES` and to normalize lookups in
-    `resolve_default_language`, so the two can never disagree.
+    `resolve_default_language`, so the two can never disagree. Also reused by
+    `src.app.core.geo_timezone` to fold country names before matching them
+    against `geonamescache`'s ISO2 index (the registration form is
+    French-localized, so `country` may be given in French).
     """
     decomposed = unicodedata.normalize("NFKD", value.strip().lower())
     return "".join(char for char in decomposed if not unicodedata.combining(char))
 
 
 # Normalized (accent-folded, lowercased) lookup set derived from
-# `_FRENCH_DEFAULT_COUNTRY_NAMES` via `_fold`.
+# `_FRENCH_DEFAULT_COUNTRY_NAMES` via `fold_name`.
 FRENCH_DEFAULT_COUNTRIES: frozenset[str] = frozenset(
-    _fold(name) for name in _FRENCH_DEFAULT_COUNTRY_NAMES
+    fold_name(name) for name in _FRENCH_DEFAULT_COUNTRY_NAMES
 )
 
 
@@ -95,12 +98,12 @@ def resolve_default_language(country: str | None) -> Language:
     """Resolve the default namespace language from a free-text `country` field.
 
     Returns `Language.FR` when the country — accent-folded, stripped, and
-    lowercased via `_fold` — is one of `FRENCH_DEFAULT_COUNTRIES`, otherwise
+    lowercased via `fold_name` — is one of `FRENCH_DEFAULT_COUNTRIES`, otherwise
     `Language.EN`. Blank/None -> `Language.EN`.
     """
     if not country:
         return Language.EN
-    if _fold(country) in FRENCH_DEFAULT_COUNTRIES:
+    if fold_name(country) in FRENCH_DEFAULT_COUNTRIES:
         return Language.FR
     return Language.EN
 

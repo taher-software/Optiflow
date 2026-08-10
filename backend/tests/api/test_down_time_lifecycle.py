@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from src.app.gcp.firestore import FirestoreClient
-from src.app.globals.enum import DownTimeType, ProductionScope, Role
+from src.app.globals.enum import DownTimeType, JobType, ProductionScope, Role
 
 NS = "ns-lifecycle"
 
@@ -488,3 +488,306 @@ class TestCloseOnlyLifecycle:
         )
         assert res.status_code == 202, res.text
         assert publish_spy[0]["payload"]["down_time_type"] == "others"
+
+
+# --------------------------------------------------------------------------- #
+# reject-resolution: resolved -> ongoing, and the NOTIFY_DOWN_TIME_UPDATE
+# job published (best-effort) on every lifecycle transition.
+# --------------------------------------------------------------------------- #
+
+
+class TestRejectResolution:
+    def test_happy_path(
+        self, client, fake_db, seed_user, seed_issue, auth_headers, publish_spy
+    ):
+        pa = seed_user(namespace_id=NS, role=Role.PRODUCTION_AGENT.value)
+        seed_issue(
+            "m1",
+            process="maintenance",
+            status="resolved",
+            acknowledged_at=_iso(30),
+            acknowledged_by="ma-1",
+            resolved_at=_iso(5),
+            resolved_by="ma-1",
+        )
+        res = client.post(
+            "/down-times/m1/reject-resolution", headers=auth_headers(pa)
+        )
+        assert res.status_code == 200, res.text
+        data = res.json()["data"]
+        assert data["status"] == "ongoing"
+        assert data["resolved_at"] is None
+        assert data["resolved_by"] is None
+        assert data["rejected_at"] is not None
+        assert data["rejected_by"] == pa["id"]
+        assert data["rejection_count"] == 1
+        # acknowledge-SLA fields must survive a rejection untouched.
+        assert data["acknowledged_at"] is not None
+        assert data["acknowledged_by"] == "ma-1"
+
+        stored = _read(fake_db, "m1")
+        assert stored["status"] == "ongoing"
+        assert stored["resolved_at"] is None
+        assert stored["resolved_by"] is None
+        assert stored["rejected_by"] == pa["id"]
+        assert stored["rejection_count"] == 1
+        assert stored["acknowledged_by"] == "ma-1"
+
+        # Best-effort notification published with the exact BOM payload.
+        assert len(publish_spy) == 1
+        call = publish_spy[0]
+        assert call["job_type"] == JobType.NOTIFY_DOWN_TIME_UPDATE
+        assert call["namespace_id"] == NS
+        assert call["payload"] == {
+            "down_time_id": "m1",
+            "event": "rejected",
+            "actor_id": pa["id"],
+            "rejected_resolver_id": "ma-1",
+        }
+
+    def test_non_production_agent_forbidden(
+        self, client, seed_user, seed_issue, auth_headers
+    ):
+        ma = seed_user(namespace_id=NS, role=Role.MAINTENANCE_AGENT.value)
+        seed_issue("m1", process="maintenance", status="resolved")
+        res = client.post(
+            "/down-times/m1/reject-resolution", headers=auth_headers(ma)
+        )
+        assert res.status_code == 403
+
+    def test_not_resolved_conflict(
+        self, client, seed_user, seed_issue, auth_headers
+    ):
+        pa = seed_user(namespace_id=NS, role=Role.PRODUCTION_AGENT.value)
+        seed_issue("m1", process="maintenance", status="ongoing")
+        res = client.post(
+            "/down-times/m1/reject-resolution", headers=auth_headers(pa)
+        )
+        assert res.status_code == 409
+        assert res.json()["detail"] == "Ticket is not resolved."
+
+    @pytest.mark.parametrize("down_time_type", [
+        DownTimeType.OTHERS.value, DownTimeType.WIP_SHORTAGE.value,
+    ])
+    def test_close_only_type_forbidden(
+        self, client, seed_user, seed_issue, auth_headers, down_time_type
+    ):
+        pa = seed_user(namespace_id=NS, role=Role.PRODUCTION_AGENT.value)
+        # Even if somehow sitting in `resolved` (shouldn't normally happen
+        # for a close-only type), the type check must win and report the
+        # accurate reason rather than a misleading 409.
+        seed_issue(
+            "c1",
+            down_time_type=down_time_type,
+            process="production",
+            status="resolved",
+        )
+        res = client.post(
+            "/down-times/c1/reject-resolution", headers=auth_headers(pa)
+        )
+        assert res.status_code == 403
+        assert (
+            res.json()["detail"]
+            == "This downtime type has no resolution step to reject."
+        )
+
+    def test_can_reject_flag(self, client, seed_user, seed_issue, auth_headers):
+        pa = seed_user(namespace_id=NS, role=Role.PRODUCTION_AGENT.value)
+        seed_issue("m1", process="maintenance", status="resolved")
+        resolved_view = client.get(
+            "/down-times/m1", headers=auth_headers(pa)
+        ).json()["data"]
+        assert resolved_view["can_reject"] is True
+
+        seed_issue("m2", process="maintenance", status="ongoing")
+        ongoing_view = client.get(
+            "/down-times/m2", headers=auth_headers(pa)
+        ).json()["data"]
+        assert ongoing_view["can_reject"] is False
+
+    def test_second_rejection_increments_counter(
+        self, client, seed_user, seed_issue, auth_headers
+    ):
+        pa = seed_user(namespace_id=NS, role=Role.PRODUCTION_AGENT.value)
+        seed_issue(
+            "m1", process="maintenance", status="resolved", rejection_count=1
+        )
+        res = client.post(
+            "/down-times/m1/reject-resolution", headers=auth_headers(pa)
+        )
+        assert res.status_code == 200, res.text
+        assert res.json()["data"]["rejection_count"] == 2
+
+    def test_reresolved_after_rejection_produces_sane_durations(
+        self, client, fake_db, seed_user, seed_issue, auth_headers
+    ):
+        """After rejection the ticket is `ongoing` with `resolved_at = None`.
+        `time_in_status_seconds` must measure from `rejected_at` (the ticket
+        just re-entered `ongoing`), not from the original `acknowledged_at` —
+        otherwise the ~20 minutes it spent sitting in `resolved` would be
+        double-counted as ongoing time. Once resolved again, the
+        resolved-duration is measured against the original `acknowledged_at`
+        (see `_resolved_duration` — deliberately not rejection-aware, it
+        spans the whole response cycle)."""
+        ma = seed_user(namespace_id=NS, role=Role.MAINTENANCE_AGENT.value)
+        pa = seed_user(namespace_id=NS, role=Role.PRODUCTION_AGENT.value)
+        seed_issue(
+            "m1",
+            process="maintenance",
+            status="resolved",
+            acknowledged_at=_iso(30),
+            resolved_at=_iso(10),
+        )
+        reject = client.post(
+            "/down-times/m1/reject-resolution", headers=auth_headers(pa)
+        )
+        assert reject.status_code == 200
+        ongoing_view = reject.json()["data"]
+        assert ongoing_view["status"] == "ongoing"
+        assert ongoing_view["resolved_at"] is None
+        # Fresh re-entry via rejected_at, so time_in_status_seconds resets
+        # near 0 rather than reporting the ~30 min since acknowledged_at.
+        assert ongoing_view["time_in_status_seconds"] == pytest.approx(0, abs=5)
+
+        resolve_again = client.post(
+            "/down-times/m1/resolve", headers=auth_headers(ma)
+        )
+        assert resolve_again.status_code == 200
+        resolved_view = resolve_again.json()["data"]
+        assert resolved_view["status"] == "resolved"
+        # Fresh resolved_at, so time_in_status_seconds resets near 0.
+        assert resolved_view["time_in_status_seconds"] == pytest.approx(0, abs=5)
+
+        summary = client.get("/down-times/summary", headers=auth_headers(pa))
+        assert summary.status_code == 200
+        resolved_summary = summary.json()["data"]["resolved"]
+        assert resolved_summary["count"] == 1
+        assert resolved_summary["average_seconds"] is not None
+        # resolved_at - acknowledged_at, i.e. the whole response cycle
+        # (~30 min), unaffected by the rejection's resolved-then-rejected
+        # excursion in the middle.
+        assert resolved_summary["average_seconds"] == pytest.approx(1800, abs=5)
+
+    def test_time_in_status_measures_from_rejected_at_not_acknowledged_at(
+        self, client, seed_user, seed_issue, auth_headers
+    ):
+        """W2 regression: a ticket acknowledged long ago, resolved, then
+        rejected recently must report time-in-ongoing since the rejection,
+        not since the original acknowledge."""
+        pa = seed_user(namespace_id=NS, role=Role.PRODUCTION_AGENT.value)
+        # Acknowledged ~54h ago (Monday 08:00 in the report's terms),
+        # rejected ~5 minutes ago — the true "time in ongoing" is ~5 min.
+        seed_issue(
+            "m1",
+            process="maintenance",
+            status="ongoing",
+            acknowledged_at=_iso(54 * 60),
+            resolved_at=_iso(53 * 60),
+            rejected_at=_iso(5),
+            rejected_by="pa-1",
+            rejection_count=1,
+        )
+        res = client.get("/down-times/m1", headers=auth_headers(pa))
+        assert res.status_code == 200
+        data = res.json()["data"]
+        assert data["time_in_status_seconds"] == pytest.approx(300, abs=5)
+
+    def test_ongoing_summary_average_excludes_time_spent_resolved(
+        self, client, seed_user, seed_issue, auth_headers
+    ):
+        """W2 regression, summary side: the `ongoing` bucket's average must
+        also use the rejection-aware entry timestamp, not `acknowledged_at`
+        unconditionally — otherwise the plant-level ongoing average is
+        skewed by every rejection."""
+        pa = seed_user(namespace_id=NS, role=Role.PRODUCTION_AGENT.value)
+        seed_issue(
+            "m1",
+            process="maintenance",
+            status="ongoing",
+            acknowledged_at=_iso(54 * 60),
+            resolved_at=_iso(53 * 60),
+            rejected_at=_iso(5),
+            rejected_by="pa-1",
+            rejection_count=1,
+        )
+        res = client.get("/down-times/summary", headers=auth_headers(pa))
+        assert res.status_code == 200
+        ongoing = res.json()["data"]["ongoing"]
+        assert ongoing["count"] == 1
+        assert ongoing["average_seconds"] == pytest.approx(300, abs=5)
+
+    def test_legacy_ongoing_ticket_without_rejected_at_uses_acknowledged_at(
+        self, client, seed_user, seed_issue, auth_headers
+    ):
+        """A ticket that has never been rejected (no `rejected_at` field —
+        every ticket before this feature, and every never-rejected one after
+        it) must still measure time-in-ongoing from `acknowledged_at`."""
+        pa = seed_user(namespace_id=NS, role=Role.PRODUCTION_AGENT.value)
+        seed_issue(
+            "m1", process="maintenance", status="ongoing", acknowledged_at=_iso(10)
+        )
+        res = client.get("/down-times/m1", headers=auth_headers(pa))
+        assert res.status_code == 200
+        assert res.json()["data"]["time_in_status_seconds"] == pytest.approx(
+            600, abs=5
+        )
+
+
+class TestLifecycleNotificationPublish:
+    def test_acknowledge_publishes_notification(
+        self, client, seed_user, seed_issue, auth_headers, publish_spy
+    ):
+        ma = seed_user(namespace_id=NS, role=Role.MAINTENANCE_AGENT.value)
+        seed_issue("m1", process="maintenance", status="pending")
+        res = client.post("/down-times/m1/acknowledge", headers=auth_headers(ma))
+        assert res.status_code == 200
+        assert len(publish_spy) == 1
+        call = publish_spy[0]
+        assert call["job_type"] == JobType.NOTIFY_DOWN_TIME_UPDATE
+        assert call["namespace_id"] == NS
+        assert call["payload"] == {
+            "down_time_id": "m1",
+            "event": "acknowledged",
+            "actor_id": ma["id"],
+            "rejected_resolver_id": None,
+        }
+
+    def test_resolve_publishes_notification(
+        self, client, seed_user, seed_issue, auth_headers, publish_spy
+    ):
+        ma = seed_user(namespace_id=NS, role=Role.MAINTENANCE_AGENT.value)
+        seed_issue("m1", process="maintenance", status="ongoing")
+        res = client.post("/down-times/m1/resolve", headers=auth_headers(ma))
+        assert res.status_code == 200
+        assert len(publish_spy) == 1
+        call = publish_spy[0]
+        assert call["job_type"] == JobType.NOTIFY_DOWN_TIME_UPDATE
+        assert call["namespace_id"] == NS
+        assert call["payload"] == {
+            "down_time_id": "m1",
+            "event": "resolved",
+            "actor_id": ma["id"],
+            "rejected_resolver_id": None,
+        }
+
+    def test_publish_failure_does_not_fail_the_transition(
+        self, client, seed_user, seed_issue, auth_headers, fake_db, monkeypatch
+    ):
+        """A Pub/Sub outage must not turn an otherwise-successful transition
+        into a 500 — the Firestore write is already committed."""
+        import src.app.routers.down_time.services as down_time_services_module
+
+        class _BoomPublisher:
+            def publish_job(self, *args, **kwargs):
+                raise RuntimeError("pubsub is down")
+
+        monkeypatch.setattr(
+            down_time_services_module,
+            "get_pubsub_publisher",
+            lambda: _BoomPublisher(),
+        )
+        ma = seed_user(namespace_id=NS, role=Role.MAINTENANCE_AGENT.value)
+        seed_issue("m1", process="maintenance", status="pending")
+        res = client.post("/down-times/m1/acknowledge", headers=auth_headers(ma))
+        assert res.status_code == 200, res.text
+        assert res.json()["data"]["status"] == "ongoing"

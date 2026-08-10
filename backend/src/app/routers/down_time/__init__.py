@@ -240,6 +240,45 @@ async def resolve_down_time(
 
 
 @router.post(
+    "/{issue_id}/reject-resolution",
+    response_model=ApiResponse[DownTimeOut],
+    summary="Reject a downtime ticket's resolution",
+    description=(
+        "Sends a resolved downtime ticket's resolution back, moving it "
+        "`resolved` -> `ongoing` when production finds the fix didn't "
+        "actually restore production. Restricted to production agents. "
+        "Retracts the resolution (`resolved_at`/`resolved_by` cleared) and "
+        "records the rejection (`rejected_at`/`rejected_by`, "
+        "`rejection_count` incremented); `acknowledged_at`/`acknowledged_by` "
+        "are left untouched since the ticket stays within the same response "
+        "cycle. The ticket must go through `POST /{issue_id}/resolve` again "
+        "before it can be closed. Returns the updated ticket, re-serialized "
+        "so the caller's permission flags reflect the new status. Rejected "
+        "with 403 when the ticket's `down_time_type` is close-only (e.g. "
+        "WIP shortage / 'others') — those tickets never pass through "
+        "`resolved`, so this is belt-and-braces."
+    ),
+    responses={
+        403: {
+            "description": (
+                "Caller is not a production agent, or the ticket's "
+                "`down_time_type` is close-only and has no resolution step "
+                "to reject."
+            )
+        },
+        404: {"description": "No such ticket in the caller's namespace."},
+        409: {"description": "Ticket is not currently `resolved`."},
+    },
+)
+async def reject_resolution(
+    issue_id: str,
+    current: dict = Depends(get_current_user),
+) -> ApiResponse[DownTimeOut]:
+    result = services.reject_resolution(issue_id, current)
+    return ApiResponse(message="Downtime ticket resolution rejected.", data=result)
+
+
+@router.post(
     "/{issue_id}/close",
     response_model=ApiResponse[DownTimeOut],
     summary="Close a downtime ticket",

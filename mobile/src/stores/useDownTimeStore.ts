@@ -36,6 +36,7 @@ interface DownTimeState {
   acknowledge: (id: string) => Promise<ApiResult<DownTime>>;
   resolve: (id: string) => Promise<ApiResult<DownTime>>;
   close: (id: string) => Promise<ApiResult<DownTime>>;
+  reject: (id: string) => Promise<ApiResult<DownTime>>;
   remove: (id: string) => Promise<ApiResult<DownTime>>;
 }
 
@@ -115,5 +116,7 @@ export const useDownTimeStore = create<DownTimeState>((set, get) => ({
     apiRequest<DownTime>(`/down-times/${id}/acknowledge`, "POST"),
   resolve: (id) => apiRequest<DownTime>(`/down-times/${id}/resolve`, "POST"),
   close: (id) => apiRequest<DownTime>(`/down-times/${id}/close`, "POST"),
+  reject: (id) =>
+    apiRequest<DownTime>(`/down-times/${id}/reject-resolution`, "POST"),
   remove: (id) => apiRequest<DownTime>(`/down-times/${id}`, "DELETE"),
 }));

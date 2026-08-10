@@ -148,3 +148,111 @@ def supervisor_notification(language: Language, location: str) -> tuple[str, str
         title_template.format(location=location),
         body_template.format(location=location),
     )
+
+
+# --- Downtime-ticket lifecycle-transition templates, keyed by (language,
+# event). Used by the `notify_down_time_update` async job. ---
+_LIFECYCLE_TEMPLATES: dict[Language, dict[str, tuple[str, str]]] = {
+    Language.EN: {
+        "acknowledged": (
+            "Ticket acknowledged",
+            "Your downtime ticket at {location} has been acknowledged and is "
+            "being worked on.",
+        ),
+        "resolved": (
+            "Ticket resolved",
+            "Your downtime ticket at {location} has been resolved. Please "
+            "check that production is back to normal, then close the ticket.",
+        ),
+        "rejected_resolver": (
+            "Resolution rejected",
+            "Production rejected your resolution of the downtime at "
+            "{location}. The ticket is back in progress — please take "
+            "another look.",
+        ),
+        "rejected_agents": (
+            "Downtime still unresolved",
+            "The downtime at {location} is still awaiting resolution — it "
+            "has been open for {duration}.",
+        ),
+        "rejected_agents_generic": (
+            "Downtime still unresolved",
+            "The downtime at {location} is still awaiting resolution.",
+        ),
+    },
+    Language.FR: {
+        "acknowledged": (
+            "Ticket pris en charge",
+            "Votre arrêt déclaré à {location} a été pris en charge et est en "
+            "cours de traitement.",
+        ),
+        "resolved": (
+            "Ticket résolu",
+            "Votre arrêt déclaré à {location} a été résolu. Merci de vérifier "
+            "que la production est revenue à la normale, puis de clôturer le "
+            "ticket.",
+        ),
+        "rejected_resolver": (
+            "Résolution rejetée",
+            "La production a rejeté votre résolution de l'arrêt à {location}. "
+            "Le ticket est de nouveau en cours — merci de le réexaminer.",
+        ),
+        "rejected_agents": (
+            "Arrêt toujours non résolu",
+            "L'arrêt à {location} est toujours en attente de résolution — il "
+            "est ouvert depuis {duration}.",
+        ),
+        "rejected_agents_generic": (
+            "Arrêt toujours non résolu",
+            "L'arrêt à {location} est toujours en attente de résolution.",
+        ),
+    },
+}
+
+
+def lifecycle_notification(
+    event: str, language: Language, location: str, **kwargs
+) -> tuple[str, str]:
+    """Build the (title, body) push copy for a downtime-ticket lifecycle
+    transition, localized to `language`. Unknown languages fall back to
+    English, exactly like `agent_notification`/`supervisor_notification`.
+
+    `event` selects the template variant: `"acknowledged"`, `"resolved"`,
+    `"rejected_resolver"` (the responder whose resolution was rejected), or
+    `"rejected_agents"` / `"rejected_agents_generic"` (every online process
+    agent, with or without a `duration` string — see `format_duration`).
+    Extra `**kwargs` (e.g. `duration=...`) are interpolated into the body
+    template; unused keys are simply ignored by `str.format`.
+    """
+    lang = language if language in _LIFECYCLE_TEMPLATES else Language.EN
+    title_template, body_template = _LIFECYCLE_TEMPLATES[lang][event]
+    return (
+        title_template.format(location=location, **kwargs),
+        body_template.format(location=location, **kwargs),
+    )
+
+
+# --- Bilingual elapsed-duration formatter (pure, no I/O). ---
+def format_duration(seconds: float, language: Language) -> str:
+    """Render an elapsed duration in seconds as a short bilingual string:
+    `"45m"` / `"2h 15m"` / `"3d 4h"` (EN) or `"45 min"` / `"2 h 15 min"` /
+    `"3 j 4 h"` (FR). Negative/garbage input is clamped to 0. Pure — no I/O,
+    never raises."""
+    lang = language if language in (Language.EN, Language.FR) else Language.EN
+    total_seconds = max(0, int(seconds))
+    days, remainder = divmod(total_seconds, 86400)
+    hours, remainder = divmod(remainder, 3600)
+    minutes, _ = divmod(remainder, 60)
+
+    if lang == Language.FR:
+        if days:
+            return f"{days} j {hours} h"
+        if hours:
+            return f"{hours} h {minutes} min"
+        return f"{minutes} min"
+
+    if days:
+        return f"{days}d {hours}h"
+    if hours:
+        return f"{hours}h {minutes}m"
+    return f"{minutes}m"

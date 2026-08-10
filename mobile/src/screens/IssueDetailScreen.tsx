@@ -40,6 +40,7 @@ export function IssueDetailScreen({ route, navigation }: Props) {
   const acknowledge = useDownTimeStore((s) => s.acknowledge);
   const resolve = useDownTimeStore((s) => s.resolve);
   const close = useDownTimeStore((s) => s.close);
+  const reject = useDownTimeStore((s) => s.reject);
   const remove = useDownTimeStore((s) => s.remove);
   const showToast = useToastStore((s) => s.show);
   const uaps = useResourcesStore((s) => s.uaps);
@@ -79,6 +80,21 @@ export function IssueDetailScreen({ route, navigation }: Props) {
     } else {
       showToast(res.status === 0 ? t("errors.network") : t("errors.generic"));
     }
+  };
+
+  const onReject = () => {
+    Alert.alert(
+      t("downtime.detail.rejectTitle"),
+      t("downtime.detail.rejectConfirm"),
+      [
+        { text: t("downtime.detail.cancel"), style: "cancel" },
+        {
+          text: t("downtime.detail.reject"),
+          style: "destructive",
+          onPress: () => void runAction(reject),
+        },
+      ],
+    );
   };
 
   const onDelete = () => {
@@ -216,6 +232,26 @@ export function IssueDetailScreen({ route, navigation }: Props) {
             />
           </>
         )}
+        {/* A rejection clears resolved_at, so these rows are the only trace
+            that production sent a resolution back. */}
+        {issue.rejected_at && (
+          <>
+            <Row
+              label={t("downtime.detail.rejectedAt")}
+              value={humanTime(issue.rejected_at)}
+            />
+            <Row
+              label={t("downtime.detail.rejectedBy")}
+              value={issue.rejected_by_name ?? "—"}
+            />
+            {issue.rejection_count > 1 && (
+              <Row
+                label={t("downtime.detail.rejectionCount")}
+                value={String(issue.rejection_count)}
+              />
+            )}
+          </>
+        )}
         {issue.status === "closed" && (
           <>
             <Row
@@ -252,6 +288,19 @@ export function IssueDetailScreen({ route, navigation }: Props) {
             onPress={() => void runAction(close)}
             busy={busy}
           />
+        )}
+        {issue.can_reject && (
+          <Pressable
+            onPress={onReject}
+            disabled={busy}
+            accessibilityRole="button"
+            accessibilityLabel={t("downtime.detail.reject")}
+            className="h-13 flex-row items-center justify-center rounded-2xl border border-amber-500/50 py-3"
+          >
+            <Text className="text-base font-semibold text-amber-400">
+              {t("downtime.detail.reject")}
+            </Text>
+          </Pressable>
         )}
         {issue.can_delete && (
           <Pressable

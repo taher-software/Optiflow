@@ -75,6 +75,13 @@ const fr = {
         closedBy: "Clôturé par",
         acknowledge: "Prendre en charge",
         resolve: "Marquer comme résolu",
+        reject: "Rejeter la résolution",
+        rejectTitle: "Rejeter cette résolution ?",
+        rejectConfirm:
+          "Le ticket repart chez les intervenants comme non résolu.",
+        rejectedAt: "Résolution rejetée le",
+        rejectedBy: "Rejetée par",
+        rejectionCount: "Rejets",
         close: "Marquer comme clôturé",
         delete: "Supprimer",
         cancel: "Annuler",

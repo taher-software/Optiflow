@@ -17,20 +17,14 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import backoff
 
 from src.app.core.email import send_down_time_supervisor_email
-from src.app.core.firestore import (
-    NAMESPACE_COLLECTION,
-    PRODUCTION_LINE_COLLECTION,
-    UAP_COLLECTION,
-    USERS_COLLECTION,
-    WORKSTATION_COLLECTION,
-)
+from src.app.core.firestore import NAMESPACE_COLLECTION, USERS_COLLECTION
 from src.app.core.notifications import agent_notification, supervisor_notification
 from src.app.core.push import send_push_notifications
+from src.app.core.timezone import namespace_timezone
 from src.app.gcp import get_firestore_client
 from src.app.globals.enum import (
     DOWNTIME_TYPE_PROCESS,
@@ -38,37 +32,20 @@ from src.app.globals.enum import (
     DownTimeType,
     Language,
     Process,
-    ProductionScope,
     Role,
     language_of,
 )
 
+from ._common import DOWN_TIME_COLLECTION, ISSUES_SUBCOLLECTION, resolve_location
 from .exceptions import FunctionalJobError
 
 logger = logging.getLogger(__name__)
-
-DOWN_TIME_COLLECTION = "down_time"
-ISSUES_SUBCOLLECTION = "issues"
 
 _REQUIRED_FIELDS = (
     "created_by",
     "production_scope",
     "down_time_type",
 )
-
-
-def _resolve_timezone(namespace_id: str, namespace: dict | None) -> ZoneInfo:
-    """Resolve the namespace's IANA timezone, defaulting to UTC when missing,
-    blank, or unknown."""
-    tz_name = (namespace or {}).get("timezone") or "UTC"
-    try:
-        return ZoneInfo(tz_name)
-    except ZoneInfoNotFoundError:
-        logger.warning(
-            f"add_down_time: unknown timezone '{tz_name}' for namespace "
-            f"'{namespace_id}', defaulting to UTC."
-        )
-        return ZoneInfo("UTC")
 
 
 def _resolve_process(down_time_type: DownTimeType, department: str | None) -> Process:
@@ -87,53 +64,6 @@ def _resolve_process(down_time_type: DownTimeType, department: str | None) -> Pr
             ) from e
 
     return DOWNTIME_TYPE_PROCESS[down_time_type]
-
-
-_FALLBACK_LOCATION = {Language.EN: "the plant", Language.FR: "l'usine"}
-
-
-def _resolve_location(
-    firestore, namespace_id: str, namespace: dict | None, payload: dict, language: Language
-) -> str:
-    """Best-effort human-readable location label for a downtime ticket, from
-    its production scope. Reads the relevant Firestore document's `name`
-    field. Never raises — falls back to the namespace `company_name`, then to
-    a generic "the plant" / "l'usine" label, so a missing/renamed document
-    never blocks ticket creation."""
-    try:
-        scope = payload.get("production_scope")
-        doc = None
-        if scope == ProductionScope.WORK_STATION.value and payload.get("workstation_id"):
-            doc = firestore.get_document(WORKSTATION_COLLECTION, payload["workstation_id"])
-        elif scope == ProductionScope.PRODUCTION_LINE.value and payload.get(
-            "production_line_id"
-        ):
-            doc = firestore.get_document(
-                PRODUCTION_LINE_COLLECTION, payload["production_line_id"]
-            )
-        elif scope == ProductionScope.UAP.value and payload.get("uap_id"):
-            doc = firestore.get_document(UAP_COLLECTION, payload["uap_id"])
-
-        # Same forged/stale-message threat as the namespace-existence guard
-        # above: the worker route is unauthenticated at the app layer, so a
-        # job message could pair an attacker's `namespace_id` with a victim
-        # tenant's document id. Never surface another tenant's document name.
-        if doc and doc.get("namespace_id") != namespace_id:
-            doc = None
-
-        name = (doc or {}).get("name") if doc else None
-        if name:
-            return name
-    except Exception as e:  # never let a location lookup fail the job
-        logger.warning(
-            f"add_down_time: failed to resolve location for issue "
-            f"(namespace='{namespace_id}'): {e}"
-        )
-
-    company_name = (namespace or {}).get("company_name")
-    if company_name:
-        return company_name
-    return _FALLBACK_LOCATION[language]
 
 
 def _notify_process_agents(
@@ -303,7 +233,7 @@ def _run_add_down_time(namespace_id: str, payload: dict, job_id: str) -> dict:
             "a downtime for an unknown tenant."
         )
 
-    tz = _resolve_timezone(namespace_id, namespace)
+    tz = namespace_timezone(namespace_id, namespace)
     now_iso = datetime.now(tz).isoformat()
 
     is_setup_changeover = down_time_type == DownTimeType.SETUP_CHANGEOVER
@@ -341,7 +271,7 @@ def _run_add_down_time(namespace_id: str, payload: dict, job_id: str) -> dict:
     # and let ticket creation stand.
     try:
         language = language_of(namespace)
-        location = _resolve_location(firestore, namespace_id, namespace, payload, language)
+        location = resolve_location(firestore, namespace_id, namespace, payload, language)
 
         _notify_process_agents(
             firestore, namespace_id, down_time_type, process, language, location, job_id

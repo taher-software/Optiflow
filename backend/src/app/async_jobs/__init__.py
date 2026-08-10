@@ -14,12 +14,14 @@ from typing import Callable, Optional
 from src.app.globals.enum import JobType
 
 from .add_down_time import add_down_time
+from .notify_down_time_update import notify_down_time_update
 
 JobHandler = Callable[[str, dict, str], None]
 
 # The registry: JobType -> handler(namespace_id, payload, job_id).
 JOB_REGISTRY: dict[JobType, JobHandler] = {
     JobType.ADD_DOWN_TIME: add_down_time,
+    JobType.NOTIFY_DOWN_TIME_UPDATE: notify_down_time_update,
 }
 
 

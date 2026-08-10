@@ -15,8 +15,14 @@ by the `add_down_time` async job (see
 permission-flag rules documented on each function below.
 
 Lifecycle: most tickets go `pending -> ongoing -> resolved -> closed` via
-`acknowledge_down_time` / `resolve_down_time` / `close_down_time`. Tickets
-whose `down_time_type` is "close-only" (see
+`acknowledge_down_time` / `resolve_down_time` / `close_down_time`. A resolved
+ticket can also bounce `resolved -> ongoing` via `reject_resolution` when a
+production agent finds the fix didn't actually restore production; the
+ticket then goes through `resolve_down_time` again before it can close.
+Every transition (`acknowledge_down_time` / `resolve_down_time` /
+`reject_resolution`) publishes a best-effort `JobType.NOTIFY_DOWN_TIME_UPDATE`
+job after its Firestore write succeeds — see `_publish_down_time_update`.
+Tickets whose `down_time_type` is "close-only" (see
 `src.app.globals.enum.CLOSE_ONLY_DOWNTIME_TYPES` — currently a WIP
 shortage or an unclassified/"others" stop) skip acknowledge and resolve
 entirely: nobody "repairs" those in the OptiFlow sense, so forcing them
@@ -30,15 +36,14 @@ already be sitting in `ongoing`/`resolved`, and with ack/resolve forbidden it
 would otherwise have no legal transition left and would strand there
 forever, corrupting the `ongoing`/`resolved` KPI buckets. See
 `_is_close_only` / `_permission_flags` for the exact predicate and the
-resulting `can_acknowledge`/`can_resolve`/`can_close`/`can_delete` flags.
+resulting `can_acknowledge`/`can_resolve`/`can_close`/`can_reject`/
+`can_delete` flags.
 """
 
 import logging
 import uuid
 from datetime import datetime
 from typing import Any, Optional
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
-
 from fastapi import HTTPException, status
 
 from src.app.gcp import get_pubsub_publisher
@@ -49,6 +54,7 @@ from src.app.core.firestore import (
     USERS_COLLECTION,
     WORKSTATION_COLLECTION,
 )
+from src.app.core.timezone import namespace_timezone
 from src.app.gcp import get_firestore_client
 from src.app.gcp.firestore import FirestoreClient
 from src.app.globals.enum import (
@@ -88,7 +94,9 @@ _FULL_VISIBILITY_ROLES = {
     Role.PRODUCTION_AGENT.value,
 }
 
-_ACTOR_FIELDS = ("created_by", "acknowledged_by", "resolved_by", "closed_by")
+_ACTOR_FIELDS = (
+    "created_by", "acknowledged_by", "resolved_by", "closed_by", "rejected_by"
+)
 
 
 def _require_non_blank(value: Optional[str], field_name: str) -> None:
@@ -271,25 +279,31 @@ def _is_close_only(issue: dict[str, Any]) -> bool:
 
 def _permission_flags(
     issue: dict[str, Any], current: dict[str, Any]
-) -> tuple[bool, bool, bool, bool]:
-    """Compute `(can_acknowledge, can_resolve, can_close, can_delete)` for
-    `current` on `issue`, per the per-issue permission rules.
+) -> tuple[bool, bool, bool, bool, bool]:
+    """Compute `(can_acknowledge, can_resolve, can_close, can_reject,
+    can_delete)` for `current` on `issue`, per the per-issue permission
+    rules.
 
-    Close-only issues (see `_is_close_only`) skip acknowledge/resolve
-    entirely: `can_acknowledge`/`can_resolve` are always False. `can_close`
-    only requires the caller to be a production agent and the ticket to not
-    already be `closed` — deliberately status-tolerant (not `pending`-only)
-    because Firestore has no migrations: a ticket created before its type
-    became close-only may already be sitting in `ongoing`/`resolved`, and it
-    must still be closable from there or it strands forever and corrupts the
-    `ongoing`/`resolved` KPI buckets. A deliberate consequence: for the
-    ticket's own creator while it's still `pending`, `can_close` and
-    `can_delete` can both be True at once — closing records a real stop for
-    the KPIs, deleting retracts a mis-declaration; either is a valid action.
+    Close-only issues (see `_is_close_only`) skip acknowledge/resolve/reject
+    entirely: `can_acknowledge`/`can_resolve`/`can_reject` are always False.
+    `can_close` only requires the caller to be a production agent and the
+    ticket to not already be `closed` — deliberately status-tolerant (not
+    `pending`-only) because Firestore has no migrations: a ticket created
+    before its type became close-only may already be sitting in
+    `ongoing`/`resolved`, and it must still be closable from there or it
+    strands forever and corrupts the `ongoing`/`resolved` KPI buckets. A
+    deliberate consequence: for the ticket's own creator while it's still
+    `pending`, `can_close` and `can_delete` can both be True at once —
+    closing records a real stop for the KPIs, deleting retracts a
+    mis-declaration; either is a valid action. `can_reject` mirrors
+    `can_close`'s role restriction (production agent only) but requires the
+    ticket to currently be `resolved` — the resolution is what's being sent
+    back.
     """
     role = current.get("role")
     process = issue.get("process")
     issue_status = issue.get("status")
+    close_only = _is_close_only(issue)
 
     can_delete = (
         role == Role.PRODUCTION_AGENT.value
@@ -297,14 +311,15 @@ def _permission_flags(
         and issue.get("created_by") == current.get("id")
     )
 
-    if _is_close_only(issue):
+    if close_only:
         can_acknowledge = False
         can_resolve = False
         can_close = (
             role == Role.PRODUCTION_AGENT.value
             and issue_status != DownTimeStatus.CLOSED.value
         )
-        return can_acknowledge, can_resolve, can_close, can_delete
+        can_reject = False
+        return can_acknowledge, can_resolve, can_close, can_reject, can_delete
 
     can_acknowledge = (
         role == f"{process} agent" and issue_status == DownTimeStatus.PENDING.value
@@ -316,7 +331,11 @@ def _permission_flags(
         role == Role.PRODUCTION_AGENT.value
         and issue_status == DownTimeStatus.RESOLVED.value
     )
-    return can_acknowledge, can_resolve, can_close, can_delete
+    can_reject = (
+        role == Role.PRODUCTION_AGENT.value
+        and issue_status == DownTimeStatus.RESOLVED.value
+    )
+    return can_acknowledge, can_resolve, can_close, can_reject, can_delete
 
 
 def _full_name(user: Optional[dict[str, Any]]) -> Optional[str]:
@@ -326,9 +345,12 @@ def _full_name(user: Optional[dict[str, Any]]) -> Optional[str]:
     return name or None
 
 
+# Entry-timestamp field per status, for `_time_in_status_seconds`. `ongoing`
+# is intentionally absent here: a rejected ticket re-enters `ongoing` at
+# `rejected_at`, not `acknowledged_at`, so its entry timestamp needs the
+# rejection-aware `_ongoing_entry_at` below rather than a single fixed field.
 _STATUS_ENTRY_FIELD = {
     DownTimeStatus.PENDING.value: "created_at",
-    DownTimeStatus.ONGOING.value: "acknowledged_at",
     DownTimeStatus.RESOLVED.value: "resolved_at",
     DownTimeStatus.CLOSED.value: "closed_at",
 }
@@ -343,17 +365,36 @@ def _parse_iso(value: Optional[str]) -> Optional[datetime]:
         return None
 
 
+def _ongoing_entry_at(issue: dict[str, Any]) -> Optional[datetime]:
+    """The timestamp `issue` most recently entered `ongoing`. Normally
+    `acknowledged_at` — but a ticket whose resolution was rejected
+    re-entered `ongoing` at `rejected_at` instead (`rejected_at` is always
+    >= `acknowledged_at` by construction, so taking the later of the two
+    when both parse is equivalent to preferring `rejected_at` whenever it's
+    present and valid). Falls back to `acknowledged_at` alone when
+    `rejected_at` is absent/unparsable — the case for every legacy document,
+    which predates the reject-resolution feature."""
+    acknowledged_at = _parse_iso(issue.get("acknowledged_at"))
+    rejected_at = _parse_iso(issue.get("rejected_at"))
+    if acknowledged_at is not None and rejected_at is not None:
+        return max(acknowledged_at, rejected_at)
+    return acknowledged_at
+
+
 def _time_in_status_seconds(
     issue: dict[str, Any], now: datetime
 ) -> Optional[float]:
-    """Seconds elapsed since `issue` entered its current status (see
-    `_STATUS_ENTRY_FIELD`), measured against `now` (the current time in the
-    namespace's timezone); `None` when the entry timestamp is missing/
-    unparsable."""
-    entry_field = _STATUS_ENTRY_FIELD.get(issue.get("status"))
-    if entry_field is None:
-        return None
-    entry_dt = _parse_iso(issue.get(entry_field))
+    """Seconds elapsed since `issue` entered its current status, measured
+    against `now` (the current time in the namespace's timezone); `None`
+    when the entry timestamp is missing/unparsable. `ongoing` uses the
+    rejection-aware `_ongoing_entry_at`; every other status uses the fixed
+    field from `_STATUS_ENTRY_FIELD`."""
+    issue_status = issue.get("status")
+    if issue_status == DownTimeStatus.ONGOING.value:
+        entry_dt = _ongoing_entry_at(issue)
+    else:
+        entry_field = _STATUS_ENTRY_FIELD.get(issue_status)
+        entry_dt = _parse_iso(issue.get(entry_field)) if entry_field else None
     if entry_dt is None:
         return None
     return (now - entry_dt).total_seconds()
@@ -363,7 +404,7 @@ def _batch_fetch_actor_names(
     client: FirestoreClient, issues: list[dict[str, Any]]
 ) -> dict[str, dict[str, Any]]:
     """One `get_documents` round-trip across every actor id referenced by
-    `issues` (created_by/acknowledged_by/resolved_by/closed_by)."""
+    `issues` (see `_ACTOR_FIELDS`)."""
     ids = {
         issue[field]
         for issue in issues
@@ -381,7 +422,7 @@ def _to_down_time_out(
     users_by_id: dict[str, dict[str, Any]],
     now: datetime,
 ) -> DownTimeOut:
-    can_acknowledge, can_resolve, can_close, can_delete = _permission_flags(
+    can_acknowledge, can_resolve, can_close, can_reject, can_delete = _permission_flags(
         issue, current
     )
     return DownTimeOut(
@@ -407,9 +448,14 @@ def _to_down_time_out(
         closed_at=issue.get("closed_at"),
         closed_by=issue.get("closed_by"),
         closed_by_name=_full_name(users_by_id.get(issue.get("closed_by"))),
+        rejected_at=issue.get("rejected_at"),
+        rejected_by=issue.get("rejected_by"),
+        rejected_by_name=_full_name(users_by_id.get(issue.get("rejected_by"))),
+        rejection_count=issue.get("rejection_count") or 0,
         can_acknowledge=can_acknowledge,
         can_resolve=can_resolve,
         can_close=can_close,
+        can_reject=can_reject,
         can_delete=can_delete,
         time_in_status_seconds=_time_in_status_seconds(issue, now),
     )
@@ -475,13 +521,25 @@ def _pending_duration(issue: dict[str, Any], now: datetime) -> Optional[float]:
 
 
 def _ongoing_duration(issue: dict[str, Any], now: datetime) -> Optional[float]:
-    acknowledged_at = _parse_iso(issue.get("acknowledged_at"))
-    if acknowledged_at is None:
+    """Mirrors `_time_in_status_seconds`'s `ongoing` branch: measured from
+    `_ongoing_entry_at` (rejection-aware — `rejected_at` when the ticket
+    re-entered `ongoing` via a rejection, `acknowledged_at` otherwise), not
+    unconditionally from `acknowledged_at`, so a rejected ticket's time
+    sitting in `resolved` isn't double-counted into the `ongoing` average."""
+    entry_dt = _ongoing_entry_at(issue)
+    if entry_dt is None:
         return None
-    return (now - acknowledged_at).total_seconds()
+    return (now - entry_dt).total_seconds()
 
 
 def _resolved_duration(issue: dict[str, Any], now: datetime) -> Optional[float]:
+    """`resolved_at - acknowledged_at`: deliberately NOT rejection-aware —
+    this measures the whole response cycle (from the original acknowledge to
+    the resolution being sent for validation), which is unaffected by
+    whether a *prior* resolution on this same cycle was rejected (rejection
+    resets `resolved_at`/`resolved_by`, so a ticket only reaches `resolved`
+    again once re-resolved, at which point this is exactly the interval the
+    KPI wants)."""
     acknowledged_at = _parse_iso(issue.get("acknowledged_at"))
     resolved_at = _parse_iso(issue.get("resolved_at"))
     if acknowledged_at is None or resolved_at is None:
@@ -511,27 +569,14 @@ def _status_summary(
     return DownTimeStatusSummaryOut(count=len(matching), average_seconds=average_seconds)
 
 
-def _resolve_timezone(namespace_id: str, namespace: Optional[dict[str, Any]]) -> ZoneInfo:
-    """Resolve the namespace's IANA timezone, defaulting to UTC when missing,
-    blank, or unknown. Mirrors `add_down_time._resolve_timezone` (kept local
-    to this router — no import across the async boundary)."""
-    tz_name = (namespace or {}).get("timezone") or "UTC"
-    try:
-        return ZoneInfo(tz_name)
-    except ZoneInfoNotFoundError:
-        logger.warning(
-            f"down_time.services: unknown timezone '{tz_name}' for namespace "
-            f"'{namespace_id}', defaulting to UTC."
-        )
-        return ZoneInfo("UTC")
-
-
 def _now_for_namespace(client: FirestoreClient, namespace_id: str) -> datetime:
     """Current time in the namespace's timezone — used for every elapsed-time
     computation (time_in_status_seconds, summary averages) so durations are
-    measured against the tenant's local now."""
+    measured against the tenant's local now. Timezone resolution itself is
+    `src.app.core.timezone.namespace_timezone` — the single shared
+    implementation both this router and the async job layer import."""
     namespace = client.get_document(NAMESPACE_COLLECTION, namespace_id)
-    tz = _resolve_timezone(namespace_id, namespace)
+    tz = namespace_timezone(namespace_id, namespace)
     return datetime.now(tz)
 
 
@@ -551,6 +596,40 @@ def _get_issue_or_404(
             detail="Downtime ticket not found.",
         )
     return issue
+
+
+def _publish_down_time_update(
+    down_time_id: str,
+    namespace_id: str,
+    event: str,
+    actor_id: str,
+    rejected_resolver_id: Optional[str] = None,
+) -> None:
+    """Best-effort publish of `JobType.NOTIFY_DOWN_TIME_UPDATE` after a
+    lifecycle transition's Firestore write has already succeeded. A publish
+    failure must never fail the caller's transition — the status change is
+    already committed, and losing a notification is far better than 500-ing
+    an otherwise-successful acknowledge/resolve/reject — so this only logs at
+    error level on failure, never raises."""
+    job_payload = {
+        "down_time_id": down_time_id,
+        "event": event,
+        "actor_id": actor_id,
+        "rejected_resolver_id": rejected_resolver_id,
+    }
+    try:
+        get_pubsub_publisher().publish_job(
+            JobType.NOTIFY_DOWN_TIME_UPDATE,
+            namespace_id,
+            job_payload,
+            job_id=str(uuid.uuid4()),
+        )
+    except Exception:
+        logger.error(
+            "down_time.services: failed to publish NOTIFY_DOWN_TIME_UPDATE "
+            f"for down_time_id={down_time_id} event={event}.",
+            exc_info=True,
+        )
 
 
 def acknowledge_down_time(issue_id: str, current: dict[str, Any]) -> DownTimeOut:
@@ -591,6 +670,7 @@ def acknowledge_down_time(issue_id: str, current: dict[str, Any]) -> DownTimeOut
         DOWN_TIME_COLLECTION, namespace_id, ISSUES_SUBCOLLECTION, issue_id, updates
     )
     issue.update(updates)
+    _publish_down_time_update(issue_id, namespace_id, "acknowledged", current["id"])
 
     users_by_id = _batch_fetch_actor_names(client, [issue])
     return _to_down_time_out(issue, current, users_by_id, now)
@@ -633,6 +713,72 @@ def resolve_down_time(issue_id: str, current: dict[str, Any]) -> DownTimeOut:
         DOWN_TIME_COLLECTION, namespace_id, ISSUES_SUBCOLLECTION, issue_id, updates
     )
     issue.update(updates)
+    _publish_down_time_update(issue_id, namespace_id, "resolved", current["id"])
+
+    users_by_id = _batch_fetch_actor_names(client, [issue])
+    return _to_down_time_out(issue, current, users_by_id, now)
+
+
+def reject_resolution(issue_id: str, current: dict[str, Any]) -> DownTimeOut:
+    """Reject a resolved downtime ticket's resolution, sending it back
+    `resolved` -> `ongoing` (`DownTimeStatus.ONGOING`). Restricted to
+    production agents; 403 when the ticket's `down_time_type` is close-only
+    (see `CLOSE_ONLY_DOWNTIME_TYPES`) — checked before the status check so
+    the caller sees the real reason rather than a misleading 409 (close-only
+    tickets never pass through `resolved`, so this is belt-and-braces); 409
+    unless the ticket is currently `resolved`.
+
+    Retracts the resolution (`resolved_at`/`resolved_by` -> `None`,
+    capturing the prior `resolved_by` as `rejected_resolver_id` for the
+    notification job) and records the rejection (`rejected_at`/`rejected_by`
+    plus an incremented `rejection_count`). Deliberately leaves
+    `acknowledged_at`/`acknowledged_by` untouched — the ticket stays within
+    the same response cycle it was already in, and resetting those would
+    corrupt the acknowledge-SLA KPI."""
+    client = get_firestore_client()
+    namespace_id = current["namespace_id"]
+    issue = _get_issue_or_404(client, namespace_id, issue_id)
+
+    if current.get("role") != Role.PRODUCTION_AGENT.value:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only a production agent may reject this ticket's resolution.",
+        )
+    if _is_close_only(issue):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This downtime type has no resolution step to reject.",
+        )
+    if issue.get("status") != DownTimeStatus.RESOLVED.value:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Ticket is not resolved.",
+        )
+
+    rejected_resolver_id = issue.get("resolved_by")
+
+    now = _now_for_namespace(client, namespace_id)
+    now_iso = now.isoformat()
+    updates = {
+        "status": DownTimeStatus.ONGOING.value,
+        "resolved_at": None,
+        "resolved_by": None,
+        "rejected_at": now_iso,
+        "rejected_by": current["id"],
+        "rejection_count": (issue.get("rejection_count") or 0) + 1,
+        "updated_at": now_iso,
+    }
+    client.update_subdocument(
+        DOWN_TIME_COLLECTION, namespace_id, ISSUES_SUBCOLLECTION, issue_id, updates
+    )
+    issue.update(updates)
+    _publish_down_time_update(
+        issue_id,
+        namespace_id,
+        "rejected",
+        current["id"],
+        rejected_resolver_id=rejected_resolver_id,
+    )
 
     users_by_id = _batch_fetch_actor_names(client, [issue])
     return _to_down_time_out(issue, current, users_by_id, now)

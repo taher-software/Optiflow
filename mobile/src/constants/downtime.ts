@@ -23,9 +23,15 @@ export interface DownTime {
   closed_at: string | null;
   closed_by: string | null;
   closed_by_name: string | null;
+  /** Set when production sent a resolution back; the ticket returns to `ongoing`. */
+  rejected_at: string | null;
+  rejected_by: string | null;
+  rejected_by_name: string | null;
+  rejection_count: number;
   can_acknowledge: boolean;
   can_resolve: boolean;
   can_close: boolean;
+  can_reject: boolean;
   can_delete: boolean;
   time_in_status_seconds: number | null;
 }

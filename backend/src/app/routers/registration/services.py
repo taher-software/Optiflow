@@ -40,8 +40,16 @@ def _send_confirmation(user_id: str, namespace_id: str, email: str) -> None:
     email_service.send_confirmation_email(email, confirm_url)
 
 
-def create_account(payload: RegisterAccountIn) -> RegisterAccountOut:
+def create_account(payload: RegisterAccountIn, timezone: str | None) -> RegisterAccountOut:
     """Create a namespace (account) + owner user, then email a confirmation link.
+
+    `timezone` is the namespace's IANA zone, pre-resolved by the router via
+    `src.app.core.geo_timezone.timezone_for_location` (run off the event loop
+    — see `routers.registration.__init__.register_account`) so this
+    synchronous service function never does that CPU-bound work itself.
+    `None` when it couldn't be resolved; stored as `None`, not `"UTC"` —
+    downstream readers already default to UTC on a missing/blank value, and a
+    stored `None` keeps "never resolved" distinguishable from "genuinely UTC".
 
     Atomic: if any write or the email fails, both documents are removed so the
     registration can be retried cleanly.
@@ -73,6 +81,7 @@ def create_account(payload: RegisterAccountIn) -> RegisterAccountOut:
                 "country": payload.company.country,
                 "language": resolve_default_language(payload.company.country).value,
                 "city": payload.company.city,
+                "timezone": timezone,
                 "confirmed": False,
             },
             document_id=namespace_id,

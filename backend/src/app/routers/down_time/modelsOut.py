@@ -84,6 +84,28 @@ class DownTimeOut(BaseModel):
     closed_by_name: Optional[str] = Field(
         default=None, description="Full name of `closed_by`, if resolvable."
     )
+    rejected_at: Optional[str] = Field(
+        default=None,
+        description=(
+            "ISO timestamp (namespace tz) production last sent a resolution "
+            "back on this ticket, if any."
+        ),
+    )
+    rejected_by: Optional[str] = Field(
+        default=None,
+        description="Id of the production agent who last rejected the resolution, if any.",
+    )
+    rejected_by_name: Optional[str] = Field(
+        default=None, description="Full name of `rejected_by`, if resolvable."
+    )
+    rejection_count: int = Field(
+        default=0,
+        description=(
+            "Number of times a resolution on this ticket has been rejected "
+            "back to `ongoing`. Defaults to 0 for legacy documents that "
+            "predate this field."
+        ),
+    )
     can_acknowledge: bool = Field(
         ...,
         description=(
@@ -108,6 +130,16 @@ class DownTimeOut(BaseModel):
             "(instead of requiring `resolved`), since acknowledge/resolve "
             "are skipped and a legacy ticket may already be `ongoing`/"
             "`resolved`."
+        ),
+    )
+    can_reject: bool = Field(
+        ...,
+        description=(
+            "Whether the caller (a production agent) may reject this "
+            "ticket's resolution back to `ongoing` now. True only while the "
+            "ticket is `resolved` and its `down_time_type` is not "
+            "close-only (a close-only ticket never passes through "
+            "`resolved`, so this is always `false` for one)."
         ),
     )
     can_delete: bool = Field(

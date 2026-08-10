@@ -75,6 +75,13 @@ const en = {
         closedBy: "Closed by",
         acknowledge: "Acknowledge",
         resolve: "Mark as resolved",
+        reject: "Reject resolution",
+        rejectTitle: "Reject this resolution?",
+        rejectConfirm:
+          "The ticket goes back to the responders as still unresolved.",
+        rejectedAt: "Resolution rejected at",
+        rejectedBy: "Rejected by",
+        rejectionCount: "Times rejected",
         close: "Mark as closed",
         delete: "Delete",
         cancel: "Cancel",
