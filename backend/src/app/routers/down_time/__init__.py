@@ -181,10 +181,19 @@ async def get_down_time(
         "ticket's owning process agent (e.g. a 'maintenance agent' for a "
         "maintenance ticket, derived from the ticket's `process`). Returns "
         "the updated ticket, re-serialized so the caller's permission flags "
-        "reflect the new status."
+        "reflect the new status. Rejected with 403 when the ticket's "
+        "`down_time_type` is close-only (e.g. material shortage / 'others') "
+        "— those tickets skip acknowledge entirely and go straight "
+        "`pending` -> `closed`."
     ),
     responses={
-        403: {"description": "Caller is not the ticket's owning process agent."},
+        403: {
+            "description": (
+                "Caller is not the ticket's owning process agent, or the "
+                "ticket's `down_time_type` is close-only and cannot be "
+                "acknowledged."
+            )
+        },
         404: {"description": "No such ticket in the caller's namespace."},
         409: {"description": "Ticket is not currently `pending`."},
     },
@@ -205,10 +214,19 @@ async def acknowledge_down_time(
         "Resolves an ongoing downtime ticket, moving it `ongoing` -> "
         "`resolved`. Restricted to the ticket's owning process agent. "
         "Returns the updated ticket, re-serialized so the caller's "
-        "permission flags reflect the new status."
+        "permission flags reflect the new status. Rejected with 403 when "
+        "the ticket's `down_time_type` is close-only (e.g. material "
+        "shortage / 'others') — those tickets skip resolve entirely and go "
+        "straight `pending` -> `closed`."
     ),
     responses={
-        403: {"description": "Caller is not the ticket's owning process agent."},
+        403: {
+            "description": (
+                "Caller is not the ticket's owning process agent, or the "
+                "ticket's `down_time_type` is close-only and cannot be "
+                "resolved."
+            )
+        },
         404: {"description": "No such ticket in the caller's namespace."},
         409: {"description": "Ticket is not currently `ongoing`."},
     },
@@ -226,16 +244,25 @@ async def resolve_down_time(
     response_model=ApiResponse[DownTimeOut],
     summary="Close a downtime ticket",
     description=(
-        "Closes a resolved downtime ticket, moving it `resolved` -> "
-        "`closed`, once production has validated the return to normal. "
-        "Restricted to production agents. Returns the updated ticket, "
-        "re-serialized so the caller's permission flags reflect the new "
-        "status."
+        "Closes a downtime ticket, once production has validated the return "
+        "to normal. Restricted to production agents. Returns the updated "
+        "ticket, re-serialized so the caller's permission flags reflect the "
+        "new status. For most tickets this moves `resolved` -> `closed`; "
+        "for a close-only `down_time_type` (e.g. material shortage / "
+        "'others') acknowledge/resolve are skipped entirely, so this closes "
+        "directly from any non-closed status (`pending`, or, for a legacy "
+        "ticket created before its type became close-only, `ongoing`/"
+        "`resolved`) — only an already-`closed` ticket is rejected."
     ),
     responses={
         403: {"description": "Caller is not a production agent."},
         404: {"description": "No such ticket in the caller's namespace."},
-        409: {"description": "Ticket is not currently `resolved`."},
+        409: {
+            "description": (
+                "Ticket is not currently `resolved` (or, for a close-only "
+                "`down_time_type`, the ticket is already `closed`)."
+            )
+        },
     },
 )
 async def close_down_time(

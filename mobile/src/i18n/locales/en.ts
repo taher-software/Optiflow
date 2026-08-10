@@ -54,6 +54,7 @@ const en = {
         Work_in_Process_WIP_Shortage: "WIP shortage",
         Material_Component_Shortage: "Material / component shortage",
         Setup_Changeover: "Setup / changeover",
+        others: "Other / unknown cause",
       },
       list: {
         empty: "No downtime here.",

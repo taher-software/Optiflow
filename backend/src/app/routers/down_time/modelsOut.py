@@ -85,13 +85,30 @@ class DownTimeOut(BaseModel):
         default=None, description="Full name of `closed_by`, if resolvable."
     )
     can_acknowledge: bool = Field(
-        ..., description="Whether the caller may acknowledge this ticket now."
+        ...,
+        description=(
+            "Whether the caller may acknowledge this ticket now. Always "
+            "`false` for a close-only `down_time_type` (e.g. material "
+            "shortage / 'others') — those tickets skip acknowledge entirely."
+        ),
     )
     can_resolve: bool = Field(
-        ..., description="Whether the caller may resolve this ticket now."
+        ...,
+        description=(
+            "Whether the caller may resolve this ticket now. Always `false` "
+            "for a close-only `down_time_type` — those tickets skip resolve "
+            "entirely."
+        ),
     )
     can_close: bool = Field(
-        ..., description="Whether the caller may close this ticket now."
+        ...,
+        description=(
+            "Whether the caller may close this ticket now. For a close-only "
+            "`down_time_type`, true from any status except `closed` "
+            "(instead of requiring `resolved`), since acknowledge/resolve "
+            "are skipped and a legacy ticket may already be `ongoing`/"
+            "`resolved`."
+        ),
     )
     can_delete: bool = Field(
         ..., description="Whether the caller may delete this ticket now."

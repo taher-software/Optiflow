@@ -10,3 +10,4 @@ class DownTimeType(str, Enum):
     WIP_SHORTAGE = "Work-in-Process (WIP) Shortage"
     MATERIAL_SHORTAGE = "Material / Component Shortage"
     SETUP_CHANGEOVER = "Setup / Changeover"
+    OTHERS = "others"  # unclassified/unknown-cause stop

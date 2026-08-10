@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from src.app.gcp.firestore import FirestoreClient
-from src.app.globals.enum import Role
+from src.app.globals.enum import DownTimeType, ProductionScope, Role
 
 NS = "ns-lifecycle"
 
@@ -273,3 +273,218 @@ class TestDownTimeTransitions:
         for field in ("acknowledged_at", "resolved_at", "closed_at", "updated_at"):
             offset = datetime.fromisoformat(stored[field]).utcoffset()
             assert offset is not None and offset != timedelta(0), field
+
+
+# --------------------------------------------------------------------------- #
+# Close-only lifecycle (down_time_type in CLOSE_ONLY_DOWNTIME_TYPES):
+# pending -> closed directly, skipping acknowledge/resolve entirely.
+# --------------------------------------------------------------------------- #
+
+# (down_time_type, owning process, the role that would normally be allowed to
+# acknowledge/resolve a ticket of that process — used to prove the close-only
+# lifecycle rule beats the role rule even for that "normally allowed" role).
+_CLOSE_ONLY_CASES = [
+    (DownTimeType.OTHERS.value, "production", Role.PRODUCTION_AGENT.value),
+    (DownTimeType.MATERIAL_SHORTAGE.value, "logistic", Role.LOGISTIC_AGENT.value),
+]
+
+
+class TestCloseOnlyLifecycle:
+    @pytest.mark.parametrize("down_time_type,process,normal_role", _CLOSE_ONLY_CASES)
+    def test_pending_flags_only_allow_close(
+        self, client, seed_user, seed_issue, auth_headers, down_time_type, process, normal_role
+    ):
+        pa = seed_user(namespace_id=NS, role=Role.PRODUCTION_AGENT.value)
+        seed_issue(
+            "c1", down_time_type=down_time_type, process=process, status="pending"
+        )
+        res = client.get("/down-times/c1", headers=auth_headers(pa))
+        assert res.status_code == 200
+        data = res.json()["data"]
+        assert data["can_acknowledge"] is False
+        assert data["can_resolve"] is False
+        assert data["can_close"] is True
+
+    @pytest.mark.parametrize("down_time_type,process,normal_role", _CLOSE_ONLY_CASES)
+    def test_acknowledge_and_resolve_forbidden_even_for_normal_role(
+        self, client, seed_user, seed_issue, auth_headers, down_time_type, process, normal_role
+    ):
+        # The lifecycle rule (close-only) must beat the role rule: even the
+        # role that would normally be allowed to acknowledge/resolve a ticket
+        # of this process is still forbidden.
+        agent = seed_user(namespace_id=NS, role=normal_role)
+        seed_issue(
+            "c1", down_time_type=down_time_type, process=process, status="pending"
+        )
+        ack = client.post("/down-times/c1/acknowledge", headers=auth_headers(agent))
+        assert ack.status_code == 403
+
+        seed_issue(
+            "c2", down_time_type=down_time_type, process=process, status="ongoing"
+        )
+        resolve = client.post("/down-times/c2/resolve", headers=auth_headers(agent))
+        assert resolve.status_code == 403
+
+    @pytest.mark.parametrize("down_time_type,process,normal_role", _CLOSE_ONLY_CASES)
+    def test_close_from_pending_by_production_agent_succeeds(
+        self,
+        client,
+        fake_db,
+        seed_user,
+        seed_issue,
+        auth_headers,
+        down_time_type,
+        process,
+        normal_role,
+    ):
+        pa = seed_user(namespace_id=NS, role=Role.PRODUCTION_AGENT.value)
+        seed_issue(
+            "c1", down_time_type=down_time_type, process=process, status="pending"
+        )
+        res = client.post("/down-times/c1/close", headers=auth_headers(pa))
+        assert res.status_code == 200, res.text
+        data = res.json()["data"]
+        assert data["status"] == "closed"
+        assert data["acknowledged_at"] is None
+        assert data["resolved_at"] is None
+
+        stored = _read(fake_db, "c1")
+        assert stored["status"] == "closed"
+        assert stored.get("acknowledged_at") is None
+        assert stored.get("resolved_at") is None
+
+    @pytest.mark.parametrize("down_time_type,process,normal_role", _CLOSE_ONLY_CASES)
+    def test_close_by_non_production_agent_forbidden(
+        self, client, seed_user, seed_issue, auth_headers, down_time_type, process, normal_role
+    ):
+        # Any role other than "production agent" is forbidden from closing —
+        # use maintenance agent regardless of the ticket's own process, since
+        # close is always production-agent-only (not process-scoped).
+        agent = seed_user(namespace_id=NS, role=Role.MAINTENANCE_AGENT.value)
+        seed_issue(
+            "c1", down_time_type=down_time_type, process=process, status="pending"
+        )
+        res = client.post("/down-times/c1/close", headers=auth_headers(agent))
+        assert res.status_code == 403
+
+    @pytest.mark.parametrize("down_time_type,process,normal_role", _CLOSE_ONLY_CASES)
+    @pytest.mark.parametrize("legacy_status", ["ongoing", "resolved"])
+    def test_close_legacy_non_pending_close_only_ticket_succeeds(
+        self,
+        client,
+        fake_db,
+        seed_user,
+        seed_issue,
+        auth_headers,
+        down_time_type,
+        process,
+        normal_role,
+        legacy_status,
+    ):
+        # Regression for the retroactive-rule deadlock: a close-only ticket
+        # created before its type became close-only (or otherwise stuck
+        # mid-lifecycle) may still be sitting in `ongoing`/`resolved`. Since
+        # acknowledge/resolve are forbidden for close-only types, `close`
+        # must remain reachable from there or the ticket strands forever and
+        # corrupts the ongoing/resolved KPI buckets.
+        pa = seed_user(namespace_id=NS, role=Role.PRODUCTION_AGENT.value)
+        seed_issue(
+            "c1",
+            down_time_type=down_time_type,
+            process=process,
+            status=legacy_status,
+        )
+        res = client.post("/down-times/c1/close", headers=auth_headers(pa))
+        assert res.status_code == 200, res.text
+        assert res.json()["data"]["status"] == "closed"
+        assert _read(fake_db, "c1")["status"] == "closed"
+
+    @pytest.mark.parametrize("down_time_type,process,normal_role", _CLOSE_ONLY_CASES)
+    def test_close_already_closed_close_only_ticket_conflict(
+        self, client, seed_user, seed_issue, auth_headers, down_time_type, process, normal_role
+    ):
+        pa = seed_user(namespace_id=NS, role=Role.PRODUCTION_AGENT.value)
+        seed_issue(
+            "c1", down_time_type=down_time_type, process=process, status="closed"
+        )
+        res = client.post("/down-times/c1/close", headers=auth_headers(pa))
+        assert res.status_code == 409
+        assert res.json()["detail"] == "Ticket is already closed."
+
+    def test_normal_type_still_requires_full_lifecycle(
+        self, client, seed_user, seed_issue, auth_headers
+    ):
+        """Regression: a non-close-only type (e.g. breakdown) must still go
+        pending -> ongoing -> resolved -> closed; closing directly from
+        pending is rejected."""
+        ma = seed_user(namespace_id=NS, role=Role.MAINTENANCE_AGENT.value)
+        pa = seed_user(namespace_id=NS, role=Role.PRODUCTION_AGENT.value)
+        seed_issue(
+            "b1", down_time_type=DownTimeType.BREAKDOWN.value,
+            process="maintenance", status="pending",
+        )
+        premature_close = client.post("/down-times/b1/close", headers=auth_headers(pa))
+        assert premature_close.status_code == 409
+        assert premature_close.json()["detail"] == "Ticket is not resolved."
+
+        ack = client.post("/down-times/b1/acknowledge", headers=auth_headers(ma))
+        assert ack.status_code == 200
+        resolve = client.post("/down-times/b1/resolve", headers=auth_headers(ma))
+        assert resolve.status_code == 200
+        close = client.post("/down-times/b1/close", headers=auth_headers(pa))
+        assert close.status_code == 200
+        assert close.json()["data"]["status"] == "closed"
+
+    def test_summary_counts_closed_close_only_ticket_without_skewing_average(
+        self, client, seed_user, seed_issue, auth_headers
+    ):
+        """KPI-integrity case: a directly-closed close-only ticket (no
+        `resolved_at`) must count in `closed.count` but must not contribute a
+        bogus/zero duration to `closed.average_seconds` (which is defined as
+        closed_at - resolved_at)."""
+        pa = seed_user(namespace_id=NS, role=Role.PRODUCTION_AGENT.value)
+        # A normal ticket fully closed, contributing a real duration.
+        seed_issue(
+            "b1",
+            down_time_type=DownTimeType.BREAKDOWN.value,
+            process="maintenance",
+            status="closed",
+            acknowledged_at=_iso(30),
+            resolved_at=_iso(20),
+            closed_at=_iso(10),
+        )
+        # A close-only ticket, closed directly from pending: no resolved_at.
+        seed_issue(
+            "c1",
+            down_time_type=DownTimeType.OTHERS.value,
+            process="production",
+            status="closed",
+            acknowledged_at=None,
+            resolved_at=None,
+            closed_at=_iso(5),
+        )
+        res = client.get("/down-times/summary", headers=auth_headers(pa))
+        assert res.status_code == 200
+        closed = res.json()["data"]["closed"]
+        assert closed["count"] == 2
+        # Average must reflect only the one ticket with both timestamps —
+        # not None (crash-avoided) and not skewed to zero by the other.
+        assert closed["average_seconds"] is not None
+        assert closed["average_seconds"] == pytest.approx(600, abs=2)
+
+    def test_create_down_time_with_others_type_is_accepted(
+        self, client, seed_user, auth_headers, publish_spy
+    ):
+        """422 here would mean the `others` down_time_type doesn't flow
+        through `CreateDownTimeIn`'s enum validation."""
+        agent = seed_user(namespace_id=NS, role=Role.PRODUCTION_AGENT.value)
+        res = client.post(
+            "/down-times",
+            headers=auth_headers(agent),
+            json={
+                "production_scope": ProductionScope.PLANT.value,
+                "down_time_type": DownTimeType.OTHERS.value,
+            },
+        )
+        assert res.status_code == 202, res.text
+        assert publish_spy[0]["payload"]["down_time_type"] == "others"

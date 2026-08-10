@@ -2,6 +2,7 @@
   "expo": {
     "name": "OptiFlow",
     "slug": "optiflow",
+    "owner": "azibodin",
     "version": "0.1.0",
     "orientation": "portrait",
     "userInterfaceStyle": "automatic",
@@ -17,7 +18,8 @@
       "bundleIdentifier": "com.ttaherhagui.optiflow"
     },
     "android": {
-      "package": "com.ttaherhagui.optiflow"
+      "package": "com.ttaherhagui.optiflow",
+      "googleServicesFile": "./google-services.json"
     },
     "web": {
       "bundler": "metro"
@@ -34,6 +36,11 @@
           ]
         }
       ]
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "efbd63ec-95cf-483c-9966-11ab923120f5"
+      }
+    }
   }
 }

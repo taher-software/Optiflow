@@ -15,7 +15,7 @@ from src.app.core.security import (
 from src.app.core.security_code import generate_security_code
 from src.app.gcp import get_firestore_client
 from src.app.gcp.firestore import FirestoreClient
-from src.app.globals.enum import Role
+from src.app.globals.enum import Role, resolve_default_language
 
 from src.app.routers.registration.modelsIn import RegisterAccountIn
 from src.app.routers.registration.modelsOut import ConfirmAccountOut, RegisterAccountOut, ResendConfirmationOut
@@ -71,6 +71,7 @@ def create_account(payload: RegisterAccountIn) -> RegisterAccountOut:
                 "phone_number": payload.company.phone_number,
                 "tax_identification_number": payload.company.tax_identification_number,
                 "country": payload.company.country,
+                "language": resolve_default_language(payload.company.country).value,
                 "city": payload.company.city,
                 "confirmed": False,
             },

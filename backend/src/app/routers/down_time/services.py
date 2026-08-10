@@ -13,6 +13,24 @@ by the `add_down_time` async job (see
 `src.app.async_jobs.add_down_time.DOWN_TIME_COLLECTION` /
 `ISSUES_SUBCOLLECTION`) and applies the role-based visibility + per-issue
 permission-flag rules documented on each function below.
+
+Lifecycle: most tickets go `pending -> ongoing -> resolved -> closed` via
+`acknowledge_down_time` / `resolve_down_time` / `close_down_time`. Tickets
+whose `down_time_type` is "close-only" (see
+`src.app.globals.enum.CLOSE_ONLY_DOWNTIME_TYPES` — currently a material
+shortage or an unclassified/"others" stop) skip acknowledge and resolve
+entirely: nobody "repairs" those in the OptiFlow sense, so forcing them
+through ack/resolve would pollute MTTR-style KPIs with meaningless
+timestamps. `acknowledge_down_time` / `resolve_down_time` reject a
+close-only ticket with 403 regardless of role/status. `close_down_time`
+allows a close-only ticket to close from *any* non-`closed` status (still
+restricted to production agents), not just `pending` — because Firestore has
+no migrations, a ticket created before its type became close-only may
+already be sitting in `ongoing`/`resolved`, and with ack/resolve forbidden it
+would otherwise have no legal transition left and would strand there
+forever, corrupting the `ongoing`/`resolved` KPI buckets. See
+`_is_close_only` / `_permission_flags` for the exact predicate and the
+resulting `can_acknowledge`/`can_resolve`/`can_close`/`can_delete` flags.
 """
 
 import logging
@@ -33,7 +51,13 @@ from src.app.core.firestore import (
 )
 from src.app.gcp import get_firestore_client
 from src.app.gcp.firestore import FirestoreClient
-from src.app.globals.enum import DownTimeStatus, JobType, Role
+from src.app.globals.enum import (
+    CLOSE_ONLY_DOWNTIME_TYPES,
+    DownTimeStatus,
+    DownTimeType,
+    JobType,
+    Role,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -234,14 +258,53 @@ def _fetch_visible_issues(
     return [issue for issue in issues if issue.get("process") == process]
 
 
+def _is_close_only(issue: dict[str, Any]) -> bool:
+    """Whether `issue` belongs to a "close-only" `down_time_type` (see
+    `CLOSE_ONLY_DOWNTIME_TYPES`) — its lifecycle skips acknowledge/resolve and
+    goes straight `pending -> closed`. Tolerant of a missing/unknown stored
+    value: never raises on a malformed document, just returns False."""
+    try:
+        return DownTimeType(issue.get("down_time_type")) in CLOSE_ONLY_DOWNTIME_TYPES
+    except ValueError:
+        return False
+
+
 def _permission_flags(
     issue: dict[str, Any], current: dict[str, Any]
 ) -> tuple[bool, bool, bool, bool]:
     """Compute `(can_acknowledge, can_resolve, can_close, can_delete)` for
-    `current` on `issue`, per the per-issue permission rules."""
+    `current` on `issue`, per the per-issue permission rules.
+
+    Close-only issues (see `_is_close_only`) skip acknowledge/resolve
+    entirely: `can_acknowledge`/`can_resolve` are always False. `can_close`
+    only requires the caller to be a production agent and the ticket to not
+    already be `closed` — deliberately status-tolerant (not `pending`-only)
+    because Firestore has no migrations: a ticket created before its type
+    became close-only may already be sitting in `ongoing`/`resolved`, and it
+    must still be closable from there or it strands forever and corrupts the
+    `ongoing`/`resolved` KPI buckets. A deliberate consequence: for the
+    ticket's own creator while it's still `pending`, `can_close` and
+    `can_delete` can both be True at once — closing records a real stop for
+    the KPIs, deleting retracts a mis-declaration; either is a valid action.
+    """
     role = current.get("role")
     process = issue.get("process")
     issue_status = issue.get("status")
+
+    can_delete = (
+        role == Role.PRODUCTION_AGENT.value
+        and issue_status == DownTimeStatus.PENDING.value
+        and issue.get("created_by") == current.get("id")
+    )
+
+    if _is_close_only(issue):
+        can_acknowledge = False
+        can_resolve = False
+        can_close = (
+            role == Role.PRODUCTION_AGENT.value
+            and issue_status != DownTimeStatus.CLOSED.value
+        )
+        return can_acknowledge, can_resolve, can_close, can_delete
 
     can_acknowledge = (
         role == f"{process} agent" and issue_status == DownTimeStatus.PENDING.value
@@ -252,11 +315,6 @@ def _permission_flags(
     can_close = (
         role == Role.PRODUCTION_AGENT.value
         and issue_status == DownTimeStatus.RESOLVED.value
-    )
-    can_delete = (
-        role == Role.PRODUCTION_AGENT.value
-        and issue_status == DownTimeStatus.PENDING.value
-        and issue.get("created_by") == current.get("id")
     )
     return can_acknowledge, can_resolve, can_close, can_delete
 
@@ -498,11 +556,18 @@ def _get_issue_or_404(
 def acknowledge_down_time(issue_id: str, current: dict[str, Any]) -> DownTimeOut:
     """Acknowledge a pending downtime ticket (`pending` -> `ongoing`).
     Restricted to the process's own agent (e.g. "maintenance agent" for a
-    maintenance ticket); 409 unless the ticket is currently `pending`."""
+    maintenance ticket); 409 unless the ticket is currently `pending`. 403
+    when the ticket's `down_time_type` is close-only (see
+    `CLOSE_ONLY_DOWNTIME_TYPES`) — those tickets skip acknowledge entirely."""
     client = get_firestore_client()
     namespace_id = current["namespace_id"]
     issue = _get_issue_or_404(client, namespace_id, issue_id)
 
+    if _is_close_only(issue):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This downtime type is closed directly and cannot be acknowledged.",
+        )
     if current.get("role") != f"{issue.get('process')} agent":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -534,11 +599,17 @@ def acknowledge_down_time(issue_id: str, current: dict[str, Any]) -> DownTimeOut
 def resolve_down_time(issue_id: str, current: dict[str, Any]) -> DownTimeOut:
     """Resolve an ongoing downtime ticket (`ongoing` -> `resolved`).
     Restricted to the process's own agent; 409 unless the ticket is currently
-    `ongoing`."""
+    `ongoing`. 403 when the ticket's `down_time_type` is close-only (see
+    `CLOSE_ONLY_DOWNTIME_TYPES`) — those tickets skip resolve entirely."""
     client = get_firestore_client()
     namespace_id = current["namespace_id"]
     issue = _get_issue_or_404(client, namespace_id, issue_id)
 
+    if _is_close_only(issue):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This downtime type is closed directly and cannot be resolved.",
+        )
     if current.get("role") != f"{issue.get('process')} agent":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -568,8 +639,20 @@ def resolve_down_time(issue_id: str, current: dict[str, Any]) -> DownTimeOut:
 
 
 def close_down_time(issue_id: str, current: dict[str, Any]) -> DownTimeOut:
-    """Close a resolved downtime ticket (`resolved` -> `closed`). Restricted
-    to production agents; 409 unless the ticket is currently `resolved`."""
+    """Close a downtime ticket. Restricted to production agents. For a
+    close-only `down_time_type` (see `CLOSE_ONLY_DOWNTIME_TYPES`) the ticket
+    may be closed from any status except `closed` itself (409 only when
+    already closed); for every other type the normal `resolved -> closed`
+    transition applies (409 unless currently `resolved`).
+
+    The close-only branch is deliberately status-tolerant rather than
+    `pending`-only: Firestore has no migrations, so a ticket created before
+    its type became close-only may already be `ongoing`/`resolved`. Requiring
+    `pending` there would deadlock it — acknowledge/resolve are already
+    forbidden for close-only types, so it could never legally transition
+    again, and it would permanently inflate the `ongoing`/`resolved` KPI
+    buckets. Allowing close from any non-closed status keeps every legacy
+    ticket reachable."""
     client = get_firestore_client()
     namespace_id = current["namespace_id"]
     issue = _get_issue_or_404(client, namespace_id, issue_id)
@@ -579,11 +662,18 @@ def close_down_time(issue_id: str, current: dict[str, Any]) -> DownTimeOut:
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only a production agent may close this ticket.",
         )
-    if issue.get("status") != DownTimeStatus.RESOLVED.value:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Ticket is not resolved.",
-        )
+    if _is_close_only(issue):
+        if issue.get("status") == DownTimeStatus.CLOSED.value:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Ticket is already closed.",
+            )
+    else:
+        if issue.get("status") != DownTimeStatus.RESOLVED.value:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Ticket is not resolved.",
+            )
 
     now = _now_for_namespace(client, namespace_id)
     now_iso = now.isoformat()

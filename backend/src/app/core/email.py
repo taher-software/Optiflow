@@ -1,15 +1,40 @@
+import html
+
+from src.app.globals.enum import Language
+
 from .config import get_settings
 
 _PARA = "margin:0 0 16px;font-size:15px;line-height:1.6;color:#334155;"
 
+# Per-language chrome strings for `_shell` (the "or copy this link" line and
+# the footer tagline). The two existing senders (`send_confirmation_email`,
+# `send_welcome_email`) rely on the `Language.FR` default to keep sending
+# byte-identical French chrome — do not change that default.
+_SHELL_CHROME: dict[Language, dict[str, str]] = {
+    Language.FR: {
+        "copy_link": "Ou copiez ce lien&nbsp;: ",
+        "footer": "OptiFlow — automatisez la gestion des arrêts machine et éradiquez leurs causes.",
+    },
+    Language.EN: {
+        "copy_link": "Or copy this link: ",
+        "footer": "OptiFlow — automate machine-downtime management and eliminate its root causes.",
+    },
+}
+
 
 def _shell(
-    preheader: str, heading: str, body_html: str, cta_label: str, cta_url: str
+    preheader: str,
+    heading: str,
+    body_html: str,
+    cta_label: str,
+    cta_url: str,
+    language: Language = Language.FR,
 ) -> str:
     """Wrap email body content in a responsive, brand-styled HTML shell."""
+    chrome = _SHELL_CHROME[language if language in _SHELL_CHROME else Language.FR]
     return f"""\
 <!doctype html>
-<html lang="fr">
+<html lang="{language.value}">
   <body style="margin:0;padding:0;background:#f1f5f9;font-family:'Segoe UI',Arial,Helvetica,sans-serif;">
     <span style="display:none;max-height:0;overflow:hidden;opacity:0;color:#f1f5f9;">{preheader}</span>
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f1f5f9;padding:32px 12px;">
@@ -26,10 +51,10 @@ def _shell(
                 <a href="{cta_url}" style="display:inline-block;padding:14px 30px;font-size:15px;font-weight:600;color:#ffffff;text-decoration:none;border-radius:12px;">{cta_label}</a>
               </td></tr>
             </table>
-            <p style="margin:16px 0 0;font-size:12px;color:#94a3b8;word-break:break-all;">Ou copiez ce lien&nbsp;: {cta_url}</p>
+            <p style="margin:16px 0 0;font-size:12px;color:#94a3b8;word-break:break-all;">{chrome["copy_link"]}{cta_url}</p>
           </td></tr>
           <tr><td style="padding:20px 32px;background:#f8fafc;border-top:1px solid #e2e8f0;">
-            <p style="margin:0;font-size:12px;line-height:1.5;color:#64748b;">OptiFlow — automatisez la gestion des arrêts machine et éradiquez leurs causes.</p>
+            <p style="margin:0;font-size:12px;line-height:1.5;color:#64748b;">{chrome["footer"]}</p>
           </td></tr>
         </table>
       </td></tr>
@@ -97,3 +122,56 @@ def send_welcome_email(to: str, username: str, password: str) -> None:
         app_url,
     )
     _send(to, "Votre compte OptiFlow est prêt", html)
+
+
+_SUPERVISOR_EMAIL_COPY: dict[Language, dict[str, str]] = {
+    Language.EN: {
+        "subject": "Unknown-cause downtime at {location}",
+        "heading": "A downtime was declared — cause unknown",
+        "para1": "A downtime occurred at <strong>{location}</strong> for an unknown reason.",
+        "para2": (
+            "Please contact the production team on site to learn more about the "
+            "issue, and follow the ticket through to closure in OptiFlow."
+        ),
+        "cta": "Open OptiFlow",
+    },
+    Language.FR: {
+        "subject": "Arrêt de cause inconnue — {location}",
+        "heading": "Un arrêt a été déclaré — cause inconnue",
+        "para1": "Un arrêt s'est produit à <strong>{location}</strong> pour une raison inconnue.",
+        "para2": (
+            "Merci de contacter l'équipe de production sur place pour en savoir "
+            "plus, et de suivre le ticket jusqu'à sa clôture dans OptiFlow."
+        ),
+        "cta": "Ouvrir OptiFlow",
+    },
+}
+
+
+def send_down_time_supervisor_email(
+    to: str, language: Language, location: str, app_url: str | None = None
+) -> None:
+    """Best-effort bilingual email alerting a production supervisor of an
+    unknown-cause (`DownTimeType.OTHERS`) downtime ticket.
+
+    `location` originates from tenant-entered workstation/line/UAP names, so
+    it is HTML-escaped before being embedded in the body.
+    """
+    lang = language if language in _SUPERVISOR_EMAIL_COPY else Language.EN
+    copy = _SUPERVISOR_EMAIL_COPY[lang]
+    safe_location = html.escape(location)
+    url = app_url or get_settings().frontend_url
+
+    body = (
+        f'<p style="{_PARA}">{copy["para1"].format(location=safe_location)}</p>'
+        f'<p style="{_PARA}">{copy["para2"]}</p>'
+    )
+    rendered = _shell(
+        copy["subject"].format(location=safe_location),
+        copy["heading"],
+        body,
+        copy["cta"],
+        url,
+        language=lang,
+    )
+    _send(to, copy["subject"].format(location=safe_location), rendered)

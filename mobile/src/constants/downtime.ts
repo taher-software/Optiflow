@@ -88,10 +88,25 @@ export const DOWN_TIME_TYPES = [
   "Work-in-Process (WIP) Shortage",
   "Material / Component Shortage",
   "Setup / Changeover",
+  "others",
 ] as const;
 export type DownTimeType = (typeof DOWN_TIME_TYPES)[number];
 
 export const SETUP_CHANGEOVER: DownTimeType = "Setup / Changeover";
+
+/**
+ * Types whose ticket skips acknowledge/resolve: they go straight from
+ * `pending` to `closed`, and only a production agent may close them (mirrors
+ * the backend `CLOSE_ONLY_DOWNTIME_TYPES`).
+ */
+export const CLOSE_ONLY_TYPES: readonly DownTimeType[] = [
+  "Material / Component Shortage",
+  "others",
+];
+
+export function isCloseOnly(downTimeType: string): boolean {
+  return (CLOSE_ONLY_TYPES as readonly string[]).includes(downTimeType);
+}
 
 /** Departments a Setup / Changeover can be routed to. */
 export const SETUP_DEPARTMENTS = ["production", "maintenance"] as const;

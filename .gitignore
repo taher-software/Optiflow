@@ -18,6 +18,13 @@ dist/
 .env.local
 *.local
 
+# Firebase / GCP credentials — never commit
+google-service.json
+google-services.json
+GoogleService-Info.plist
+*-service-account*.json
+serviceAccountKey*.json
+
 # OS / editor
 .DS_Store
 *.log

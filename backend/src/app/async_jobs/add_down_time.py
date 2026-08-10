@@ -3,6 +3,10 @@
 Declares a new downtime ticket ("issue") under
 `down_time/{namespace_id}/issues/{job_id}` and notifies the online process
 agents (e.g. "maintenance agent") responsible for it via push notification.
+Notification copy is bilingual (en/fr, per the namespace's `language` field)
+and specialized per `DownTimeType` — see `src.app.core.notifications`.
+Unknown-cause (`DownTimeType.OTHERS`) tickets additionally alert every
+production supervisor in the namespace (push + best-effort email).
 
 Trigger: published (job_type=`JobType.ADD_DOWN_TIME`) by the downtime-ticket
 creation endpoint (owned by the api sub-factory) once a workstation/line/UAP
@@ -17,14 +21,26 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import backoff
 
-from src.app.core.firestore import NAMESPACE_COLLECTION, USERS_COLLECTION
+from src.app.core.email import send_down_time_supervisor_email
+from src.app.core.firestore import (
+    NAMESPACE_COLLECTION,
+    PRODUCTION_LINE_COLLECTION,
+    UAP_COLLECTION,
+    USERS_COLLECTION,
+    WORKSTATION_COLLECTION,
+)
+from src.app.core.notifications import agent_notification, supervisor_notification
 from src.app.core.push import send_push_notifications
 from src.app.gcp import get_firestore_client
 from src.app.globals.enum import (
     DOWNTIME_TYPE_PROCESS,
     DownTimeStatus,
     DownTimeType,
+    Language,
     Process,
+    ProductionScope,
+    Role,
+    language_of,
 )
 
 from .exceptions import FunctionalJobError
@@ -73,7 +89,62 @@ def _resolve_process(down_time_type: DownTimeType, department: str | None) -> Pr
     return DOWNTIME_TYPE_PROCESS[down_time_type]
 
 
-def _notify_process_agents(firestore, namespace_id: str, process: Process, job_id: str) -> None:
+_FALLBACK_LOCATION = {Language.EN: "the plant", Language.FR: "l'usine"}
+
+
+def _resolve_location(
+    firestore, namespace_id: str, namespace: dict | None, payload: dict, language: Language
+) -> str:
+    """Best-effort human-readable location label for a downtime ticket, from
+    its production scope. Reads the relevant Firestore document's `name`
+    field. Never raises — falls back to the namespace `company_name`, then to
+    a generic "the plant" / "l'usine" label, so a missing/renamed document
+    never blocks ticket creation."""
+    try:
+        scope = payload.get("production_scope")
+        doc = None
+        if scope == ProductionScope.WORK_STATION.value and payload.get("workstation_id"):
+            doc = firestore.get_document(WORKSTATION_COLLECTION, payload["workstation_id"])
+        elif scope == ProductionScope.PRODUCTION_LINE.value and payload.get(
+            "production_line_id"
+        ):
+            doc = firestore.get_document(
+                PRODUCTION_LINE_COLLECTION, payload["production_line_id"]
+            )
+        elif scope == ProductionScope.UAP.value and payload.get("uap_id"):
+            doc = firestore.get_document(UAP_COLLECTION, payload["uap_id"])
+
+        # Same forged/stale-message threat as the namespace-existence guard
+        # above: the worker route is unauthenticated at the app layer, so a
+        # job message could pair an attacker's `namespace_id` with a victim
+        # tenant's document id. Never surface another tenant's document name.
+        if doc and doc.get("namespace_id") != namespace_id:
+            doc = None
+
+        name = (doc or {}).get("name") if doc else None
+        if name:
+            return name
+    except Exception as e:  # never let a location lookup fail the job
+        logger.warning(
+            f"add_down_time: failed to resolve location for issue "
+            f"(namespace='{namespace_id}'): {e}"
+        )
+
+    company_name = (namespace or {}).get("company_name")
+    if company_name:
+        return company_name
+    return _FALLBACK_LOCATION[language]
+
+
+def _notify_process_agents(
+    firestore,
+    namespace_id: str,
+    down_time_type: DownTimeType,
+    process: Process,
+    language: Language,
+    location: str,
+    job_id: str,
+) -> None:
     """Best-effort push notification to every online agent of the given
     process (e.g. "maintenance agent") in this namespace."""
     role = f"{process.value} agent"
@@ -93,12 +164,52 @@ def _notify_process_agents(firestore, namespace_id: str, process: Process, job_i
         )
         return
 
+    title, body = agent_notification(down_time_type, process, language, location)
     send_push_notifications(
         tokens,
-        title="New downtime ticket",
-        body=f"A new {process.value} downtime ticket needs attention.",
+        title=title,
+        body=body,
         data={"down_time_id": job_id, "process": process.value},
     )
+
+
+def _notify_production_supervisors(
+    firestore, namespace_id: str, language: Language, location: str, job_id: str
+) -> None:
+    """Best-effort alert (push + email) to every production supervisor in the
+    namespace for an unknown-cause (`DownTimeType.OTHERS`) ticket.
+
+    Deliberately notifies ALL production supervisors regardless of the
+    `online` field — unlike `_notify_process_agents`, this alert must reach
+    them even when offline (product decision; do not "fix" this to match the
+    agent online-filter)."""
+    supervisors = firestore.find_documents(
+        USERS_COLLECTION,
+        {"namespace_id": namespace_id, "role": Role.PRODUCTION_SUPERVISOR.value},
+    )
+
+    title, body = supervisor_notification(language, location)
+    data = {"down_time_id": job_id, "process": Process.PRODUCTION.value}
+
+    tokens = [u["push_token"] for u in supervisors if u.get("push_token")]
+    send_push_notifications(tokens, title=title, body=body, data=data)
+
+    for supervisor in supervisors:
+        email = supervisor.get("email")
+        if not email:
+            continue
+        try:
+            send_down_time_supervisor_email(email, language, location)
+        except Exception as e:
+            # Best-effort: an email failure here must never propagate (this
+            # whole notification phase is already wrapped by the caller, but
+            # we still isolate per-recipient so one bad address doesn't skip
+            # the rest of the fan-out). Log the user id, not the email
+            # address — PII must not land in the log sink.
+            logger.warning(
+                f"add_down_time: failed to send supervisor email to user "
+                f"'{supervisor.get('id')}' for issue '{job_id}': {e}"
+            )
 
 
 def _on_giveup(details: dict) -> None:
@@ -221,6 +332,29 @@ def _run_add_down_time(namespace_id: str, payload: dict, job_id: str) -> dict:
         document_id=job_id,
     )
 
-    _notify_process_agents(firestore, namespace_id, process, job_id)
+    # The issue is written; from here on, any failure must not resurface as a
+    # retry. A transient Firestore error raised out of this block would
+    # propagate to the `backoff` decorator, which re-enters the handler — but
+    # the idempotency guard above would then short-circuit the replay before
+    # any notification runs, so nobody would ever be notified while the job
+    # still reports success. Contain notification failures here instead: log
+    # and let ticket creation stand.
+    try:
+        language = language_of(namespace)
+        location = _resolve_location(firestore, namespace_id, namespace, payload, language)
+
+        _notify_process_agents(
+            firestore, namespace_id, down_time_type, process, language, location, job_id
+        )
+
+        if down_time_type is DownTimeType.OTHERS:
+            _notify_production_supervisors(
+                firestore, namespace_id, language, location, job_id
+            )
+    except Exception as e:
+        logger.error(
+            f"add_down_time: notification phase failed for issue '{job_id}' "
+            f"in namespace '{namespace_id}' (ticket was created): {e}"
+        )
 
     return {"status": "created", "down_time_id": job_id}

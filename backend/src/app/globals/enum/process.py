@@ -23,4 +23,16 @@ DOWNTIME_TYPE_PROCESS: dict[DownTimeType, Process] = {
     DownTimeType.ABSENTEEISM: Process.PRODUCTION,
     DownTimeType.WIP_SHORTAGE: Process.PRODUCTION,
     DownTimeType.MATERIAL_SHORTAGE: Process.LOGISTIC,
+    DownTimeType.OTHERS: Process.PRODUCTION,
 }
+
+
+# Downtime types that skip the acknowledge/resolve steps entirely and go
+# straight `pending -> closed`. No responder "repairs" these in the OptiFlow
+# sense: a production agent simply confirms production has resumed, so there
+# is no diagnosis/repair phase to acknowledge or resolve.
+#
+# Consumers: the down_time router's permission flags + lifecycle transitions.
+CLOSE_ONLY_DOWNTIME_TYPES: frozenset[DownTimeType] = frozenset(
+    {DownTimeType.OTHERS, DownTimeType.MATERIAL_SHORTAGE}
+)

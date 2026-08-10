@@ -54,6 +54,7 @@ const fr = {
         Work_in_Process_WIP_Shortage: "Rupture d'en-cours (WIP)",
         Material_Component_Shortage: "Rupture matière / composant",
         Setup_Changeover: "Réglage / changement de série",
+        others: "Autre / cause inconnue",
       },
       list: {
         empty: "Aucun arrêt ici.",

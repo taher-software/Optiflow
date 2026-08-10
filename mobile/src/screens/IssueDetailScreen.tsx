@@ -13,6 +13,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import {
   formatDuration,
+  isCloseOnly,
   slug,
   STATUS_META,
   type DownTime,
@@ -117,6 +118,11 @@ export function IssueDetailScreen({ route, navigation }: Props) {
   }
 
   const meta = STATUS_META[issue.status];
+  // Close-only tickets (material shortage / unknown cause) are never
+  // acknowledged or resolved — the production agent just closes them. The
+  // backend already returns can_acknowledge/can_resolve = false for them; this
+  // guard keeps the screen correct against an older backend too.
+  const closeOnly = isCloseOnly(issue.down_time_type);
 
   return (
     <ScrollView
@@ -182,7 +188,11 @@ export function IssueDetailScreen({ route, navigation }: Props) {
           label={t("downtime.detail.createdBy")}
           value={issue.created_by_name ?? "—"}
         />
-        {issue.status !== "pending" && (
+        {/* Keyed off the timestamps rather than the status: a close-only
+            ticket is closed directly and never has them, while a legacy one
+            created before its type became close-only may have been
+            acknowledged before the rule changed — show what actually exists. */}
+        {issue.acknowledged_at && (
           <>
             <Row
               label={t("downtime.detail.ackAt")}
@@ -194,7 +204,7 @@ export function IssueDetailScreen({ route, navigation }: Props) {
             />
           </>
         )}
-        {(issue.status === "resolved" || issue.status === "closed") && (
+        {issue.resolved_at && (
           <>
             <Row
               label={t("downtime.detail.resolvedAt")}
@@ -222,14 +232,14 @@ export function IssueDetailScreen({ route, navigation }: Props) {
       </View>
 
       <View className="mt-6 gap-3">
-        {issue.can_acknowledge && (
+        {issue.can_acknowledge && !closeOnly && (
           <ActionButton
             label={t("downtime.detail.acknowledge")}
             onPress={() => void runAction(acknowledge)}
             busy={busy}
           />
         )}
-        {issue.can_resolve && (
+        {issue.can_resolve && !closeOnly && (
           <ActionButton
             label={t("downtime.detail.resolve")}
             onPress={() => void runAction(resolve)}

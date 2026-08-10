@@ -24,3 +24,4 @@ class NamespaceDocFactory(factory.Factory):
     city = factory.Faker("city")
     confirmed = True
     timezone = None
+    language = "en"
