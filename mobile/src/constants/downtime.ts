@@ -100,7 +100,7 @@ export const SETUP_CHANGEOVER: DownTimeType = "Setup / Changeover";
  * the backend `CLOSE_ONLY_DOWNTIME_TYPES`).
  */
 export const CLOSE_ONLY_TYPES: readonly DownTimeType[] = [
-  "Material / Component Shortage",
+  "Work-in-Process (WIP) Shortage",
   "others",
 ];
 

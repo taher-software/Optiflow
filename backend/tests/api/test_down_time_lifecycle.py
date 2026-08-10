@@ -285,7 +285,7 @@ class TestDownTimeTransitions:
 # lifecycle rule beats the role rule even for that "normally allowed" role).
 _CLOSE_ONLY_CASES = [
     (DownTimeType.OTHERS.value, "production", Role.PRODUCTION_AGENT.value),
-    (DownTimeType.MATERIAL_SHORTAGE.value, "logistic", Role.LOGISTIC_AGENT.value),
+    (DownTimeType.WIP_SHORTAGE.value, "production", Role.PRODUCTION_AGENT.value),
 ]
 
 

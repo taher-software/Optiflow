@@ -182,7 +182,7 @@ async def get_down_time(
         "maintenance ticket, derived from the ticket's `process`). Returns "
         "the updated ticket, re-serialized so the caller's permission flags "
         "reflect the new status. Rejected with 403 when the ticket's "
-        "`down_time_type` is close-only (e.g. material shortage / 'others') "
+        "`down_time_type` is close-only (e.g. WIP shortage / 'others') "
         "— those tickets skip acknowledge entirely and go straight "
         "`pending` -> `closed`."
     ),
@@ -215,7 +215,7 @@ async def acknowledge_down_time(
         "`resolved`. Restricted to the ticket's owning process agent. "
         "Returns the updated ticket, re-serialized so the caller's "
         "permission flags reflect the new status. Rejected with 403 when "
-        "the ticket's `down_time_type` is close-only (e.g. material "
+        "the ticket's `down_time_type` is close-only (e.g. WIP "
         "shortage / 'others') — those tickets skip resolve entirely and go "
         "straight `pending` -> `closed`."
     ),
@@ -248,7 +248,7 @@ async def resolve_down_time(
         "to normal. Restricted to production agents. Returns the updated "
         "ticket, re-serialized so the caller's permission flags reflect the "
         "new status. For most tickets this moves `resolved` -> `closed`; "
-        "for a close-only `down_time_type` (e.g. material shortage / "
+        "for a close-only `down_time_type` (e.g. WIP shortage / "
         "'others') acknowledge/resolve are skipped entirely, so this closes "
         "directly from any non-closed status (`pending`, or, for a legacy "
         "ticket created before its type became close-only, `ongoing`/"

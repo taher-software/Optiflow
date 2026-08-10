@@ -25,6 +25,9 @@ class TestAgentNotification:
         )
         assert "wip shortage" in title.lower()
         assert "shortage" in body.lower() and "resume" in body.lower()
+        # WIP shortage is close-only: the same production agents who are
+        # notified are the ones who close it, so the copy must say so.
+        assert "close this ticket" in body
 
     def test_material_shortage_selects_material_shortage_copy_en(self):
         title, body = agent_notification(
@@ -32,7 +35,9 @@ class TestAgentNotification:
         )
         assert title == "Material shortage — production stopped"
         assert "material" in body.lower() and "supply" in body.lower()
-        assert "production team will close the ticket" in body
+        # Material shortage is NOT close-only — the logistic agent does
+        # acknowledge and resolve it, so the copy invites that.
+        assert "acknowledge" in body.lower()
 
     def test_material_shortage_selects_material_shortage_copy_fr(self):
         title, body = agent_notification(
@@ -40,7 +45,7 @@ class TestAgentNotification:
         )
         assert title == "Rupture matière — production arrêtée"
         assert "rupture matière" in body.lower()
-        assert "clôturera le ticket" in body
+        assert "prendre en charge" in body
 
     @pytest.mark.parametrize(
         "down_time_type",

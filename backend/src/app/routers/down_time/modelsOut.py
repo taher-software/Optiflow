@@ -88,7 +88,7 @@ class DownTimeOut(BaseModel):
         ...,
         description=(
             "Whether the caller may acknowledge this ticket now. Always "
-            "`false` for a close-only `down_time_type` (e.g. material "
+            "`false` for a close-only `down_time_type` (e.g. WIP "
             "shortage / 'others') — those tickets skip acknowledge entirely."
         ),
     )

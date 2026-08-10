@@ -30,9 +30,16 @@ DOWNTIME_TYPE_PROCESS: dict[DownTimeType, Process] = {
 # Downtime types that skip the acknowledge/resolve steps entirely and go
 # straight `pending -> closed`. No responder "repairs" these in the OptiFlow
 # sense: a production agent simply confirms production has resumed, so there
-# is no diagnosis/repair phase to acknowledge or resolve.
+# is no diagnosis/repair phase to acknowledge or resolve. Note both types here
+# route to `Process.PRODUCTION` above, so the notified agents are the same
+# production agents who close the ticket.
 #
-# Consumers: the down_time router's permission flags + lifecycle transitions.
+# `MATERIAL_SHORTAGE` is deliberately NOT close-only: it routes to
+# `Process.LOGISTIC`, and the logistic agent does acknowledge and resolve it
+# (they physically supply the missing parts), before production closes it.
+#
+# Consumers: the down_time router's permission flags + lifecycle transitions,
+# and the notification variant table in `src.app.core.notifications`.
 CLOSE_ONLY_DOWNTIME_TYPES: frozenset[DownTimeType] = frozenset(
-    {DownTimeType.OTHERS, DownTimeType.MATERIAL_SHORTAGE}
+    {DownTimeType.OTHERS, DownTimeType.WIP_SHORTAGE}
 )

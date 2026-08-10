@@ -59,13 +59,13 @@ _AGENT_TEMPLATES: dict[Language, dict[str, tuple[str, str]]] = {
             "WIP shortage — production stopped",
             "Production is stopped at {location} by a work-in-process shortage. "
             "Please work on the shortage and get production resumed as soon as "
-            "possible.",
+            "possible, then close this ticket.",
         ),
         "material_shortage": (
             "Material shortage — production stopped",
             "Production is stopped at {location} by a material / component "
-            "shortage. Please supply the missing parts as soon as possible; "
-            "the production team will close the ticket once production resumes.",
+            "shortage. Please acknowledge this ticket and supply the missing "
+            "parts as soon as possible.",
         ),
     },
     Language.FR: {
@@ -82,14 +82,13 @@ _AGENT_TEMPLATES: dict[Language, dict[str, tuple[str, str]]] = {
             "Rupture d'en-cours — production arrêtée",
             "La production est arrêtée à {location} par une rupture d'en-cours "
             "(WIP). Merci de traiter la rupture et de faire reprendre la "
-            "production dès que possible.",
+            "production dès que possible, puis de clôturer ce ticket.",
         ),
         "material_shortage": (
             "Rupture matière — production arrêtée",
             "La production est arrêtée à {location} par une rupture matière / "
-            "composant. Merci de fournir les pièces manquantes dès que "
-            "possible ; l'équipe de production clôturera le ticket dès la "
-            "reprise.",
+            "composant. Merci de prendre en charge ce ticket et de fournir les "
+            "pièces manquantes dès que possible.",
         ),
     },
 }

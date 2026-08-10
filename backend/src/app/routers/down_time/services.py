@@ -17,7 +17,7 @@ permission-flag rules documented on each function below.
 Lifecycle: most tickets go `pending -> ongoing -> resolved -> closed` via
 `acknowledge_down_time` / `resolve_down_time` / `close_down_time`. Tickets
 whose `down_time_type` is "close-only" (see
-`src.app.globals.enum.CLOSE_ONLY_DOWNTIME_TYPES` — currently a material
+`src.app.globals.enum.CLOSE_ONLY_DOWNTIME_TYPES` — currently a WIP
 shortage or an unclassified/"others" stop) skip acknowledge and resolve
 entirely: nobody "repairs" those in the OptiFlow sense, so forcing them
 through ack/resolve would pollute MTTR-style KPIs with meaningless
