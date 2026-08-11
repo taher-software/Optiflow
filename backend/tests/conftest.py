@@ -19,6 +19,8 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 import src.app.core.deps as deps_module
+import src.app.core.email as email_module
+import src.app.core.push as push_module
 import src.app.routers.auth.services as auth_services_module
 import src.app.routers.down_time.services as down_time_services_module
 import src.app.routers.registration.services as registration_services_module
@@ -200,3 +202,79 @@ def auth_headers():
         return {"Authorization": f"Bearer {token}"}
 
     return _headers
+
+
+# Egress attempts recorded during the current test. Raising from the guard is
+# NOT enough on its own: both `core.push.send_push_notification` and the
+# per-recipient email loops catch `Exception` broadly by design (a failed
+# notification must never break a request or a job), so they swallow the
+# guard's `AssertionError` into a warning log and the test still passes green
+# — the exact silent-discipline failure this guard exists to end. The
+# `_no_real_network` fixture therefore also asserts this list is empty at
+# teardown, which production code cannot swallow.
+_BLOCKED_EGRESS: list[str] = []
+
+
+class _BlockedRequests:
+    """Stand-in for the `requests` module name inside `src.app.core.push`:
+    any attempted HTTP verb records the attempt and raises, naming the call."""
+
+    def __getattr__(self, verb: str):
+        def _blocked(url, *args, **kwargs):
+            message = (
+                f"requests.{verb}({url!r}) from "
+                "src.app.core.push.send_push_notification — reaching the Expo "
+                "push API is never allowed in tests. Add/use the `push_spy` "
+                "fixture (monkeypatch `send_push_notifications`/"
+                "`send_push_notification` on the module under test)."
+            )
+            _BLOCKED_EGRESS.append(message)
+            raise AssertionError(f"Test attempted a real network call: {message}")
+
+        return _blocked
+
+
+def _blocked_email_send(to: str, subject: str, html: str) -> None:
+    message = (
+        f"src.app.core.email._send(to={to!r}, subject={subject!r}) (Resend) — "
+        "reaching Resend is never allowed in tests. Add/use the `email_spy` "
+        "fixture (monkeypatch the relevant `send_*_email` function on the "
+        "module under test)."
+    )
+    _BLOCKED_EGRESS.append(message)
+    raise AssertionError(f"Test attempted a real network call: {message}")
+
+
+@pytest.fixture(autouse=True)
+def _no_real_network(monkeypatch):
+    """Backstop against genuine outbound network calls, patched at the two
+    real egress choke points rather than the caller-facing helpers:
+    `src.app.core.push`'s `requests` and `src.app.core.email._send`. Every
+    push/email sender funnels through one of these two, regardless of which
+    module imported the caller-facing helper (`send_push_notifications`,
+    `send_down_time_escalation_email`, ...) into its own namespace, because
+    those helpers resolve `requests`/`_send` from their *own* defining
+    module's globals — not the caller's.
+
+    This is a backstop beneath the existing per-test `push_spy`/`email_spy`
+    fixtures, not a replacement: those patch the caller-facing helper
+    directly (e.g. `add_down_time_module.send_push_notifications`) so they
+    intercept first and this fixture's patched `requests`/`_send` is simply
+    never reached in that case. A test that seeds a push token/email and
+    forgets to request a spy now fails loudly here instead of silently
+    hitting (or best-effort-swallowing a failed hit to) the real network.
+    """
+    _BLOCKED_EGRESS.clear()
+    monkeypatch.setattr(push_module, "requests", _BlockedRequests())
+    monkeypatch.setattr(email_module, "_send", _blocked_email_send)
+
+    yield
+
+    if _BLOCKED_EGRESS:
+        attempts = "\n  - ".join(_BLOCKED_EGRESS)
+        _BLOCKED_EGRESS.clear()
+        raise AssertionError(
+            "This test reached a real network egress point. It was blocked, "
+            "but the production sender swallowed the error by design, so the "
+            "test would otherwise have passed silently:\n  - " + attempts
+        )

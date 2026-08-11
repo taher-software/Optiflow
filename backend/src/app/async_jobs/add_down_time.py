@@ -8,12 +8,13 @@ and specialized per `DownTimeType` — see `src.app.core.notifications`.
 Unknown-cause (`DownTimeType.OTHERS`) tickets additionally alert every
 production supervisor in the namespace (push + best-effort email). Finally,
 when the ticket matches the escalation policy (`src.app.core.escalation`),
-schedules the FIRST escalation cycle with the deterministic Cloud Task id
-`f"{job_id}-1"` (`escalation_number=1`) — see `core.escalation`'s module
-docstring for why a deterministic id needs no persist-before-create
-choreography. Persists the returned id on the issue as `escalation_task_id`
-only once creation actually succeeds. `escalate_down_time` then re-evaluates
-and reschedules itself every 30 minutes until the ticket closes.
+schedules the FIRST escalation cycle via the shared
+`_common.schedule_escalation_cycle(..., escalation_number=1)` — see its
+docstring for the deterministic Cloud Task id (`f"{job_id}-1"`) and the
+write-on-success-only rule (the issue is only updated with
+`escalation_task_id` once the Cloud Task actually exists). `escalate_down_time`
+then re-evaluates and reschedules itself every 30 minutes until the ticket
+closes.
 
 This first-cycle scheduling stays best-effort/contained (unlike
 `escalate_down_time`'s later cycles, which now let a failure propagate to
@@ -37,7 +38,7 @@ from datetime import datetime
 import backoff
 
 from src.app.core.email import send_down_time_supervisor_email
-from src.app.core.escalation import schedule_escalation, should_escalate
+from src.app.core.escalation import should_escalate
 from src.app.core.firestore import NAMESPACE_COLLECTION, USERS_COLLECTION
 from src.app.core.notifications import agent_notification, supervisor_notification
 from src.app.core.push import send_push_notifications
@@ -59,6 +60,7 @@ from ._common import (
     ISSUES_SUBCOLLECTION,
     resolve_location,
     resolve_scope_document,
+    schedule_escalation_cycle,
 )
 from .exceptions import FunctionalJobError
 
@@ -318,28 +320,13 @@ def _run_add_down_time(namespace_id: str, payload: dict, job_id: str) -> dict:
             scope_doc if payload["production_scope"] == ProductionScope.WORK_STATION.value else None
         )
         if should_escalate(issue_data, workstation):
-            # Deterministic id for cycle 1 (`f"{job_id}-1"`, matching
-            # `escalate_down_time._reschedule`'s formula) — no persist-
-            # before-create dance needed even here, since a deterministic id
-            # would be safe to recreate. It still isn't retried, though: see
-            # the module docstring for why a retry of this whole handler
-            # can't reach this code a second time anyway.
-            task_id = f"{job_id}-1"
-            escalation_task_id = schedule_escalation(
-                namespace_id,
-                job_id,
-                namespace.get("timezone"),
-                task_id=task_id,
-                escalation_number=1,
-            )
-            if escalation_task_id:
-                firestore.update_subdocument(
-                    DOWN_TIME_COLLECTION,
-                    namespace_id,
-                    ISSUES_SUBCOLLECTION,
-                    job_id,
-                    {"escalation_task_id": escalation_task_id},
-                )
+            # Cycle 1 via the shared composition (`_common.schedule_escalation_cycle`,
+            # also used by `escalate_down_time` for every later cycle — see
+            # its docstring for the deterministic-id contract and the
+            # write-on-success-only rule). Not retried here, though: see the
+            # module docstring for why a retry of this whole handler can't
+            # reach this code a second time anyway.
+            schedule_escalation_cycle(firestore, namespace_id, namespace, job_id, 1)
     except Exception as e:
         logger.error(
             f"add_down_time: notification phase failed for issue '{job_id}' "

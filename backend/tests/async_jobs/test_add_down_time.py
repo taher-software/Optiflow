@@ -7,11 +7,13 @@ from datetime import datetime, timedelta
 
 import pytest
 
+from src.app.core.escalation import ScheduleEscalationResult
 from src.app.core.firestore import NAMESPACE_COLLECTION
 from src.app.gcp.firestore import FirestoreClient
 from src.app.globals.enum import DownTimeType, ProductionScope, Role, WorkstationType
 
 add_down_time_module = importlib.import_module("src.app.async_jobs.add_down_time")
+common_module = importlib.import_module("src.app.async_jobs._common")
 add_down_time = add_down_time_module.add_down_time
 
 NS = "ns-handler"
@@ -484,11 +486,13 @@ def test_idempotent_replay_sends_no_notifications(
 
 @pytest.fixture
 def schedule_escalation_spy(monkeypatch):
-    """Spy on `add_down_time`'s own bound `schedule_escalation` (a direct
-    `from ... import schedule_escalation`, so the patch must land on THIS
-    module's name, not `core.escalation`'s copy) — recording every call
+    """Spy on `_common.schedule_escalation` — the innermost primitive call
+    `_common.schedule_escalation_cycle` makes (the shared composition both
+    handlers call; patching it here, not `schedule_escalation_cycle` itself,
+    lets the REAL composition run — id derivation, the write-on-success-only
+    Firestore persist — against a fake network call). Records every call
     including the `task_id`/`escalation_number` it's invoked with, and
-    always succeeding by echoing the `task_id` back."""
+    always succeeds by echoing the `task_id` back."""
     calls: list[dict] = []
 
     def _spy(namespace_id, down_time_id, timezone_name, task_id=None, escalation_number=None):
@@ -501,9 +505,34 @@ def schedule_escalation_spy(monkeypatch):
                 "escalation_number": escalation_number,
             }
         )
-        return task_id
+        return ScheduleEscalationResult(task_id=task_id, already_existed=False)
 
-    monkeypatch.setattr(add_down_time_module, "schedule_escalation", _spy)
+    monkeypatch.setattr(common_module, "schedule_escalation", _spy)
+    return calls
+
+
+@pytest.fixture
+def schedule_escalation_cycle_spy(monkeypatch):
+    """Full-replacement spy on `add_down_time_module.schedule_escalation_cycle`
+    (the imported name the handler calls) — used only to prove `add_down_time`
+    goes through the ONE shared composition, with the exact args it's called
+    with. Does NOT execute the real composition (no Firestore write happens)
+    — use `schedule_escalation_spy` instead for tests needing real persisted
+    state."""
+    calls: list[dict] = []
+
+    def _spy(firestore, namespace_id, namespace, down_time_id, escalation_number):
+        calls.append(
+            {
+                "namespace_id": namespace_id,
+                "namespace": namespace,
+                "down_time_id": down_time_id,
+                "escalation_number": escalation_number,
+            }
+        )
+        return f"{down_time_id}-{escalation_number}"
+
+    monkeypatch.setattr(add_down_time_module, "schedule_escalation_cycle", _spy)
     return calls
 
 
@@ -632,7 +661,8 @@ class TestEscalationScheduling:
         self, fake_db, seed_user, push_spy, monkeypatch
     ):
         monkeypatch.setattr(
-            add_down_time_module, "schedule_escalation", lambda *a, **k: None
+            common_module, "schedule_escalation",
+            lambda *a, **k: ScheduleEscalationResult(task_id=None, already_existed=False),
         )
         seed_user(
             namespace_id=NS, role=Role.MAINTENANCE_AGENT.value,
@@ -645,11 +675,86 @@ class TestEscalationScheduling:
 
         # Ticket creation is unaffected: the job still reports success. Since
         # `schedule_escalation` itself returned falsy (creation failed), the
-        # contained best-effort phase never had a real id to persist — this
-        # handler's own retry cannot help here (a retry would just hit the
-        # idempotency guard and return early), so the ticket ends up with NO
-        # escalation chain at all, which is the accepted, documented
-        # limitation (see the module docstring).
+        # shared composition never writes escalation bookkeeping to the
+        # issue at all — this handler's own retry cannot help here (a retry
+        # would just hit the idempotency guard and return early), so the
+        # ticket ends up with NO escalation chain at all, which is the
+        # accepted, documented limitation (see the module docstring).
         assert result == {"status": "created", "down_time_id": "job-schedule-fails"}
         issue = _issue(fake_db, NS, "job-schedule-fails")
         assert "escalation_task_id" not in issue
+        assert "escalation_count" not in issue
+        assert "escalated_at" not in issue
+
+    def test_goes_through_the_shared_schedule_escalation_cycle_function(
+        self, seed_user, push_spy, schedule_escalation_cycle_spy
+    ):
+        """Proves the `should_escalate` block calls the ONE shared
+        composition (`_common.schedule_escalation_cycle`) for cycle 1, not
+        some inline reimplementation."""
+        seed_user(
+            namespace_id=NS, role=Role.MAINTENANCE_AGENT.value,
+            online=True, push_token="tok",
+        )
+
+        add_down_time(
+            NS, _payload(production_scope=ProductionScope.PLANT.value), "job-shared-fn"
+        )
+
+        assert len(schedule_escalation_cycle_spy) == 1
+        call = schedule_escalation_cycle_spy[0]
+        assert call["namespace_id"] == NS
+        assert call["down_time_id"] == "job-shared-fn"
+        assert call["escalation_number"] == 1
+
+    def test_none_return_from_schedule_escalation_leaves_the_issue_unwritten(
+        self, fake_db, seed_user, push_spy, monkeypatch
+    ):
+        """`schedule_escalation` returning `None` (Cloud Tasks creation
+        failed) must leave the newly-created issue document with NO
+        escalation bookkeeping at all — not merely "no exception raised"."""
+        monkeypatch.setattr(
+            common_module, "schedule_escalation",
+            lambda *a, **k: ScheduleEscalationResult(task_id=None, already_existed=False),
+        )
+        seed_user(
+            namespace_id=NS, role=Role.MAINTENANCE_AGENT.value,
+            online=True, push_token="tok",
+        )
+
+        add_down_time(
+            NS, _payload(production_scope=ProductionScope.PLANT.value), "job-none-unwritten"
+        )
+
+        issue = _issue(fake_db, NS, "job-none-unwritten")
+        assert "escalation_task_id" not in issue
+        assert "escalation_count" not in issue
+        assert "escalated_at" not in issue
+
+    def test_already_existed_true_performs_zero_firestore_writes(
+        self, fake_db, seed_user, push_spy, monkeypatch
+    ):
+        """`already_existed=True` must be treated the same as the `None`
+        case for write purposes: no escalation bookkeeping written to the
+        issue at all (unlike `escalate_down_time`, `add_down_time` never had
+        a pre-existing document to leave "unchanged" — the assertion here is
+        that NOTHING escalation-related gets added)."""
+        monkeypatch.setattr(
+            common_module, "schedule_escalation",
+            lambda *a, **k: ScheduleEscalationResult(
+                task_id="job-already-existed-1", already_existed=True
+            ),
+        )
+        seed_user(
+            namespace_id=NS, role=Role.MAINTENANCE_AGENT.value,
+            online=True, push_token="tok",
+        )
+
+        add_down_time(
+            NS, _payload(production_scope=ProductionScope.PLANT.value), "job-already-existed"
+        )
+
+        issue = _issue(fake_db, NS, "job-already-existed")
+        assert "escalation_task_id" not in issue
+        assert "escalation_count" not in issue
+        assert "escalated_at" not in issue

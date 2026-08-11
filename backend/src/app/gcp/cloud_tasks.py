@@ -144,21 +144,18 @@ class CloudTask:
                 `CloudJobIn.payload` exactly like the Pub/Sub path.
             task_id: Optional explicit task id to use as the task name instead
                 of minting a fresh UUID. Passing the same `task_id` across
-                retries of the *same logical creation* makes `create_task`
-                idempotent: Cloud Tasks answers a repeat with `AlreadyExists`,
-                which is treated as success (see below), so a retry is a
-                no-op instead of creating a duplicate task. When omitted, the
-                original behavior is unchanged — a fresh UUID is minted every
-                call. This does NOT conflict with the fresh-UUID/tombstone
-                comment further below: that comment is about NOT reusing a
-                name **across** separate delayed cycles (after a task has
-                executed or been deleted, Cloud Tasks refuses to recreate
-                that name for about an hour). Reusing a name **within** a
-                single cycle's retries — before the task has ever executed —
-                is safe and desirable: Cloud Tasks answers with
-                `AlreadyExists`, not a tombstone rejection. Do not "fix" this
-                by always minting a fresh id; that reintroduces the forked
-                escalation chains this parameter exists to prevent.
+                retries of the *same logical creation* is what makes
+                idempotent creation possible for a caller that wants it —
+                see `Raises` below: this method itself no longer decides
+                whether a repeat is "success"; it surfaces `AlreadyExists` to
+                the caller, who is the only one positioned to know what an
+                explicit, caller-chosen `task_id` colliding means for their
+                own retry semantics. When omitted, the original behavior is
+                unchanged — a fresh UUID is minted every call, and a
+                collision is not realistically possible (nothing else in
+                this codebase currently calls `create_task` at all, let
+                alone with an explicit `task_id` — `core.escalation.
+                schedule_escalation` is the only caller today).
 
         Returns:
             str: Task ID. The created Cloud Task is named with this id
@@ -168,8 +165,21 @@ class CloudTask:
 
         Raises:
             ValueError: If delay is invalid or worker_url is not configured
-            Exception: Any Cloud Tasks error other than `AlreadyExists`
-                (e.g. permission, network) propagates unchanged.
+            google.api_core.exceptions.AlreadyExists: A task named `task_id`
+                already exists in this queue, OR `task_id` is within Cloud
+                Tasks' de-duplication window for a name that was recently
+                deleted or executed (per Google's docs: up to 24 hours, or 9
+                days for a queue created via `queue.yaml`/`queue.xml` —
+                https://cloud.google.com/tasks/docs/reference/rest/v2/projects.locations.queues.tasks/create).
+                This method cannot distinguish "already scheduled" from
+                "tombstoned, nothing is scheduled" — both raise the same
+                error — so it no longer swallows this into a truthy return.
+                A caller passing an explicit `task_id` (for idempotent
+                creation) should treat this as "a task under this name
+                already exists" and decide accordingly; it is NOT
+                necessarily a failure.
+            Exception: Any other Cloud Tasks error (e.g. permission,
+                network) propagates unchanged.
         """
         # Validate delay
         MAX_DELAY = 2592000  # 30 days in seconds
@@ -219,11 +229,10 @@ class CloudTask:
 
         # Construct the task. Naming the task after our task id makes it
         # addressable for deletion later; a fresh UUID per call (the default
-        # when `task_id` is omitted) avoids the Cloud Tasks name-reuse
-        # (tombstone) restriction across separate cycles. See the `task_id`
-        # arg docs above for why deliberately reusing a name within a single
-        # cycle's retries is a different, safe case (`AlreadyExists`, not a
-        # tombstone rejection).
+        # when `task_id` is omitted) avoids Cloud Tasks' name de-duplication
+        # window across separate cycles (see the `task_id` arg docs above,
+        # and `Raises` below, for what a collision means and why this
+        # method no longer decides that on the caller's behalf).
         settings = get_settings()
         worker_url = f"{settings.worker_url}/cloud_job"
         task = tasks_v2.Task(
@@ -251,14 +260,23 @@ class CloudTask:
             return task_id
 
         except gcp_exceptions.AlreadyExists:
-            # A task with this name is already scheduled — exactly the
-            # desired end state on a retry with an explicit `task_id`
-            # (idempotent creation). Treat as success, not an error.
+            # A task named `task_id` already exists in this queue, OR
+            # `task_id` is within Cloud Tasks' de-duplication window for a
+            # name that recently executed/was deleted (tombstoned) — the two
+            # are indistinguishable from this exception alone (see `Raises`
+            # in the docstring above, and the docs link there). Do NOT
+            # collapse this into a truthy return here: only the caller knows
+            # whether a caller-chosen `task_id` colliding means "already
+            # scheduled" (safe to treat as success) for their use case.
+            # Keep the info log — this is an expected, non-error outcome for
+            # an idempotent-creation caller — but let the exception
+            # propagate.
             logger.info(
                 f"Task {task_id} already exists (type={job_type.value}, "
-                f"namespace={namespace_id}); treating as already scheduled."
+                f"namespace={namespace_id}) — propagating `AlreadyExists` "
+                "for the caller to interpret."
             )
-            return task_id
+            raise
 
         except Exception as e:
             logger.error(

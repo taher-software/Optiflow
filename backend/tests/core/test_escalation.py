@@ -5,6 +5,13 @@ helpers (`schedule_escalation`, `cancel_escalation`) are best-effort wrappers
 around `get_cloud_task_manager()`; `create_task`'s own UTC-default fallback
 for a missing/blank `timezone_name` is covered directly on `CloudTask`
 (mocked GCP client — never touches real GCP).
+
+`schedule_escalation` returns a `ScheduleEscalationResult(task_id,
+already_existed)`, not a bare id — `AlreadyExists` is ambiguous (already
+scheduled vs. a tombstoned name) and must be reported distinctly, never
+folded into a plain success return. `CloudTask.create_task` itself no
+longer swallows `AlreadyExists` at all — it propagates, and `schedule_escalation`
+is the layer that catches and classifies it.
 """
 
 import json
@@ -18,6 +25,7 @@ from google.api_core import exceptions as gcp_exceptions
 
 from src.app.core.escalation import (
     ESCALATION_DELAY_SECONDS,
+    ScheduleEscalationResult,
     cancel_escalation,
     schedule_escalation,
     should_escalate,
@@ -96,7 +104,7 @@ class TestScheduleEscalation:
 
         result = schedule_escalation("ns-1", "down-time-1", "Europe/Paris")
 
-        assert result == "task-123"
+        assert result == ScheduleEscalationResult(task_id="task-123", already_existed=False)
         mock_manager.create_task.assert_called_once_with(
             delay=ESCALATION_DELAY_SECONDS,
             namespace_id="ns-1",
@@ -116,7 +124,7 @@ class TestScheduleEscalation:
             "ns-1", "down-time-1", "Europe/Paris", task_id="task-abc"
         )
 
-        assert result == "task-abc"
+        assert result == ScheduleEscalationResult(task_id="task-abc", already_existed=False)
         mock_manager.create_task.assert_called_once_with(
             delay=ESCALATION_DELAY_SECONDS,
             namespace_id="ns-1",
@@ -136,7 +144,9 @@ class TestScheduleEscalation:
             "ns-1", "down-time-1", None, task_id="down-time-1-3", escalation_number=3
         )
 
-        assert result == "down-time-1-3"
+        assert result == ScheduleEscalationResult(
+            task_id="down-time-1-3", already_existed=False
+        )
         mock_manager.create_task.assert_called_once_with(
             delay=ESCALATION_DELAY_SECONDS,
             namespace_id="ns-1",
@@ -159,14 +169,14 @@ class TestScheduleEscalation:
         assert "escalation_number" not in kwargs["payload"]
 
     @patch("src.app.core.escalation.get_cloud_task_manager")
-    def test_swallows_exception_and_returns_none(self, mock_get_manager):
+    def test_swallows_exception_and_returns_none_task_id(self, mock_get_manager):
         mock_manager = MagicMock()
         mock_manager.create_task.side_effect = RuntimeError("Cloud Tasks outage")
         mock_get_manager.return_value = mock_manager
 
         result = schedule_escalation("ns-1", "down-time-1", None)
 
-        assert result is None
+        assert result == ScheduleEscalationResult(task_id=None, already_existed=False)
 
     @patch("src.app.core.escalation.get_cloud_task_manager")
     def test_forwards_task_id_and_still_returns_none_on_other_failure(
@@ -180,7 +190,7 @@ class TestScheduleEscalation:
             "ns-1", "down-time-1", None, task_id="task-retry-1"
         )
 
-        assert result is None
+        assert result == ScheduleEscalationResult(task_id=None, already_existed=False)
         mock_manager.create_task.assert_called_once_with(
             delay=ESCALATION_DELAY_SECONDS,
             namespace_id="ns-1",
@@ -196,7 +206,69 @@ class TestScheduleEscalation:
 
         result = schedule_escalation("ns-1", "down-time-1", "UTC")
 
-        assert result is None
+        assert result == ScheduleEscalationResult(task_id=None, already_existed=False)
+
+    @patch("src.app.core.escalation.get_cloud_task_manager")
+    def test_already_exists_reports_already_existed_true_with_the_task_id(
+        self, mock_get_manager
+    ):
+        mock_manager = MagicMock()
+        mock_manager.create_task.side_effect = gcp_exceptions.AlreadyExists(
+            "task already exists"
+        )
+        mock_get_manager.return_value = mock_manager
+
+        result = schedule_escalation(
+            "ns-1", "down-time-1", None, task_id="down-time-1-2"
+        )
+
+        assert result == ScheduleEscalationResult(
+            task_id="down-time-1-2", already_existed=True
+        )
+
+    @patch("src.app.core.escalation.get_cloud_task_manager")
+    def test_already_exists_never_raises(self, mock_get_manager):
+        mock_manager = MagicMock()
+        mock_manager.create_task.side_effect = gcp_exceptions.AlreadyExists(
+            "task already exists"
+        )
+        mock_get_manager.return_value = mock_manager
+
+        # Must not raise — `AlreadyExists` is an expected, classified outcome.
+        schedule_escalation("ns-1", "down-time-1", None, task_id="down-time-1-2")
+
+    def test_unconfigured_project_id_logs_below_error_with_configured_message(
+        self, monkeypatch
+    ):
+        """`get_cloud_task_manager` -> `CloudTask.__init__` ->
+        `_create_queue_path` raises `ValueError` when `google_project_id`
+        isn't set — the ordinary state of an unconfigured environment, not a
+        genuine scheduling failure. Must log at warning (or below), never
+        error, with a message that says the feature isn't configured."""
+        import src.app.core.escalation as escalation_module
+
+        def _raise_unconfigured(*args, **kwargs):
+            raise ValueError("Google Project ID is not set.")
+
+        monkeypatch.setattr(
+            escalation_module, "get_cloud_task_manager", _raise_unconfigured
+        )
+
+        logged_errors = []
+        logged_warnings = []
+        monkeypatch.setattr(
+            escalation_module.logger, "error", lambda msg, *a, **k: logged_errors.append(msg)
+        )
+        monkeypatch.setattr(
+            escalation_module.logger, "warning", lambda msg, *a, **k: logged_warnings.append(msg)
+        )
+
+        result = schedule_escalation("ns-1", "down-time-1", None, task_id="down-time-1-1")
+
+        assert result == ScheduleEscalationResult(task_id=None, already_existed=False)
+        assert logged_errors == []
+        assert len(logged_warnings) == 1
+        assert "not configured" in logged_warnings[0].lower()
 
 
 class TestCancelEscalation:
@@ -286,8 +358,10 @@ class TestCreateTaskTimezoneDefault:
 
 class TestCreateTaskIdempotency:
     """`create_task(task_id=...)` makes creation safe to retry: the same
-    explicit id is reused as the task name, and Cloud Tasks' `AlreadyExists`
-    response for a repeat is treated as success rather than an error."""
+    explicit id is reused as the task name. `AlreadyExists` is no longer
+    swallowed here (see `TestScheduleEscalation` for the layer that
+    classifies it) — this class just proves the id is used as the task name
+    and that `AlreadyExists` propagates unmodified."""
 
     def test_explicit_task_id_used_as_task_name(self, cloud_task):
         result = cloud_task.create_task(
@@ -315,20 +389,19 @@ class TestCreateTaskIdempotency:
         # A UUID4 string, not any fixed/predictable value.
         uuid.UUID(result)
 
-    def test_already_exists_is_treated_as_success(self, cloud_task):
+    def test_already_exists_propagates(self, cloud_task):
         cloud_task.client.create_task.side_effect = gcp_exceptions.AlreadyExists(
             "task already exists"
         )
 
-        result = cloud_task.create_task(
-            delay=60,
-            namespace_id="ns-1",
-            job_type=JobType.ESCALATE_DOWN_TIME,
-            timezone_name=None,
-            task_id="explicit-task-id",
-        )
-
-        assert result == "explicit-task-id"
+        with pytest.raises(gcp_exceptions.AlreadyExists):
+            cloud_task.create_task(
+                delay=60,
+                namespace_id="ns-1",
+                job_type=JobType.ESCALATE_DOWN_TIME,
+                timezone_name=None,
+                task_id="explicit-task-id",
+            )
 
     def test_other_gcp_error_still_propagates(self, cloud_task):
         cloud_task.client.create_task.side_effect = gcp_exceptions.PermissionDenied(

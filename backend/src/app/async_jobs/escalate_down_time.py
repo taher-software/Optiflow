@@ -47,8 +47,8 @@ re-notify recipients who were already reached in an earlier, partial
 fan-out. That is the deliberate trade of removing the containment: a
 duplicate escalation alert is far better than a silently dropped one. The
 reschedule step itself does NOT re-fork the chain on such a retry — see
-`_reschedule`'s docstring for why a deterministic task id makes it safe to
-redo.
+`_common.schedule_escalation_cycle`'s docstring for why a deterministic
+task id makes it safe to redo.
 """
 
 from __future__ import annotations
@@ -59,7 +59,6 @@ from datetime import datetime
 import backoff
 
 from src.app.core.email import send_down_time_escalation_email
-from src.app.core.escalation import schedule_escalation
 from src.app.core.firestore import NAMESPACE_COLLECTION, USERS_COLLECTION
 from src.app.core.notifications import (
     escalation_notification,
@@ -71,7 +70,12 @@ from src.app.core.timezone import namespace_timezone
 from src.app.gcp import get_firestore_client
 from src.app.globals.enum import DownTimeStatus, Process, Role, language_of
 
-from ._common import DOWN_TIME_COLLECTION, ISSUES_SUBCOLLECTION, resolve_location
+from ._common import (
+    DOWN_TIME_COLLECTION,
+    ISSUES_SUBCOLLECTION,
+    resolve_location,
+    schedule_escalation_cycle,
+)
 from .exceptions import FunctionalJobError
 
 logger = logging.getLogger(__name__)
@@ -232,61 +236,18 @@ def _reschedule(
     down_time_id: str,
     escalation_number: int,
 ) -> None:
-    """Schedule the next escalation cycle with a DETERMINISTIC Cloud Task id.
+    """Thin wrapper: schedule the NEXT escalation cycle (`escalation_number + 1`)
+    via the shared `_common.schedule_escalation_cycle` — see its docstring
+    for the deterministic-id contract and the write-on-success-only rule.
 
-    `task_id = f"{down_time_id}-{escalation_number + 1}"`. Deterministic-by-
-    construction means this whole function is safe to call twice for the
-    same cycle (e.g. because the handler's own `backoff` decorator retried
-    the entire run after a notification failure downstream) with no
-    persist-before-create ordering dance required: same inputs -> same id,
-    every time, so a repeat collapses into Cloud Tasks' `AlreadyExists`
-    (treated as success by `create_task`) instead of minting a second,
-    parallel task. Create-then-persist (as below) is fine now — it would NOT
-    have been safe with the old random-per-cycle-id approach, which needed
-    the id persisted before it could be recreated safely; that's gone.
-
-    **`escalation_number` MUST come from the incoming job payload — never
-    from the persisted `escalation_count`.** This function itself writes
-    `escalation_count`, so deriving the id from it would make the id
-    *depend on this function's own prior side effect*: a retry would read
-    the now-updated `escalation_count`, compute a *different* `task_id`, and
-    create a genuinely second, parallel task — reintroducing exactly the
-    forked-chain bug this whole deterministic-id design exists to prevent.
-    The payload's `escalation_number`, by contrast, was fixed at the moment
-    THIS cycle's task was created and never changes no matter how many times
-    delivery is retried — every value this id is built from must be
-    retry-invariant, and only the payload is.
-
-    Distinct across cycles (never hits the ~1h Cloud Tasks tombstone)
-    because `escalation_number` increments by exactly one every cycle.
-
-    Persists `escalation_task_id`, `escalated_at`, and `escalation_count`
-    (= `escalation_number`, the cycle that just ran) together — all three
-    derive only from `escalation_number`, so re-writing them on a retry is a
-    no-op, not a second increment.
+    `escalation_number` here is the cycle that just ran (read from the
+    incoming job payload by `_run_escalate_down_time`) — retry-invariant,
+    which is exactly why it's safe to pass straight through: a redelivered
+    run of the same cycle always computes the same next cycle number, hence
+    the same deterministic id, no matter how many times this is retried.
     """
-    next_number = escalation_number + 1
-    task_id = f"{down_time_id}-{next_number}"
-    tz = namespace_timezone(namespace_id, namespace)
-
-    schedule_escalation(
-        namespace_id,
-        down_time_id,
-        (namespace or {}).get("timezone"),
-        task_id=task_id,
-        escalation_number=next_number,
-    )
-
-    firestore.update_subdocument(
-        DOWN_TIME_COLLECTION,
-        namespace_id,
-        ISSUES_SUBCOLLECTION,
-        down_time_id,
-        {
-            "escalation_task_id": task_id,
-            "escalated_at": datetime.now(tz).isoformat(),
-            "escalation_count": escalation_number,
-        },
+    schedule_escalation_cycle(
+        firestore, namespace_id, namespace, down_time_id, escalation_number + 1
     )
 
 

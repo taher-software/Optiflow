@@ -9,11 +9,12 @@ from datetime import datetime, timedelta
 
 import pytest
 
+from src.app.core.escalation import ScheduleEscalationResult
 from src.app.gcp.firestore import FirestoreClient
 from src.app.globals.enum import DownTimeStatus, Process, ProductionScope, Role
 
 escalate_module = importlib.import_module("src.app.async_jobs.escalate_down_time")
-escalation_module = importlib.import_module("src.app.core.escalation")
+common_module = importlib.import_module("src.app.async_jobs._common")
 escalate_down_time = escalate_module.escalate_down_time
 
 NS = "ns-escalate-handler"
@@ -73,10 +74,13 @@ def email_spy(monkeypatch):
 
 @pytest.fixture
 def reschedule_spy(monkeypatch):
-    """Spy on `core.escalation.schedule_escalation` — the call `_reschedule`
-    makes directly (no retry wrapper anymore) — recording every call
+    """Spy on `_common.schedule_escalation` — the innermost primitive call
+    `_common.schedule_escalation_cycle` makes (the shared composition both
+    handlers call; patching it here, not `schedule_escalation_cycle` itself,
+    lets the REAL composition run — id derivation, the write-on-success-only
+    Firestore persist — against a fake network call). Records every call
     including the `task_id` / `escalation_number` it's invoked with, and
-    always succeeding by echoing the `task_id` back."""
+    always succeeds by echoing the `task_id` back."""
     calls: list[dict] = []
 
     def _spy(namespace_id, down_time_id, timezone_name, task_id=None, escalation_number=None):
@@ -89,9 +93,34 @@ def reschedule_spy(monkeypatch):
                 "escalation_number": escalation_number,
             }
         )
-        return task_id
+        return ScheduleEscalationResult(task_id=task_id, already_existed=False)
 
-    monkeypatch.setattr(escalate_module, "schedule_escalation", _spy)
+    monkeypatch.setattr(common_module, "schedule_escalation", _spy)
+    return calls
+
+
+@pytest.fixture
+def schedule_escalation_cycle_spy(monkeypatch):
+    """Full-replacement spy on `escalate_module.schedule_escalation_cycle`
+    (the imported name `_reschedule` calls) — used only to prove
+    `escalate_down_time` goes through the ONE shared composition, with the
+    exact args it's called with. Does NOT execute the real composition (no
+    Firestore write happens) — use `reschedule_spy` instead for tests that
+    need the real persisted state."""
+    calls: list[dict] = []
+
+    def _spy(firestore, namespace_id, namespace, down_time_id, escalation_number):
+        calls.append(
+            {
+                "namespace_id": namespace_id,
+                "namespace": namespace,
+                "down_time_id": down_time_id,
+                "escalation_number": escalation_number,
+            }
+        )
+        return f"{down_time_id}-{escalation_number}"
+
+    monkeypatch.setattr(escalate_module, "schedule_escalation_cycle", _spy)
     return calls
 
 
@@ -353,7 +382,7 @@ class TestPendingOngoingStatus:
 
 class TestDeterministicReschedule:
     def test_id_is_composed_from_down_time_id_and_escalation_number(
-        self, _wire_firestore, seed_user, reschedule_spy
+        self, _wire_firestore, seed_user, reschedule_spy, push_spy, email_spy
     ):
         _seed_issue(_wire_firestore, status=DownTimeStatus.PENDING.value)
         seed_user(namespace_id=NS, role=Role.MANAGER.value, push_token="tok")
@@ -368,7 +397,7 @@ class TestDeterministicReschedule:
         assert issue["escalation_task_id"] == "issue-1-3"
 
     def test_escalation_count_persisted_is_the_cycle_that_just_ran(
-        self, _wire_firestore, seed_user, reschedule_spy
+        self, _wire_firestore, seed_user, reschedule_spy, push_spy, email_spy
     ):
         _seed_issue(_wire_firestore, status=DownTimeStatus.PENDING.value)
         seed_user(namespace_id=NS, role=Role.MANAGER.value, push_token="tok")
@@ -384,7 +413,7 @@ class TestDeterministicReschedule:
         assert "escalated_at" in issue and issue["escalated_at"]
 
     def test_missing_escalation_number_defaults_so_next_cycle_is_one(
-        self, _wire_firestore, seed_user, reschedule_spy
+        self, _wire_firestore, seed_user, reschedule_spy, push_spy, email_spy
     ):
         """A payload with no `escalation_number` (e.g. a task scheduled
         before this field existed) is tolerated, not a functional error —
@@ -399,7 +428,7 @@ class TestDeterministicReschedule:
         assert reschedule_spy[0]["escalation_number"] == 1
 
     def test_retry_of_the_same_delivery_reuses_the_identical_id(
-        self, _wire_firestore, seed_user, reschedule_spy
+        self, _wire_firestore, seed_user, reschedule_spy, push_spy, email_spy
     ):
         """Two separate invocations carrying the SAME `escalation_number`
         (as a redelivery / retry of the same cycle would) must compute the
@@ -413,6 +442,141 @@ class TestDeterministicReschedule:
 
         assert len(reschedule_spy) == 2
         assert reschedule_spy[0]["task_id"] == reschedule_spy[1]["task_id"] == "issue-1-2"
+
+    def test_goes_through_the_shared_schedule_escalation_cycle_function(
+        self, _wire_firestore, seed_user, schedule_escalation_cycle_spy, push_spy, email_spy
+    ):
+        """Proves `_reschedule` calls the ONE shared composition
+        (`_common.schedule_escalation_cycle`) with the cycle being
+        scheduled — `escalation_number + 1` — not some inline reimplementation."""
+        _seed_issue(_wire_firestore, status=DownTimeStatus.PENDING.value)
+        seed_user(namespace_id=NS, role=Role.MANAGER.value, push_token="tok")
+
+        escalate_down_time(NS, _payload(escalation_number=2), "job-shared-fn")
+
+        assert len(schedule_escalation_cycle_spy) == 1
+        call = schedule_escalation_cycle_spy[0]
+        assert call["namespace_id"] == NS
+        assert call["down_time_id"] == "issue-1"
+        assert call["escalation_number"] == 3
+
+    def test_none_return_from_schedule_escalation_leaves_the_issue_unwritten(
+        self, _wire_firestore, seed_user, monkeypatch, push_spy, email_spy
+    ):
+        """`schedule_escalation` returning `None` (Cloud Tasks creation
+        failed — no task exists) must leave the issue document's escalation
+        bookkeeping UNCHANGED, not merely "not raise". The stale
+        `escalation_task_id` seeded by `_seed_issue` must survive untouched."""
+        _seed_issue(
+            _wire_firestore, status=DownTimeStatus.PENDING.value,
+            escalation_task_id="old-task-id",
+        )
+        seed_user(namespace_id=NS, role=Role.MANAGER.value, push_token="tok")
+        before = _issue(_wire_firestore)
+
+        monkeypatch.setattr(
+            common_module, "schedule_escalation",
+            lambda *a, **k: ScheduleEscalationResult(task_id=None, already_existed=False),
+        )
+
+        result = escalate_down_time(NS, _payload(), "job-schedule-fails")
+
+        assert result["status"] == "escalated"
+        after = _issue(_wire_firestore)
+        assert after["escalation_task_id"] == before["escalation_task_id"] == "old-task-id"
+        assert after.get("escalation_count") == before.get("escalation_count")
+        assert after.get("escalated_at") == before.get("escalated_at")
+
+    def test_already_existed_true_performs_zero_firestore_writes(
+        self, _wire_firestore, seed_user, monkeypatch, push_spy, email_spy
+    ):
+        """`already_existed=True` (a retry landing on the same deterministic
+        id, or a tombstoned name) must leave the issue's escalation
+        bookkeeping BYTE-FOR-BYTE unchanged, exactly like the `None` case —
+        whichever call actually created the task already persisted it."""
+        _seed_issue(
+            _wire_firestore, status=DownTimeStatus.PENDING.value,
+            escalation_task_id="old-task-id", escalation_count=1,
+            escalated_at="2020-01-01T00:00:00+00:00",
+        )
+        seed_user(namespace_id=NS, role=Role.MANAGER.value, push_token="tok")
+        before = _issue(_wire_firestore)
+
+        monkeypatch.setattr(
+            common_module, "schedule_escalation",
+            lambda *a, **k: ScheduleEscalationResult(
+                task_id="issue-1-1", already_existed=True
+            ),
+        )
+
+        result = escalate_down_time(NS, _payload(), "job-already-existed")
+
+        assert result["status"] == "escalated"
+        after = _issue(_wire_firestore)
+        assert after == before
+
+    def test_already_existed_true_still_returns_the_correct_task_id(
+        self, _wire_firestore, seed_user, monkeypatch, push_spy, email_spy
+    ):
+        _seed_issue(_wire_firestore, status=DownTimeStatus.PENDING.value)
+        seed_user(namespace_id=NS, role=Role.MANAGER.value, push_token="tok")
+
+        seen = {}
+
+        def _spy(namespace_id, down_time_id, timezone_name, task_id=None, escalation_number=None):
+            seen["task_id"] = task_id
+            return ScheduleEscalationResult(task_id=task_id, already_existed=True)
+
+        monkeypatch.setattr(common_module, "schedule_escalation", _spy)
+
+        escalate_down_time(NS, _payload(), "job-already-existed-id")
+
+        assert seen["task_id"] == "issue-1-1"
+
+    def test_retry_of_the_same_cycle_writes_exactly_once_across_both_attempts(
+        self, _wire_firestore, seed_user, monkeypatch
+    ):
+        """Simulates the real-world case this whole change targets: a
+        `backoff` retry re-enters after a notification failure, lands on the
+        same deterministic id, and `schedule_escalation` reports
+        `already_existed=True` the second time. The Firestore write must
+        happen exactly once — on the (first, creating) attempt — not twice."""
+        _seed_issue(_wire_firestore, status=DownTimeStatus.PENDING.value)
+        seed_user(namespace_id=NS, role=Role.MANAGER.value, push_token="tok")
+
+        attempts = {"n": 0}
+
+        def _spy(namespace_id, down_time_id, timezone_name, task_id=None, escalation_number=None):
+            attempts["n"] += 1
+            already_existed = attempts["n"] > 1
+            return ScheduleEscalationResult(task_id=task_id, already_existed=already_existed)
+
+        monkeypatch.setattr(common_module, "schedule_escalation", _spy)
+
+        write_count = {"n": 0}
+        real_update = _wire_firestore.update_subdocument
+
+        def _counting_update(*args, **kwargs):
+            write_count["n"] += 1
+            return real_update(*args, **kwargs)
+
+        monkeypatch.setattr(_wire_firestore, "update_subdocument", _counting_update)
+
+        # First attempt fails in notification -> `backoff` retries the whole
+        # handler; second attempt's reschedule call reports already_existed.
+        call_count = {"n": 0}
+
+        def _notify_once_then_ok(*args, **kwargs):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                raise RuntimeError("simulated notification failure")
+
+        monkeypatch.setattr(escalate_module, "_notify_management", _notify_once_then_ok)
+
+        escalate_down_time(NS, _payload(), "job-retry-writes-once")
+
+        assert attempts["n"] == 2
+        assert write_count["n"] == 1
 
 
 # --------------------------------------------------------------------------- #
@@ -446,7 +610,7 @@ def test_issue_from_another_tenant_is_never_acted_on(
 
 
 def test_french_namespace_produces_french_escalation_copy(
-    seed_namespace, _wire_firestore, seed_user, push_spy
+    seed_namespace, _wire_firestore, seed_user, push_spy, email_spy
 ):
     seed_namespace(id=NS, language="fr")
     _seed_issue(_wire_firestore, status=DownTimeStatus.PENDING.value)
@@ -491,7 +655,7 @@ def test_reschedule_happens_before_notification(
     def _notify_spy(*args, **kwargs):
         call_order.append("notify")
 
-    monkeypatch.setattr(escalate_module, "schedule_escalation", _reschedule_spy)
+    monkeypatch.setattr(escalate_module, "schedule_escalation_cycle", _reschedule_spy)
     monkeypatch.setattr(escalate_module, "_notify_management", _notify_spy)
 
     escalate_down_time(NS, _payload(), "job-order")
