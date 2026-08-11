@@ -484,17 +484,24 @@ def test_idempotent_replay_sends_no_notifications(
 
 @pytest.fixture
 def schedule_escalation_spy(monkeypatch):
+    """Spy on `add_down_time`'s own bound `schedule_escalation` (a direct
+    `from ... import schedule_escalation`, so the patch must land on THIS
+    module's name, not `core.escalation`'s copy) — recording every call
+    including the `task_id`/`escalation_number` it's invoked with, and
+    always succeeding by echoing the `task_id` back."""
     calls: list[dict] = []
 
-    def _spy(namespace_id, down_time_id, timezone_name):
+    def _spy(namespace_id, down_time_id, timezone_name, task_id=None, escalation_number=None):
         calls.append(
             {
                 "namespace_id": namespace_id,
                 "down_time_id": down_time_id,
                 "timezone_name": timezone_name,
+                "task_id": task_id,
+                "escalation_number": escalation_number,
             }
         )
-        return "escalation-task-1"
+        return task_id
 
     monkeypatch.setattr(add_down_time_module, "schedule_escalation", _spy)
     return calls
@@ -519,6 +526,25 @@ class TestEscalationScheduling:
         )
         assert schedule_escalation_spy == []
 
+    def test_missing_workstation_document_does_not_escalate(
+        self, seed_user, push_spy, schedule_escalation_spy
+    ):
+        """Fail-closed: a work-station-scoped ticket referencing a
+        nonexistent workstation id must never escalate on unclear data."""
+        seed_user(
+            namespace_id=NS, role=Role.MAINTENANCE_AGENT.value,
+            online=True, push_token="tok",
+        )
+        add_down_time(
+            NS,
+            _payload(
+                production_scope=ProductionScope.WORK_STATION.value,
+                workstation_id="does-not-exist",
+            ),
+            "job-missing-workstation",
+        )
+        assert schedule_escalation_spy == []
+
     def test_bottleneck_workstation_schedules_escalation(
         self, fake_db, seed_user, seed_workstation, push_spy, schedule_escalation_spy
     ):
@@ -538,7 +564,7 @@ class TestEscalationScheduling:
         assert len(schedule_escalation_spy) == 1
         assert schedule_escalation_spy[0]["down_time_id"] == "job-bottleneck-ws"
         issue = _issue(fake_db, NS, "job-bottleneck-ws")
-        assert issue["escalation_task_id"] == "escalation-task-1"
+        assert issue["escalation_task_id"] == schedule_escalation_spy[0]["task_id"]
 
     def test_plant_scoped_ticket_schedules_escalation(
         self, fake_db, seed_user, push_spy, schedule_escalation_spy
@@ -552,7 +578,7 @@ class TestEscalationScheduling:
         )
         assert len(schedule_escalation_spy) == 1
         issue = _issue(fake_db, NS, "job-plant")
-        assert issue["escalation_task_id"] == "escalation-task-1"
+        assert issue["escalation_task_id"] == schedule_escalation_spy[0]["task_id"]
 
     def test_critical_workstation_schedules_escalation(
         self, fake_db, seed_user, seed_workstation, push_spy, schedule_escalation_spy
@@ -585,7 +611,24 @@ class TestEscalationScheduling:
         )
         assert schedule_escalation_spy[0]["timezone_name"] == "Europe/Paris"
 
-    def test_failed_schedule_does_not_persist_task_id_or_fail_ticket_creation(
+    def test_first_cycle_id_is_deterministic_job_id_dash_one(
+        self, fake_db, seed_user, push_spy, schedule_escalation_spy
+    ):
+        seed_user(
+            namespace_id=NS, role=Role.MAINTENANCE_AGENT.value,
+            online=True, push_token="tok",
+        )
+
+        add_down_time(
+            NS, _payload(production_scope=ProductionScope.PLANT.value), "job-first-cycle"
+        )
+
+        assert schedule_escalation_spy[0]["task_id"] == "job-first-cycle-1"
+        assert schedule_escalation_spy[0]["escalation_number"] == 1
+        issue = _issue(fake_db, NS, "job-first-cycle")
+        assert issue["escalation_task_id"] == "job-first-cycle-1"
+
+    def test_failed_first_cycle_scheduling_does_not_persist_a_task_id_or_fail_ticket_creation(
         self, fake_db, seed_user, push_spy, monkeypatch
     ):
         monkeypatch.setattr(
@@ -595,9 +638,18 @@ class TestEscalationScheduling:
             namespace_id=NS, role=Role.MAINTENANCE_AGENT.value,
             online=True, push_token="tok",
         )
+
         result = add_down_time(
             NS, _payload(production_scope=ProductionScope.PLANT.value), "job-schedule-fails"
         )
+
+        # Ticket creation is unaffected: the job still reports success. Since
+        # `schedule_escalation` itself returned falsy (creation failed), the
+        # contained best-effort phase never had a real id to persist — this
+        # handler's own retry cannot help here (a retry would just hit the
+        # idempotency guard and return early), so the ticket ends up with NO
+        # escalation chain at all, which is the accepted, documented
+        # limitation (see the module docstring).
         assert result == {"status": "created", "down_time_id": "job-schedule-fails"}
         issue = _issue(fake_db, NS, "job-schedule-fails")
         assert "escalation_task_id" not in issue

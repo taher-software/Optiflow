@@ -124,6 +124,7 @@ class CloudTask:
         guest_id: str = None,
         event_id: int = None,
         payload: Optional[dict] = None,
+        task_id: Optional[str] = None,
     ) -> str:
         """
         Schedule a task with specified delay relative to the namespace's local time.
@@ -141,14 +142,34 @@ class CloudTask:
             payload: Optional job-specific payload dict, merged into the task
                 body under a `"payload"` key — delivered to the worker route's
                 `CloudJobIn.payload` exactly like the Pub/Sub path.
+            task_id: Optional explicit task id to use as the task name instead
+                of minting a fresh UUID. Passing the same `task_id` across
+                retries of the *same logical creation* makes `create_task`
+                idempotent: Cloud Tasks answers a repeat with `AlreadyExists`,
+                which is treated as success (see below), so a retry is a
+                no-op instead of creating a duplicate task. When omitted, the
+                original behavior is unchanged — a fresh UUID is minted every
+                call. This does NOT conflict with the fresh-UUID/tombstone
+                comment further below: that comment is about NOT reusing a
+                name **across** separate delayed cycles (after a task has
+                executed or been deleted, Cloud Tasks refuses to recreate
+                that name for about an hour). Reusing a name **within** a
+                single cycle's retries — before the task has ever executed —
+                is safe and desirable: Cloud Tasks answers with
+                `AlreadyExists`, not a tombstone rejection. Do not "fix" this
+                by always minting a fresh id; that reintroduces the forked
+                escalation chains this parameter exists to prevent.
 
         Returns:
-            str: Task ID (UUID). The created Cloud Task is named with this id
+            str: Task ID. The created Cloud Task is named with this id
                 (``{queue_path}/tasks/{task_id}``) so it can later be cancelled
-                via :meth:`delete_task`.
+                via :meth:`delete_task`. Equal to `task_id` when provided,
+                otherwise a freshly minted UUID.
 
         Raises:
             ValueError: If delay is invalid or worker_url is not configured
+            Exception: Any Cloud Tasks error other than `AlreadyExists`
+                (e.g. permission, network) propagates unchanged.
         """
         # Validate delay
         MAX_DELAY = 2592000  # 30 days in seconds
@@ -157,8 +178,9 @@ class CloudTask:
         if delay > MAX_DELAY:
             raise ValueError(f"Delay cannot exceed {MAX_DELAY} seconds (30 days)")
 
-        # Generate unique task ID
-        task_id = str(uuid.uuid4())
+        # Use the caller-provided task id for idempotent retries, or mint a
+        # fresh one (existing behavior) when none is given.
+        task_id = task_id or str(uuid.uuid4())
 
         # Calculate schedule time anchored to the namespace's local clock.
         # Mirrors core.timezone.namespace_timezone: missing/blank/unknown
@@ -195,9 +217,13 @@ class CloudTask:
         if payload is not None:
             body["payload"] = payload
 
-        # Construct the task. Naming the task after our UUID makes it
-        # addressable for deletion later; a fresh UUID per call avoids the
-        # Cloud Tasks name-reuse (tombstone) restriction.
+        # Construct the task. Naming the task after our task id makes it
+        # addressable for deletion later; a fresh UUID per call (the default
+        # when `task_id` is omitted) avoids the Cloud Tasks name-reuse
+        # (tombstone) restriction across separate cycles. See the `task_id`
+        # arg docs above for why deliberately reusing a name within a single
+        # cycle's retries is a different, safe case (`AlreadyExists`, not a
+        # tombstone rejection).
         settings = get_settings()
         worker_url = f"{settings.worker_url}/cloud_job"
         task = tasks_v2.Task(
@@ -221,6 +247,16 @@ class CloudTask:
             logger.info(
                 f"Created task {task_id} (type={job_type.value}, namespace={namespace_id}, "
                 f"delay={delay}s, schedule_time={schedule_time.isoformat()})"
+            )
+            return task_id
+
+        except gcp_exceptions.AlreadyExists:
+            # A task with this name is already scheduled — exactly the
+            # desired end state on a retry with an explicit `task_id`
+            # (idempotent creation). Treat as success, not an error.
+            logger.info(
+                f"Task {task_id} already exists (type={job_type.value}, "
+                f"namespace={namespace_id}); treating as already scheduled."
             )
             return task_id
 

@@ -1,7 +1,8 @@
 """Tests for the `escalate_down_time` async handler: the four status
 branches, recipient rules (production agents vs management), dedupe,
-tenant isolation, reschedule bookkeeping, and the deleted-issue /
-closed-ticket terminal paths."""
+tenant isolation, the deterministic-id reschedule contract, the
+reschedule-before-notify ordering, and the deleted-issue / closed-ticket
+terminal paths."""
 
 import importlib
 from datetime import datetime, timedelta
@@ -12,6 +13,7 @@ from src.app.gcp.firestore import FirestoreClient
 from src.app.globals.enum import DownTimeStatus, Process, ProductionScope, Role
 
 escalate_module = importlib.import_module("src.app.async_jobs.escalate_down_time")
+escalation_module = importlib.import_module("src.app.core.escalation")
 escalate_down_time = escalate_module.escalate_down_time
 
 NS = "ns-escalate-handler"
@@ -71,21 +73,23 @@ def email_spy(monkeypatch):
 
 @pytest.fixture
 def reschedule_spy(monkeypatch):
-    """Spy on `schedule_escalation`, returning a fresh fake task id per call
-    so `_reschedule`'s "new id replaces the old one" behavior is observable."""
+    """Spy on `core.escalation.schedule_escalation` — the call `_reschedule`
+    makes directly (no retry wrapper anymore) — recording every call
+    including the `task_id` / `escalation_number` it's invoked with, and
+    always succeeding by echoing the `task_id` back."""
     calls: list[dict] = []
-    counter = {"n": 0}
 
-    def _spy(namespace_id, down_time_id, timezone_name):
-        counter["n"] += 1
+    def _spy(namespace_id, down_time_id, timezone_name, task_id=None, escalation_number=None):
         calls.append(
             {
                 "namespace_id": namespace_id,
                 "down_time_id": down_time_id,
                 "timezone_name": timezone_name,
+                "task_id": task_id,
+                "escalation_number": escalation_number,
             }
         )
-        return f"new-task-{counter['n']}"
+        return task_id
 
     monkeypatch.setattr(escalate_module, "schedule_escalation", _spy)
     return calls
@@ -250,27 +254,6 @@ class TestResolvedStatus:
         assert push_spy == []
         assert len(reschedule_spy) == 1
 
-    def test_reschedules_and_replaces_task_id_and_increments_count(
-        self, _wire_firestore, seed_user, push_spy, reschedule_spy
-    ):
-        _seed_issue(
-            _wire_firestore, status=DownTimeStatus.RESOLVED.value,
-            resolved_at=datetime.now().isoformat(), escalation_task_id="old-task-id",
-            escalation_count=2,
-        )
-        seed_user(
-            namespace_id=NS, role=Role.PRODUCTION_AGENT.value,
-            online=True, push_token="tok-agent",
-        )
-
-        escalate_down_time(NS, _payload(), "job-resolved-reschedule")
-
-        issue = _issue(_wire_firestore)
-        assert issue["escalation_task_id"] == "new-task-1"
-        assert issue["escalation_task_id"] != "old-task-id"
-        assert issue["escalation_count"] == 3
-        assert "escalated_at" in issue and issue["escalated_at"]
-
 
 # --------------------------------------------------------------------------- #
 # pending / ongoing -> management escalation (push + email)
@@ -362,22 +345,74 @@ class TestPendingOngoingStatus:
         all_tokens = {t for c in push_spy for t in c["tokens"]}
         assert "tok-manager" in all_tokens
 
-    def test_reschedules_and_replaces_task_id_and_increments_count(
+
+# --------------------------------------------------------------------------- #
+# Reschedule: deterministic id contract
+# --------------------------------------------------------------------------- #
+
+
+class TestDeterministicReschedule:
+    def test_id_is_composed_from_down_time_id_and_escalation_number(
         self, _wire_firestore, seed_user, reschedule_spy
     ):
-        _seed_issue(
-            _wire_firestore, status=DownTimeStatus.PENDING.value,
-            escalation_task_id="old-task-id", escalation_count=None,
-        )
+        _seed_issue(_wire_firestore, status=DownTimeStatus.PENDING.value)
         seed_user(namespace_id=NS, role=Role.MANAGER.value, push_token="tok")
 
-        escalate_down_time(NS, _payload(), "job-pending-reschedule")
+        escalate_down_time(NS, _payload(escalation_number=2), "job-composed-id")
+
+        assert len(reschedule_spy) == 1
+        assert reschedule_spy[0]["task_id"] == "issue-1-3"
+        assert reschedule_spy[0]["escalation_number"] == 3
 
         issue = _issue(_wire_firestore)
-        assert issue["escalation_task_id"] == "new-task-1"
-        # Legacy documents lack `escalation_count` (None here) -> defensive
-        # `.get(...) or 0` treats it as 0, then increments to 1.
-        assert issue["escalation_count"] == 1
+        assert issue["escalation_task_id"] == "issue-1-3"
+
+    def test_escalation_count_persisted_is_the_cycle_that_just_ran(
+        self, _wire_firestore, seed_user, reschedule_spy
+    ):
+        _seed_issue(_wire_firestore, status=DownTimeStatus.PENDING.value)
+        seed_user(namespace_id=NS, role=Role.MANAGER.value, push_token="tok")
+
+        escalate_down_time(NS, _payload(escalation_number=4), "job-count")
+
+        issue = _issue(_wire_firestore)
+        # escalation_number=4 means cycle 4 just ran; the NEXT cycle (5) is
+        # what gets scheduled/persisted as escalation_task_id, but the
+        # persisted `escalation_count` reflects the cycle that just executed.
+        assert issue["escalation_count"] == 4
+        assert issue["escalation_task_id"] == "issue-1-5"
+        assert "escalated_at" in issue and issue["escalated_at"]
+
+    def test_missing_escalation_number_defaults_so_next_cycle_is_one(
+        self, _wire_firestore, seed_user, reschedule_spy
+    ):
+        """A payload with no `escalation_number` (e.g. a task scheduled
+        before this field existed) is tolerated, not a functional error —
+        defaults to 0 so the next cycle scheduled is 1."""
+        _seed_issue(_wire_firestore, status=DownTimeStatus.PENDING.value)
+        seed_user(namespace_id=NS, role=Role.MANAGER.value, push_token="tok")
+
+        result = escalate_down_time(NS, _payload(), "job-legacy-payload")
+
+        assert result["status"] == "escalated"
+        assert reschedule_spy[0]["task_id"] == "issue-1-1"
+        assert reschedule_spy[0]["escalation_number"] == 1
+
+    def test_retry_of_the_same_delivery_reuses_the_identical_id(
+        self, _wire_firestore, seed_user, reschedule_spy
+    ):
+        """Two separate invocations carrying the SAME `escalation_number`
+        (as a redelivery / retry of the same cycle would) must compute the
+        exact same deterministic id — proving there is no per-call
+        randomness left to fork the chain."""
+        _seed_issue(_wire_firestore, status=DownTimeStatus.PENDING.value)
+        seed_user(namespace_id=NS, role=Role.MANAGER.value, push_token="tok")
+
+        escalate_down_time(NS, _payload(escalation_number=1), "job-retry-a")
+        escalate_down_time(NS, _payload(escalation_number=1), "job-retry-b")
+
+        assert len(reschedule_spy) == 2
+        assert reschedule_spy[0]["task_id"] == reschedule_spy[1]["task_id"] == "issue-1-2"
 
 
 # --------------------------------------------------------------------------- #
@@ -435,23 +470,143 @@ def test_english_namespace_produces_english_resolution_reminder_copy(
 
 
 # --------------------------------------------------------------------------- #
-# Notification/reschedule phase containment
+# Reschedule-before-notify ordering + uncontained retry (this round's fix)
 # --------------------------------------------------------------------------- #
 
 
-def test_notification_phase_failure_does_not_fail_or_retry_the_job(
-    _wire_firestore, monkeypatch
+def test_reschedule_happens_before_notification(
+    _wire_firestore, seed_user, monkeypatch
+):
+    """Ordering assertion: by the time the notification fan-out runs, the
+    next cycle has already been secured (reschedule call already made)."""
+    _seed_issue(_wire_firestore, status=DownTimeStatus.PENDING.value)
+    seed_user(namespace_id=NS, role=Role.MANAGER.value, push_token="tok")
+
+    call_order = []
+
+    def _reschedule_spy(*args, **kwargs):
+        call_order.append("reschedule")
+        return "task-id"
+
+    def _notify_spy(*args, **kwargs):
+        call_order.append("notify")
+
+    monkeypatch.setattr(escalate_module, "schedule_escalation", _reschedule_spy)
+    monkeypatch.setattr(escalate_module, "_notify_management", _notify_spy)
+
+    escalate_down_time(NS, _payload(), "job-order")
+
+    assert call_order == ["reschedule", "notify"]
+
+
+def test_notification_failure_now_propagates_and_is_retried(
+    _wire_firestore, seed_user, monkeypatch
+):
+    """This is the behavior the earlier (contained) version of this handler
+    got wrong: a real notification failure must retry via `backoff`, not be
+    silently swallowed. Prove the handler's own top-level retry actually
+    re-invokes the whole run up to `max_tries` (3) attempts."""
+    _seed_issue(_wire_firestore, status=DownTimeStatus.PENDING.value)
+    seed_user(namespace_id=NS, role=Role.MANAGER.value, push_token="tok")
+
+    calls = {"n": 0}
+
+    def _always_fails(*args, **kwargs):
+        calls["n"] += 1
+        raise RuntimeError("simulated notification failure")
+
+    monkeypatch.setattr(escalate_module, "_notify_management", _always_fails)
+
+    # `on_giveup` swallows and returns normally (per the `.claude/skills/async`
+    # contract) — the job doesn't raise out to the caller even after
+    # exhausting retries, but the notification function was genuinely
+    # invoked `max_tries` times, proving the failure was retried, not
+    # swallowed on the first attempt.
+    escalate_down_time(NS, _payload(), "job-notify-retried")
+
+    assert calls["n"] == 3
+
+
+def test_reschedule_still_secured_even_when_notification_keeps_failing(
+    _wire_firestore, seed_user, monkeypatch
+):
+    """The whole point of reschedule-first: even though notification fails
+    on every attempt (and the job eventually gives up), the next escalation
+    cycle was already secured on the very first attempt and stays that way
+    (idempotent re-writes on each retry, not lost)."""
+    _seed_issue(_wire_firestore, status=DownTimeStatus.PENDING.value)
+    seed_user(namespace_id=NS, role=Role.MANAGER.value, push_token="tok")
+
+    monkeypatch.setattr(
+        escalate_module, "_notify_management",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+
+    escalate_down_time(NS, _payload(), "job-reschedule-survives")
+
+    issue = _issue(_wire_firestore)
+    assert issue["escalation_task_id"] == "issue-1-1"
+
+
+def test_resolved_status_notification_failure_also_propagates_and_retries(
+    _wire_firestore, seed_user, monkeypatch
+):
+    """Same proof as the pending/ongoing case, but for the `resolved` branch
+    (`_notify_production_agents_awaiting_confirmation`) — both notification
+    paths lost their containment, not just one."""
+    _seed_issue(
+        _wire_firestore, status=DownTimeStatus.RESOLVED.value,
+        resolved_at=datetime.now().isoformat(),
+    )
+    seed_user(namespace_id=NS, role=Role.PRODUCTION_AGENT.value, push_token="tok")
+
+    calls = {"n": 0}
+
+    def _always_fails(*args, **kwargs):
+        calls["n"] += 1
+        raise RuntimeError("simulated notification failure")
+
+    monkeypatch.setattr(
+        escalate_module, "_notify_production_agents_awaiting_confirmation", _always_fails
+    )
+
+    escalate_down_time(NS, _payload(), "job-resolved-notify-retried")
+
+    assert calls["n"] == 3
+
+
+def test_giveup_logs_error_after_exhausting_retries(
+    _wire_firestore, seed_user, monkeypatch
 ):
     _seed_issue(_wire_firestore, status=DownTimeStatus.PENDING.value)
+    seed_user(namespace_id=NS, role=Role.MANAGER.value, push_token="tok")
 
-    def _boom(*args, **kwargs):
-        raise RuntimeError("simulated transient Firestore error")
+    monkeypatch.setattr(
+        escalate_module, "_notify_management",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
 
-    monkeypatch.setattr(escalate_module, "_notify_management", _boom)
+    logged = []
+    monkeypatch.setattr(
+        escalate_module.logger, "error", lambda msg: logged.append(msg)
+    )
 
-    result = escalate_down_time(NS, _payload(), "job-notify-fails")
+    escalate_down_time(NS, _payload(), "job-giveup-logged")
 
-    assert result["status"] == "escalated"
+    assert any("gave up after" in msg for msg in logged)
+
+
+def test_unexpected_status_stops_without_rescheduling(
+    _wire_firestore, push_spy, email_spy, reschedule_spy
+):
+    _seed_issue(_wire_firestore, status="some-unexpected-status")
+
+    result = escalate_down_time(NS, _payload(), "job-unexpected-status")
+
+    assert result["status"] == "stopped"
+    assert reschedule_spy == []
+    assert push_spy == []
+    assert len(email_spy) == 0
 
 
 def test_missing_down_time_id_is_a_functional_error():

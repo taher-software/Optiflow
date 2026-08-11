@@ -8,11 +8,13 @@ for a missing/blank `timezone_name` is covered directly on `CloudTask`
 """
 
 import json
+import uuid
 from datetime import datetime, timedelta
 from unittest.mock import MagicMock, patch
 from zoneinfo import ZoneInfo
 
 import pytest
+from google.api_core import exceptions as gcp_exceptions
 
 from src.app.core.escalation import (
     ESCALATION_DELAY_SECONDS,
@@ -101,7 +103,60 @@ class TestScheduleEscalation:
             job_type=JobType.ESCALATE_DOWN_TIME,
             timezone_name="Europe/Paris",
             payload={"down_time_id": "down-time-1"},
+            task_id=None,
         )
+
+    @patch("src.app.core.escalation.get_cloud_task_manager")
+    def test_forwards_explicit_task_id(self, mock_get_manager):
+        mock_manager = MagicMock()
+        mock_manager.create_task.return_value = "task-abc"
+        mock_get_manager.return_value = mock_manager
+
+        result = schedule_escalation(
+            "ns-1", "down-time-1", "Europe/Paris", task_id="task-abc"
+        )
+
+        assert result == "task-abc"
+        mock_manager.create_task.assert_called_once_with(
+            delay=ESCALATION_DELAY_SECONDS,
+            namespace_id="ns-1",
+            job_type=JobType.ESCALATE_DOWN_TIME,
+            timezone_name="Europe/Paris",
+            payload={"down_time_id": "down-time-1"},
+            task_id="task-abc",
+        )
+
+    @patch("src.app.core.escalation.get_cloud_task_manager")
+    def test_escalation_number_included_in_payload_when_given(self, mock_get_manager):
+        mock_manager = MagicMock()
+        mock_manager.create_task.return_value = "down-time-1-3"
+        mock_get_manager.return_value = mock_manager
+
+        result = schedule_escalation(
+            "ns-1", "down-time-1", None, task_id="down-time-1-3", escalation_number=3
+        )
+
+        assert result == "down-time-1-3"
+        mock_manager.create_task.assert_called_once_with(
+            delay=ESCALATION_DELAY_SECONDS,
+            namespace_id="ns-1",
+            job_type=JobType.ESCALATE_DOWN_TIME,
+            timezone_name=None,
+            payload={"down_time_id": "down-time-1", "escalation_number": 3},
+            task_id="down-time-1-3",
+        )
+
+    @patch("src.app.core.escalation.get_cloud_task_manager")
+    def test_escalation_number_omitted_from_payload_when_not_given(self, mock_get_manager):
+        mock_manager = MagicMock()
+        mock_manager.create_task.return_value = "task-123"
+        mock_get_manager.return_value = mock_manager
+
+        schedule_escalation("ns-1", "down-time-1", None)
+
+        _, kwargs = mock_manager.create_task.call_args
+        assert kwargs["payload"] == {"down_time_id": "down-time-1"}
+        assert "escalation_number" not in kwargs["payload"]
 
     @patch("src.app.core.escalation.get_cloud_task_manager")
     def test_swallows_exception_and_returns_none(self, mock_get_manager):
@@ -112,6 +167,28 @@ class TestScheduleEscalation:
         result = schedule_escalation("ns-1", "down-time-1", None)
 
         assert result is None
+
+    @patch("src.app.core.escalation.get_cloud_task_manager")
+    def test_forwards_task_id_and_still_returns_none_on_other_failure(
+        self, mock_get_manager
+    ):
+        mock_manager = MagicMock()
+        mock_manager.create_task.side_effect = RuntimeError("Cloud Tasks outage")
+        mock_get_manager.return_value = mock_manager
+
+        result = schedule_escalation(
+            "ns-1", "down-time-1", None, task_id="task-retry-1"
+        )
+
+        assert result is None
+        mock_manager.create_task.assert_called_once_with(
+            delay=ESCALATION_DELAY_SECONDS,
+            namespace_id="ns-1",
+            job_type=JobType.ESCALATE_DOWN_TIME,
+            timezone_name=None,
+            payload={"down_time_id": "down-time-1"},
+            task_id="task-retry-1",
+        )
 
     @patch("src.app.core.escalation.get_cloud_task_manager")
     def test_swallows_manager_lookup_exception(self, mock_get_manager):
@@ -205,3 +282,64 @@ class TestCreateTaskTimezoneDefault:
         _, kwargs = cloud_task.client.create_task.call_args
         body = json.loads(kwargs["request"]["task"].http_request.body)
         assert body["payload"] == {"down_time_id": "dt-1"}
+
+
+class TestCreateTaskIdempotency:
+    """`create_task(task_id=...)` makes creation safe to retry: the same
+    explicit id is reused as the task name, and Cloud Tasks' `AlreadyExists`
+    response for a repeat is treated as success rather than an error."""
+
+    def test_explicit_task_id_used_as_task_name(self, cloud_task):
+        result = cloud_task.create_task(
+            delay=60,
+            namespace_id="ns-1",
+            job_type=JobType.ESCALATE_DOWN_TIME,
+            timezone_name=None,
+            task_id="explicit-task-id",
+        )
+
+        assert result == "explicit-task-id"
+        _, kwargs = cloud_task.client.create_task.call_args
+        task = kwargs["request"]["task"]
+        assert task.name == f"{cloud_task.queue_path}/tasks/explicit-task-id"
+
+    def test_omitted_task_id_still_mints_uuid(self, cloud_task):
+        result = cloud_task.create_task(
+            delay=60,
+            namespace_id="ns-1",
+            job_type=JobType.ESCALATE_DOWN_TIME,
+            timezone_name=None,
+        )
+
+        assert result
+        # A UUID4 string, not any fixed/predictable value.
+        uuid.UUID(result)
+
+    def test_already_exists_is_treated_as_success(self, cloud_task):
+        cloud_task.client.create_task.side_effect = gcp_exceptions.AlreadyExists(
+            "task already exists"
+        )
+
+        result = cloud_task.create_task(
+            delay=60,
+            namespace_id="ns-1",
+            job_type=JobType.ESCALATE_DOWN_TIME,
+            timezone_name=None,
+            task_id="explicit-task-id",
+        )
+
+        assert result == "explicit-task-id"
+
+    def test_other_gcp_error_still_propagates(self, cloud_task):
+        cloud_task.client.create_task.side_effect = gcp_exceptions.PermissionDenied(
+            "no permission"
+        )
+
+        with pytest.raises(gcp_exceptions.PermissionDenied):
+            cloud_task.create_task(
+                delay=60,
+                namespace_id="ns-1",
+                job_type=JobType.ESCALATE_DOWN_TIME,
+                timezone_name=None,
+                task_id="explicit-task-id",
+            )

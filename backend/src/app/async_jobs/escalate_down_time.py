@@ -3,7 +3,7 @@
 The 30-minute management-escalation chain for an unresolved downtime ticket
 (see `src.app.core.escalation`). Each run is one cycle of a self-rescheduling
 Cloud Task: it re-evaluates the ticket's current status and, unless the
-ticket is closed, notifies the relevant people and schedules the next cycle
+ticket is closed, secures the next cycle and notifies the relevant people
 `ESCALATION_DELAY_SECONDS` later.
 
 Trigger: scheduled (job_type=`JobType.ESCALATE_DOWN_TIME`) via
@@ -16,11 +16,11 @@ Behavior per current ticket status:
     `escalation_task_id` (safety net if a `cancel_escalation` call upstream
     failed to delete the pending task).
   * `resolved` — the fix is applied but production hasn't confirmed it back
-    to normal yet. Notifies only the online production agents (push only,
-    no email, no management alert of any kind), then reschedules.
-  * `pending` / `ongoing` — still unresolved. Escalates to management (push +
-    email) — manager, owner, production supervisor, and the ticket's own
-    process supervisor, deduplicated by user id — then reschedules.
+    to normal yet. Reschedules, then notifies only the online production
+    agents (push only, no email, no management alert of any kind).
+  * `pending` / `ongoing` — still unresolved. Reschedules, then escalates to
+    management (push + email) — manager, owner, production supervisor, and
+    the ticket's own process supervisor, deduplicated by user id.
   * missing issue (deleted ticket) — stops the chain without rescheduling;
     this is the normal/expected end of the chain for a deleted ticket, not an
     error, so it's logged at info.
@@ -28,6 +28,27 @@ Behavior per current ticket status:
 A missing issue and a `closed` status are both terminal outcomes reached
 without going through `FunctionalJobError` (which would log at warning) —
 these are ordinary, expected ends of the chain, not invalid input.
+
+**Reschedule-first, notify-second — deliberately, so a notification outage
+can never end the chain.** The next cycle is secured before any recipient
+lookup/fan-out runs. This is a change from an earlier version of this
+handler, which contained (swallowed) the whole notification+reschedule
+phase so a transient failure couldn't trigger a `backoff` retry — that was
+wrong: it meant a real notification failure (not just a Firestore blip)
+silently never reached anyone, with no retry and no error surfaced. There is
+no containment here anymore. `FunctionalJobError` (invalid input / unknown
+tenant) is still acked without retry; every other exception — including a
+notification failure — now propagates straight to this function's own
+`backoff` decorator, which retries up to 3 times before giving up.
+
+**Accepted consequence:** because reschedule runs first and notification can
+now genuinely retry the whole handler, a redelivered/retried run may
+re-notify recipients who were already reached in an earlier, partial
+fan-out. That is the deliberate trade of removing the containment: a
+duplicate escalation alert is far better than a silently dropped one. The
+reschedule step itself does NOT re-fork the chain on such a retry — see
+`_reschedule`'s docstring for why a deterministic task id makes it safe to
+redo.
 """
 
 from __future__ import annotations
@@ -205,30 +226,66 @@ def _notify_management(
 
 
 def _reschedule(
-    firestore, namespace_id: str, namespace: dict | None, issue: dict, down_time_id: str
+    firestore,
+    namespace_id: str,
+    namespace: dict | None,
+    down_time_id: str,
+    escalation_number: int,
 ) -> None:
-    """Schedule the next escalation cycle and persist its id (replacing the
-    stale one) plus bookkeeping fields on the issue. Best-effort:
-    `schedule_escalation` never raises; if it returns `None` (Cloud Tasks
-    outage), the chain silently ends here — no id to persist, nothing more we
-    can do (mirrors `core.escalation`'s own best-effort posture)."""
-    new_task_id = schedule_escalation(
-        namespace_id, down_time_id, (namespace or {}).get("timezone")
-    )
-    if not new_task_id:
-        return
+    """Schedule the next escalation cycle with a DETERMINISTIC Cloud Task id.
 
+    `task_id = f"{down_time_id}-{escalation_number + 1}"`. Deterministic-by-
+    construction means this whole function is safe to call twice for the
+    same cycle (e.g. because the handler's own `backoff` decorator retried
+    the entire run after a notification failure downstream) with no
+    persist-before-create ordering dance required: same inputs -> same id,
+    every time, so a repeat collapses into Cloud Tasks' `AlreadyExists`
+    (treated as success by `create_task`) instead of minting a second,
+    parallel task. Create-then-persist (as below) is fine now — it would NOT
+    have been safe with the old random-per-cycle-id approach, which needed
+    the id persisted before it could be recreated safely; that's gone.
+
+    **`escalation_number` MUST come from the incoming job payload — never
+    from the persisted `escalation_count`.** This function itself writes
+    `escalation_count`, so deriving the id from it would make the id
+    *depend on this function's own prior side effect*: a retry would read
+    the now-updated `escalation_count`, compute a *different* `task_id`, and
+    create a genuinely second, parallel task — reintroducing exactly the
+    forked-chain bug this whole deterministic-id design exists to prevent.
+    The payload's `escalation_number`, by contrast, was fixed at the moment
+    THIS cycle's task was created and never changes no matter how many times
+    delivery is retried — every value this id is built from must be
+    retry-invariant, and only the payload is.
+
+    Distinct across cycles (never hits the ~1h Cloud Tasks tombstone)
+    because `escalation_number` increments by exactly one every cycle.
+
+    Persists `escalation_task_id`, `escalated_at`, and `escalation_count`
+    (= `escalation_number`, the cycle that just ran) together — all three
+    derive only from `escalation_number`, so re-writing them on a retry is a
+    no-op, not a second increment.
+    """
+    next_number = escalation_number + 1
+    task_id = f"{down_time_id}-{next_number}"
     tz = namespace_timezone(namespace_id, namespace)
-    escalation_count = (issue.get("escalation_count") or 0) + 1
+
+    schedule_escalation(
+        namespace_id,
+        down_time_id,
+        (namespace or {}).get("timezone"),
+        task_id=task_id,
+        escalation_number=next_number,
+    )
+
     firestore.update_subdocument(
         DOWN_TIME_COLLECTION,
         namespace_id,
         ISSUES_SUBCOLLECTION,
         down_time_id,
         {
-            "escalation_task_id": new_task_id,
+            "escalation_task_id": task_id,
             "escalated_at": datetime.now(tz).isoformat(),
-            "escalation_count": escalation_count,
+            "escalation_count": escalation_number,
         },
     )
 
@@ -254,23 +311,25 @@ def escalate_down_time(namespace_id: str, payload: dict, job_id: str) -> dict:
     """
     Run one cycle of a downtime ticket's management-escalation chain.
 
-    Retry model (per `.claude/skills/async`): the body is wrapped in
-    `try/except`. A `FunctionalJobError` (invalid input / unknown namespace)
-    is logged and returns an OK result — it is NOT retried. Any other
-    (system/external/transient) failure propagates to the `backoff`
-    decorator, which retries up to 3 times; on exhaustion `_on_giveup` logs
-    and the handler returns (OK to the broker).
+    Retry model (per `.claude/skills/async`) — single-phase, no containment:
+    the body is wrapped in `try/except`. A `FunctionalJobError` (invalid
+    input / unknown tenant) is logged and returns an OK result — it is NOT
+    retried. Any other (system/external/transient) failure — including a
+    notification failure — propagates to the `backoff` decorator, which
+    retries up to 3 times; on exhaustion `_on_giveup` logs and the handler
+    returns (OK to the broker).
 
     Idempotency: a redelivered run re-reads the issue's *current* status
-    fresh, so a `closed` ticket is always a safe no-op on replay. A
-    redelivered `resolved`/`pending`/`ongoing` run may re-send a duplicate
-    notification and mint an extra Cloud Task before this run's own new
-    `escalation_task_id` is persisted — an accepted, signed-off deviation
-    from strict once-only delivery, identical in nature and reasoning to
-    `notify_down_time_update`'s documented non-dedupe decision (push
-    delivery is already best-effort/at-least-once end-to-end, and Cloud
-    Tasks' own per-task-name execution guarantee makes true duplicates rare
-    in practice).
+    fresh, so a `closed` ticket is always a safe no-op on replay. Reschedule
+    runs BEFORE notification (see `_run_escalate_down_time`) and is itself
+    idempotent by construction — `_reschedule` derives a deterministic Cloud
+    Task id from `escalation_number`, so a redelivered/retried run re-targets
+    the SAME task via `AlreadyExists` instead of forking the chain (see
+    `_reschedule`'s docstring). A redelivered `resolved`/`pending`/`ongoing`
+    run MAY re-send a duplicate notification to recipients already reached
+    by an earlier, partial fan-out — an accepted, deliberate trade (a
+    duplicate escalation alert beats a silently dropped one), identical in
+    spirit to `notify_down_time_update`'s documented non-dedupe decision.
 
     Returns:
         A small result dict (`{status, ...}`) describing the outcome, which
@@ -292,14 +351,25 @@ def escalate_down_time(namespace_id: str, payload: dict, job_id: str) -> dict:
 
 def _run_escalate_down_time(namespace_id: str, payload: dict, job_id: str) -> dict:
     """The actual work. Raises `FunctionalJobError` for invalid input /
-    unknown tenant (caught and acked by `escalate_down_time`); lets any
-    system/transient error propagate to the retry decorator."""
+    unknown tenant (caught and acked by `escalate_down_time`); every other
+    exception — including one raised deep inside notification fan-out —
+    propagates all the way to the `backoff` decorator. No containment here
+    (see the module docstring for why the earlier contained version was
+    wrong): reschedule runs first, so a notification failure never costs the
+    ticket its next cycle, and a retry after such a failure is safe because
+    reschedule is idempotent by construction (`_reschedule`)."""
     if not namespace_id:
         raise FunctionalJobError("escalate_down_time: 'namespace_id' is required.")
 
     down_time_id = payload.get("down_time_id")
     if not down_time_id:
         raise FunctionalJobError("escalate_down_time: 'down_time_id' is required.")
+
+    # Legacy/omitted payload (a task scheduled before `escalation_number`
+    # existed and is still in flight) defaults to 0, so `_reschedule` treats
+    # this as the cycle before the first and schedules cycle 1 next —
+    # tolerated, not a functional error.
+    escalation_number = payload.get("escalation_number") or 0
 
     firestore = get_firestore_client()
 
@@ -352,36 +422,35 @@ def _run_escalate_down_time(namespace_id: str, payload: dict, job_id: str) -> di
         )
         return {"status": "stopped", "reason": f"unexpected status '{status}'", "down_time_id": down_time_id}
 
-    # Contain the whole recipient-lookup + fan-out + reschedule phase: a
-    # transient Firestore blip here must not escape to the `backoff`
-    # decorator — a retry would re-read the same (still unresolved) status
-    # and re-notify everyone again, a silent duplicate-alert risk with no
-    # corresponding benefit. Mirrors the containment `add_down_time` and
-    # `notify_down_time_update` apply around their own notification phases.
-    try:
-        language = language_of(namespace)
-        scope_source = {
-            "production_scope": issue.get("down_time_scope"),
-            "workstation_id": issue.get("workstation_id"),
-            "production_line_id": issue.get("production_line_id"),
-            "uap_id": issue.get("uap_id"),
-        }
-        location = resolve_location(firestore, namespace_id, namespace, scope_source, language)
+    # Reschedule FIRST, notify second — deliberately (see module docstring).
+    # The next cycle is secured before any recipient lookup/fan-out runs, so
+    # a notification outage can never cost the ticket its next cycle.
+    # Nothing here is contained: any exception (including one from
+    # `_reschedule`'s own Firestore write, or from notification fan-out
+    # below) propagates straight to `escalate_down_time`'s `backoff`
+    # decorator, which retries the WHOLE run. That's safe because
+    # `_reschedule` is idempotent by construction — a retry recomputes and
+    # reuses the exact same deterministic task id (see its docstring) — even
+    # though a retry may re-send an already-sent notification (accepted; see
+    # module docstring).
+    _reschedule(firestore, namespace_id, namespace, down_time_id, escalation_number)
 
-        if status == DownTimeStatus.RESOLVED.value:
-            _notify_production_agents_awaiting_confirmation(
-                firestore, namespace_id, issue, namespace, language, location, down_time_id
-            )
-        else:  # pending / ongoing
-            _notify_management(
-                firestore, namespace_id, issue, namespace, language, location, down_time_id
-            )
+    language = language_of(namespace)
+    scope_source = {
+        "production_scope": issue.get("down_time_scope"),
+        "workstation_id": issue.get("workstation_id"),
+        "production_line_id": issue.get("production_line_id"),
+        "uap_id": issue.get("uap_id"),
+    }
+    location = resolve_location(firestore, namespace_id, namespace, scope_source, language)
 
-        _reschedule(firestore, namespace_id, namespace, issue, down_time_id)
-    except Exception as e:
-        logger.error(
-            f"escalate_down_time: notification/reschedule phase failed for "
-            f"issue '{down_time_id}' in namespace '{namespace_id}': {e}"
+    if status == DownTimeStatus.RESOLVED.value:
+        _notify_production_agents_awaiting_confirmation(
+            firestore, namespace_id, issue, namespace, language, location, down_time_id
+        )
+    else:  # pending / ongoing
+        _notify_management(
+            firestore, namespace_id, issue, namespace, language, location, down_time_id
         )
 
     return {"status": "escalated", "down_time_status": status, "down_time_id": down_time_id}

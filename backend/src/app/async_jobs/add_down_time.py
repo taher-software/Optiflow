@@ -8,9 +8,21 @@ and specialized per `DownTimeType` — see `src.app.core.notifications`.
 Unknown-cause (`DownTimeType.OTHERS`) tickets additionally alert every
 production supervisor in the namespace (push + best-effort email). Finally,
 when the ticket matches the escalation policy (`src.app.core.escalation`),
-schedules the first escalation cycle and persists the returned Cloud Task id
-on the issue as `escalation_task_id` — the `escalate_down_time` job then
-re-evaluates and reschedules itself every 30 minutes until the ticket closes.
+schedules the FIRST escalation cycle with the deterministic Cloud Task id
+`f"{job_id}-1"` (`escalation_number=1`) — see `core.escalation`'s module
+docstring for why a deterministic id needs no persist-before-create
+choreography. Persists the returned id on the issue as `escalation_task_id`
+only once creation actually succeeds. `escalate_down_time` then re-evaluates
+and reschedules itself every 30 minutes until the ticket closes.
+
+This first-cycle scheduling stays best-effort/contained (unlike
+`escalate_down_time`'s later cycles, which now let a failure propagate to
+their own `backoff` retry): a retry of THIS handler cannot help here,
+because a retry hits the idempotency guard just below (the issue already
+exists) and returns early without ever reaching the scheduling code again.
+If the one attempt made here fails, the ticket simply gets no escalation
+chain at all — accepted, since ticket creation itself must never fail or
+retry because of a Cloud Tasks outage.
 
 Trigger: published (job_type=`JobType.ADD_DOWN_TIME`) by the downtime-ticket
 creation endpoint (owned by the api sub-factory) once a workstation/line/UAP
@@ -279,7 +291,10 @@ def _run_add_down_time(namespace_id: str, payload: dict, job_id: str) -> dict:
     # the idempotency guard above would then short-circuit the replay before
     # any notification runs, so nobody would ever be notified while the job
     # still reports success. Contain notification failures here instead: log
-    # and let ticket creation stand.
+    # and let ticket creation stand. (This is a DELIBERATE, narrower exception
+    # to `escalate_down_time`'s newly-uncontained retry model — see this
+    # module's docstring for why a retry genuinely cannot help here, unlike
+    # there.)
     try:
         language = language_of(namespace)
         # Fetched once and reused for both the location label and the
@@ -303,8 +318,19 @@ def _run_add_down_time(namespace_id: str, payload: dict, job_id: str) -> dict:
             scope_doc if payload["production_scope"] == ProductionScope.WORK_STATION.value else None
         )
         if should_escalate(issue_data, workstation):
+            # Deterministic id for cycle 1 (`f"{job_id}-1"`, matching
+            # `escalate_down_time._reschedule`'s formula) — no persist-
+            # before-create dance needed even here, since a deterministic id
+            # would be safe to recreate. It still isn't retried, though: see
+            # the module docstring for why a retry of this whole handler
+            # can't reach this code a second time anyway.
+            task_id = f"{job_id}-1"
             escalation_task_id = schedule_escalation(
-                namespace_id, job_id, namespace.get("timezone")
+                namespace_id,
+                job_id,
+                namespace.get("timezone"),
+                task_id=task_id,
+                escalation_number=1,
             )
             if escalation_task_id:
                 firestore.update_subdocument(
