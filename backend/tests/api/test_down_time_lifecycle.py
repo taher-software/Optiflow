@@ -733,6 +733,161 @@ class TestRejectResolution:
         )
 
 
+class TestEscalationCancelledOnCloseAndDelete:
+    """`close_down_time` / `delete_down_time` must cancel the ticket's
+    scheduled escalation Cloud Task (via `core.escalation.cancel_escalation`)
+    and clear `escalation_task_id` — see the `services.py` module docstring
+    and `_cancel_escalation_best_effort`."""
+
+    def test_close_cancels_escalation_and_clears_field(
+        self, client, fake_db, seed_user, seed_issue, auth_headers, monkeypatch
+    ):
+        import src.app.routers.down_time.services as down_time_services_module
+
+        calls = []
+        monkeypatch.setattr(
+            down_time_services_module,
+            "cancel_escalation",
+            lambda task_id: calls.append(task_id) or True,
+        )
+        pa = seed_user(namespace_id=NS, role=Role.PRODUCTION_AGENT.value)
+        seed_issue(
+            "m1",
+            process="maintenance",
+            status="resolved",
+            escalation_task_id="task-abc",
+        )
+        res = client.post("/down-times/m1/close", headers=auth_headers(pa))
+        assert res.status_code == 200, res.text
+        assert calls == ["task-abc"]
+        stored = _read(fake_db, "m1")
+        assert stored["status"] == "closed"
+        assert stored.get("escalation_task_id") is None
+
+    def test_delete_cancels_escalation_and_clears_field(
+        self, client, fake_db, seed_user, seed_issue, auth_headers, monkeypatch
+    ):
+        import src.app.routers.down_time.services as down_time_services_module
+
+        calls = []
+        monkeypatch.setattr(
+            down_time_services_module,
+            "cancel_escalation",
+            lambda task_id: calls.append(task_id) or True,
+        )
+        pa = seed_user(namespace_id=NS, role=Role.PRODUCTION_AGENT.value)
+        seed_issue(
+            "m1",
+            process="maintenance",
+            status="pending",
+            created_by=pa["id"],
+            escalation_task_id="task-xyz",
+        )
+        res = client.delete("/down-times/m1", headers=auth_headers(pa))
+        assert res.status_code == 200, res.text
+        assert calls == ["task-xyz"]
+        assert client.get("/down-times/m1", headers=auth_headers(pa)).status_code == 404
+
+    def test_close_legacy_ticket_without_task_id_still_succeeds(
+        self, client, fake_db, seed_user, seed_issue, auth_headers, monkeypatch
+    ):
+        """A legacy document has no `escalation_task_id` field at all —
+        closing it must still succeed, and the canceller must never be
+        called with a truthy id."""
+        import src.app.routers.down_time.services as down_time_services_module
+
+        calls = []
+        monkeypatch.setattr(
+            down_time_services_module,
+            "cancel_escalation",
+            lambda task_id: calls.append(task_id) or False,
+        )
+        pa = seed_user(namespace_id=NS, role=Role.PRODUCTION_AGENT.value)
+        seed_issue("m1", process="maintenance", status="resolved")
+        res = client.post("/down-times/m1/close", headers=auth_headers(pa))
+        assert res.status_code == 200, res.text
+        assert calls == [None]
+        assert not any(calls)
+
+    def test_acknowledge_resolve_reject_do_not_cancel_escalation(
+        self, client, seed_user, seed_issue, auth_headers, monkeypatch
+    ):
+        """The chain deliberately continues through acknowledge/resolve/
+        reject — only close/delete end it."""
+        import src.app.routers.down_time.services as down_time_services_module
+
+        calls = []
+        monkeypatch.setattr(
+            down_time_services_module,
+            "cancel_escalation",
+            lambda task_id: calls.append(task_id) or True,
+        )
+        ma = seed_user(namespace_id=NS, role=Role.MAINTENANCE_AGENT.value)
+        pa = seed_user(namespace_id=NS, role=Role.PRODUCTION_AGENT.value)
+        seed_issue(
+            "m1",
+            process="maintenance",
+            status="pending",
+            escalation_task_id="task-abc",
+        )
+        ack = client.post("/down-times/m1/acknowledge", headers=auth_headers(ma))
+        assert ack.status_code == 200
+        resolve = client.post("/down-times/m1/resolve", headers=auth_headers(ma))
+        assert resolve.status_code == 200
+        reject = client.post(
+            "/down-times/m1/reject-resolution", headers=auth_headers(pa)
+        )
+        assert reject.status_code == 200
+        assert calls == []
+
+    def test_close_survives_cancellation_raising(
+        self, client, seed_user, seed_issue, auth_headers, monkeypatch
+    ):
+        """Proves the "never fail the user's action" guarantee at this
+        call-site's own belt-and-braces try/except, not merely relying on
+        `cancel_escalation`'s internal one — mock it raising directly."""
+        import src.app.routers.down_time.services as down_time_services_module
+
+        def _boom(task_id):
+            raise RuntimeError("cloud tasks is down")
+
+        monkeypatch.setattr(
+            down_time_services_module, "cancel_escalation", _boom
+        )
+        pa = seed_user(namespace_id=NS, role=Role.PRODUCTION_AGENT.value)
+        seed_issue(
+            "m1",
+            process="maintenance",
+            status="resolved",
+            escalation_task_id="task-abc",
+        )
+        res = client.post("/down-times/m1/close", headers=auth_headers(pa))
+        assert res.status_code == 200, res.text
+        assert res.json()["data"]["status"] == "closed"
+
+    def test_delete_survives_cancellation_raising(
+        self, client, seed_user, seed_issue, auth_headers, monkeypatch
+    ):
+        import src.app.routers.down_time.services as down_time_services_module
+
+        def _boom(task_id):
+            raise RuntimeError("cloud tasks is down")
+
+        monkeypatch.setattr(
+            down_time_services_module, "cancel_escalation", _boom
+        )
+        pa = seed_user(namespace_id=NS, role=Role.PRODUCTION_AGENT.value)
+        seed_issue(
+            "m1",
+            process="maintenance",
+            status="pending",
+            created_by=pa["id"],
+            escalation_task_id="task-abc",
+        )
+        res = client.delete("/down-times/m1", headers=auth_headers(pa))
+        assert res.status_code == 200, res.text
+
+
 class TestLifecycleNotificationPublish:
     def test_acknowledge_publishes_notification(
         self, client, seed_user, seed_issue, auth_headers, publish_spy

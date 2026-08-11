@@ -5,7 +5,8 @@ from src.app.core.config import get_settings
 import json
 import uuid
 from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
+from typing import Optional
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from src.app.globals.enum import JobType
 
 logger = logging.getLogger(__name__)
@@ -117,11 +118,12 @@ class CloudTask:
     def create_task(
         self,
         delay: int,
-        namespace_id: int,
+        namespace_id: str,
         job_type: JobType,
-        timezone_name: str,
+        timezone_name: Optional[str] = None,
         guest_id: str = None,
         event_id: int = None,
+        payload: Optional[dict] = None,
     ) -> str:
         """
         Schedule a task with specified delay relative to the namespace's local time.
@@ -130,9 +132,15 @@ class CloudTask:
             delay: Delay in seconds before task execution (max: 30 days = 2,592,000 seconds)
             namespace_id: Namespace ID to process
             job_type: Type of job from JobType enum
-            timezone_name: IANA timezone name of the namespace (e.g. 'Europe/Paris')
+            timezone_name: IANA timezone name of the namespace (e.g. 'Europe/Paris').
+                Mirrors `core.timezone.namespace_timezone`: legacy namespace
+                documents predate the `timezone` field, so `None`/blank
+                defaults to UTC rather than raising.
             guest_id: Optional guest ID (phone number) for guest-specific tasks
             event_id: Optional event ID for event-specific tasks (e.g. event_notif)
+            payload: Optional job-specific payload dict, merged into the task
+                body under a `"payload"` key — delivered to the worker route's
+                `CloudJobIn.payload` exactly like the Pub/Sub path.
 
         Returns:
             str: Task ID (UUID). The created Cloud Task is named with this id
@@ -152,12 +160,22 @@ class CloudTask:
         # Generate unique task ID
         task_id = str(uuid.uuid4())
 
-        # Calculate schedule time anchored to the namespace's local clock
-        ns_tz = ZoneInfo(timezone_name)
+        # Calculate schedule time anchored to the namespace's local clock.
+        # Mirrors core.timezone.namespace_timezone: missing/blank/unknown
+        # timezone defaults to UTC instead of raising.
+        tz_name = timezone_name or "UTC"
+        try:
+            ns_tz = ZoneInfo(tz_name)
+        except ZoneInfoNotFoundError:
+            logger.warning(
+                f"create_task: unknown timezone '{tz_name}' for namespace "
+                f"'{namespace_id}', defaulting to UTC."
+            )
+            ns_tz = ZoneInfo("UTC")
         schedule_time = datetime.now(ns_tz) + timedelta(seconds=delay)
 
-        # Build task payload (matches CloudTaskPayload schema)
-        payload = {
+        # Build task body (matches CloudTaskPayload schema)
+        body = {
             "job_id": task_id,
             "job_type": job_type.value,
             "namespace_id": namespace_id,
@@ -165,11 +183,17 @@ class CloudTask:
 
         # Add guest_id if provided
         if guest_id:
-            payload["guest_id"] = guest_id
+            body["guest_id"] = guest_id
 
         # Add event_id if provided
         if event_id is not None:
-            payload["event_id"] = event_id
+            body["event_id"] = event_id
+
+        # Add payload if provided (matches the Pub/Sub path's "payload" key,
+        # so `CloudJobIn.payload` is populated identically regardless of
+        # transport).
+        if payload is not None:
+            body["payload"] = payload
 
         # Construct the task. Naming the task after our UUID makes it
         # addressable for deletion later; a fresh UUID per call avoids the
@@ -182,7 +206,7 @@ class CloudTask:
                 http_method=tasks_v2.HttpMethod.POST,
                 url=worker_url,
                 headers={"Content-Type": "application/json"},
-                body=json.dumps(payload).encode("utf-8"),
+                body=json.dumps(body).encode("utf-8"),
                 oidc_token=tasks_v2.OidcToken(
                     service_account_email=f"{settings.google_project_id}@appspot.gserviceaccount.com",
                     audience=worker_url,

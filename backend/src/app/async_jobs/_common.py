@@ -30,21 +30,31 @@ ISSUES_SUBCOLLECTION = "issues"
 
 _FALLBACK_LOCATION = {Language.EN: "the plant", Language.FR: "l'usine"}
 
+# Sentinel distinguishing "no pre-fetched doc was passed" from "the caller
+# already looked it up and it's None" (e.g. scope isn't `work station`, or
+# the document doesn't exist) — see `resolve_location`'s `doc` parameter.
+_UNRESOLVED = object()
 
-def resolve_location(
-    firestore, namespace_id: str, namespace: dict | None, scope_source: dict, language: Language
-) -> str:
-    """Best-effort human-readable location label for a downtime ticket, from
-    its production scope. Reads the relevant Firestore document's `name`
-    field. Never raises — falls back to the namespace `company_name`, then to
-    a generic "the plant" / "l'usine" label, so a missing/renamed document
-    never blocks the caller.
+
+def resolve_scope_document(
+    firestore, namespace_id: str, scope_source: dict
+) -> dict | None:
+    """Best-effort, tenant-scoped fetch of the Firestore document backing a
+    downtime ticket's production scope (the workstation / production line /
+    UAP document), or `None` when the scope has no such document (`plant`),
+    the referenced document doesn't exist, or it belongs to another tenant.
+    Never raises.
 
     `scope_source` must carry the same keys `add_down_time`'s payload does:
     `production_scope` plus whichever of `workstation_id` /
     `production_line_id` / `uap_id` applies. Callers reading an already
     written issue document (rather than the raw creation payload) adapt its
     fields (`down_time_scope` -> `production_scope`, etc.) into this shape.
+
+    Extracted out of `resolve_location` so a caller that also needs the raw
+    document (e.g. `add_down_time` evaluating the escalation policy against
+    the workstation's `type`) can fetch it exactly once and pass it to both,
+    rather than reading it twice.
     """
     try:
         scope = scope_source.get("production_scope")
@@ -64,18 +74,45 @@ def resolve_location(
 
         # The worker route is unauthenticated at the app layer, so a job
         # message could pair an attacker's `namespace_id` with a victim
-        # tenant's document id. Never surface another tenant's document name.
+        # tenant's document id. Never surface another tenant's document.
         if doc and doc.get("namespace_id") != namespace_id:
             doc = None
 
-        name = (doc or {}).get("name") if doc else None
-        if name:
-            return name
-    except Exception as e:  # never let a location lookup fail the caller
+        return doc
+    except Exception as e:  # never let a scope-document lookup fail the caller
         logger.warning(
-            f"resolve_location: failed to resolve location "
+            f"resolve_scope_document: failed to resolve scope document "
             f"(namespace='{namespace_id}'): {e}"
         )
+        return None
+
+
+def resolve_location(
+    firestore,
+    namespace_id: str,
+    namespace: dict | None,
+    scope_source: dict,
+    language: Language,
+    doc: dict | None = _UNRESOLVED,
+) -> str:
+    """Best-effort human-readable location label for a downtime ticket, from
+    its production scope. Reads the relevant Firestore document's `name`
+    field. Never raises — falls back to the namespace `company_name`, then to
+    a generic "the plant" / "l'usine" label, so a missing/renamed document
+    never blocks the caller.
+
+    `scope_source` — see `resolve_scope_document`.
+
+    `doc`: optional pre-fetched scope document (from `resolve_scope_document`)
+    to reuse instead of fetching it again — pass this when the caller already
+    needed the raw document for something else. Leave unset (the default) to
+    have this function fetch it itself, as before.
+    """
+    doc = resolve_scope_document(firestore, namespace_id, scope_source) if doc is _UNRESOLVED else doc
+
+    name = (doc or {}).get("name") if doc else None
+    if name:
+        return name
 
     company_name = (namespace or {}).get("company_name")
     if company_name:

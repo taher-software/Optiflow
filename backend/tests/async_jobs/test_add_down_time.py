@@ -9,7 +9,7 @@ import pytest
 
 from src.app.core.firestore import NAMESPACE_COLLECTION
 from src.app.gcp.firestore import FirestoreClient
-from src.app.globals.enum import DownTimeType, ProductionScope, Role
+from src.app.globals.enum import DownTimeType, ProductionScope, Role, WorkstationType
 
 add_down_time_module = importlib.import_module("src.app.async_jobs.add_down_time")
 add_down_time = add_down_time_module.add_down_time
@@ -475,3 +475,129 @@ def test_idempotent_replay_sends_no_notifications(
     }
     assert push_spy == []
     assert len(email_spy) == 1  # unchanged — no new email sent on replay
+
+
+# --------------------------------------------------------------------------- #
+# First escalation cycle scheduling (`should_escalate` -> `schedule_escalation`)
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture
+def schedule_escalation_spy(monkeypatch):
+    calls: list[dict] = []
+
+    def _spy(namespace_id, down_time_id, timezone_name):
+        calls.append(
+            {
+                "namespace_id": namespace_id,
+                "down_time_id": down_time_id,
+                "timezone_name": timezone_name,
+            }
+        )
+        return "escalation-task-1"
+
+    monkeypatch.setattr(add_down_time_module, "schedule_escalation", _spy)
+    return calls
+
+
+class TestEscalationScheduling:
+    def test_standard_workstation_does_not_schedule_escalation(
+        self, seed_user, seed_workstation, push_spy, schedule_escalation_spy
+    ):
+        station = seed_workstation(namespace_id=NS, type=WorkstationType.STANDARD.value)
+        seed_user(
+            namespace_id=NS, role=Role.MAINTENANCE_AGENT.value,
+            online=True, push_token="tok",
+        )
+        add_down_time(
+            NS,
+            _payload(
+                production_scope=ProductionScope.WORK_STATION.value,
+                workstation_id=station["id"],
+            ),
+            "job-standard-ws",
+        )
+        assert schedule_escalation_spy == []
+
+    def test_bottleneck_workstation_schedules_escalation(
+        self, fake_db, seed_user, seed_workstation, push_spy, schedule_escalation_spy
+    ):
+        station = seed_workstation(namespace_id=NS, type=WorkstationType.BOTTLENECK.value)
+        seed_user(
+            namespace_id=NS, role=Role.MAINTENANCE_AGENT.value,
+            online=True, push_token="tok",
+        )
+        add_down_time(
+            NS,
+            _payload(
+                production_scope=ProductionScope.WORK_STATION.value,
+                workstation_id=station["id"],
+            ),
+            "job-bottleneck-ws",
+        )
+        assert len(schedule_escalation_spy) == 1
+        assert schedule_escalation_spy[0]["down_time_id"] == "job-bottleneck-ws"
+        issue = _issue(fake_db, NS, "job-bottleneck-ws")
+        assert issue["escalation_task_id"] == "escalation-task-1"
+
+    def test_plant_scoped_ticket_schedules_escalation(
+        self, fake_db, seed_user, push_spy, schedule_escalation_spy
+    ):
+        seed_user(
+            namespace_id=NS, role=Role.MAINTENANCE_AGENT.value,
+            online=True, push_token="tok",
+        )
+        add_down_time(
+            NS, _payload(production_scope=ProductionScope.PLANT.value), "job-plant"
+        )
+        assert len(schedule_escalation_spy) == 1
+        issue = _issue(fake_db, NS, "job-plant")
+        assert issue["escalation_task_id"] == "escalation-task-1"
+
+    def test_critical_workstation_schedules_escalation(
+        self, fake_db, seed_user, seed_workstation, push_spy, schedule_escalation_spy
+    ):
+        station = seed_workstation(namespace_id=NS, type=WorkstationType.CRITICAL.value)
+        seed_user(
+            namespace_id=NS, role=Role.MAINTENANCE_AGENT.value,
+            online=True, push_token="tok",
+        )
+        add_down_time(
+            NS,
+            _payload(
+                production_scope=ProductionScope.WORK_STATION.value,
+                workstation_id=station["id"],
+            ),
+            "job-critical-ws",
+        )
+        assert len(schedule_escalation_spy) == 1
+
+    def test_namespace_timezone_forwarded_to_schedule_escalation(
+        self, seed_namespace, seed_user, push_spy, schedule_escalation_spy
+    ):
+        seed_namespace(id=NS, timezone="Europe/Paris")
+        seed_user(
+            namespace_id=NS, role=Role.MAINTENANCE_AGENT.value,
+            online=True, push_token="tok",
+        )
+        add_down_time(
+            NS, _payload(production_scope=ProductionScope.PLANT.value), "job-plant-tz"
+        )
+        assert schedule_escalation_spy[0]["timezone_name"] == "Europe/Paris"
+
+    def test_failed_schedule_does_not_persist_task_id_or_fail_ticket_creation(
+        self, fake_db, seed_user, push_spy, monkeypatch
+    ):
+        monkeypatch.setattr(
+            add_down_time_module, "schedule_escalation", lambda *a, **k: None
+        )
+        seed_user(
+            namespace_id=NS, role=Role.MAINTENANCE_AGENT.value,
+            online=True, push_token="tok",
+        )
+        result = add_down_time(
+            NS, _payload(production_scope=ProductionScope.PLANT.value), "job-schedule-fails"
+        )
+        assert result == {"status": "created", "down_time_id": "job-schedule-fails"}
+        issue = _issue(fake_db, NS, "job-schedule-fails")
+        assert "escalation_task_id" not in issue

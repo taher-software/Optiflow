@@ -175,3 +175,63 @@ def send_down_time_supervisor_email(
         language=lang,
     )
     _send(to, copy["subject"].format(location=safe_location), rendered)
+
+
+_ESCALATION_EMAIL_COPY: dict[Language, dict[str, str]] = {
+    Language.EN: {
+        "subject": "Escalation — downtime unresolved for {duration}",
+        "heading": "A downtime needs management attention",
+        "para1": (
+            "The downtime at <strong>{location}</strong> has been "
+            "unresolved for <strong>{duration}</strong>."
+        ),
+        "para2": "Please follow up on this ticket in OptiFlow.",
+        "cta": "Open OptiFlow",
+    },
+    Language.FR: {
+        "subject": "Escalade — arrêt non résolu depuis {duration}",
+        "heading": "Un arrêt requiert l'attention de la direction",
+        "para1": (
+            "L'arrêt à <strong>{location}</strong> n'est toujours pas "
+            "résolu depuis <strong>{duration}</strong>."
+        ),
+        "para2": "Merci de suivre ce ticket dans OptiFlow.",
+        "cta": "Ouvrir OptiFlow",
+    },
+}
+
+
+def send_down_time_escalation_email(
+    to: str, language: Language, location: str, duration: str, app_url: str | None = None
+) -> None:
+    """Best-effort bilingual email alerting management (manager, owner,
+    production supervisor, process supervisor) that a downtime ticket has
+    been unresolved for `duration` (elapsed since `created_at`).
+
+    `location` and `duration` originate from tenant-entered data / formatted
+    strings, so both are HTML-escaped before being embedded in the body —
+    same posture as `send_down_time_supervisor_email`.
+    """
+    lang = language if language in _ESCALATION_EMAIL_COPY else Language.EN
+    copy = _ESCALATION_EMAIL_COPY[lang]
+    safe_location = html.escape(location)
+    safe_duration = html.escape(duration)
+    url = app_url or get_settings().frontend_url
+
+    body = (
+        f'<p style="{_PARA}">{copy["para1"].format(location=safe_location, duration=safe_duration)}</p>'
+        f'<p style="{_PARA}">{copy["para2"]}</p>'
+    )
+    rendered = _shell(
+        copy["subject"].format(location=safe_location, duration=safe_duration),
+        copy["heading"],
+        body,
+        copy["cta"],
+        url,
+        language=lang,
+    )
+    _send(
+        to,
+        copy["subject"].format(location=safe_location, duration=safe_duration),
+        rendered,
+    )

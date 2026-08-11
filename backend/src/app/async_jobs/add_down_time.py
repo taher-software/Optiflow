@@ -6,7 +6,11 @@ agents (e.g. "maintenance agent") responsible for it via push notification.
 Notification copy is bilingual (en/fr, per the namespace's `language` field)
 and specialized per `DownTimeType` — see `src.app.core.notifications`.
 Unknown-cause (`DownTimeType.OTHERS`) tickets additionally alert every
-production supervisor in the namespace (push + best-effort email).
+production supervisor in the namespace (push + best-effort email). Finally,
+when the ticket matches the escalation policy (`src.app.core.escalation`),
+schedules the first escalation cycle and persists the returned Cloud Task id
+on the issue as `escalation_task_id` — the `escalate_down_time` job then
+re-evaluates and reschedules itself every 30 minutes until the ticket closes.
 
 Trigger: published (job_type=`JobType.ADD_DOWN_TIME`) by the downtime-ticket
 creation endpoint (owned by the api sub-factory) once a workstation/line/UAP
@@ -21,6 +25,7 @@ from datetime import datetime
 import backoff
 
 from src.app.core.email import send_down_time_supervisor_email
+from src.app.core.escalation import schedule_escalation, should_escalate
 from src.app.core.firestore import NAMESPACE_COLLECTION, USERS_COLLECTION
 from src.app.core.notifications import agent_notification, supervisor_notification
 from src.app.core.push import send_push_notifications
@@ -32,11 +37,17 @@ from src.app.globals.enum import (
     DownTimeType,
     Language,
     Process,
+    ProductionScope,
     Role,
     language_of,
 )
 
-from ._common import DOWN_TIME_COLLECTION, ISSUES_SUBCOLLECTION, resolve_location
+from ._common import (
+    DOWN_TIME_COLLECTION,
+    ISSUES_SUBCOLLECTION,
+    resolve_location,
+    resolve_scope_document,
+)
 from .exceptions import FunctionalJobError
 
 logger = logging.getLogger(__name__)
@@ -271,7 +282,13 @@ def _run_add_down_time(namespace_id: str, payload: dict, job_id: str) -> dict:
     # and let ticket creation stand.
     try:
         language = language_of(namespace)
-        location = resolve_location(firestore, namespace_id, namespace, payload, language)
+        # Fetched once and reused for both the location label and the
+        # escalation check below (only a `work station`-scoped ticket needs
+        # it for `should_escalate`) — avoid reading the same document twice.
+        scope_doc = resolve_scope_document(firestore, namespace_id, payload)
+        location = resolve_location(
+            firestore, namespace_id, namespace, payload, language, doc=scope_doc
+        )
 
         _notify_process_agents(
             firestore, namespace_id, down_time_type, process, language, location, job_id
@@ -281,6 +298,22 @@ def _run_add_down_time(namespace_id: str, payload: dict, job_id: str) -> dict:
             _notify_production_supervisors(
                 firestore, namespace_id, language, location, job_id
             )
+
+        workstation = (
+            scope_doc if payload["production_scope"] == ProductionScope.WORK_STATION.value else None
+        )
+        if should_escalate(issue_data, workstation):
+            escalation_task_id = schedule_escalation(
+                namespace_id, job_id, namespace.get("timezone")
+            )
+            if escalation_task_id:
+                firestore.update_subdocument(
+                    DOWN_TIME_COLLECTION,
+                    namespace_id,
+                    ISSUES_SUBCOLLECTION,
+                    job_id,
+                    {"escalation_task_id": escalation_task_id},
+                )
     except Exception as e:
         logger.error(
             f"add_down_time: notification phase failed for issue '{job_id}' "

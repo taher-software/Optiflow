@@ -4,6 +4,7 @@ pydantic>=2.9
 pydantic-settings>=2.6
 email-validator>=2.2
 google-cloud-firestore>=2.19
+google-cloud-tasks>=2.16
 resend>=2.4
 bcrypt>=4.1
 itsdangerous>=2.2

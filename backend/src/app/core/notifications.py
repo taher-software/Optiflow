@@ -232,6 +232,70 @@ def lifecycle_notification(
     )
 
 
+# --- Escalation templates, keyed by language. Used by the
+# `escalate_down_time` async job (management alert, push + email). ---
+_ESCALATION_TEMPLATES: dict[Language, tuple[str, str]] = {
+    Language.EN: (
+        "Escalation — downtime unresolved for {duration}",
+        "The downtime at {location} has been unresolved for {duration} and "
+        "needs management attention.",
+    ),
+    Language.FR: (
+        "Escalade — arrêt non résolu depuis {duration}",
+        "L'arrêt à {location} n'est toujours pas résolu depuis {duration} et "
+        "requiert l'attention de la direction.",
+    ),
+}
+
+
+def escalation_notification(
+    language: Language, location: str, duration: str
+) -> tuple[str, str]:
+    """Build the (title, body) copy (push + email) alerting management that a
+    downtime ticket has been unresolved for `duration`. Unknown languages
+    fall back to English, exactly like the other notification builders."""
+    lang = language if language in _ESCALATION_TEMPLATES else Language.EN
+    title_template, body_template = _ESCALATION_TEMPLATES[lang]
+    return (
+        title_template.format(location=location, duration=duration),
+        body_template.format(location=location, duration=duration),
+    )
+
+
+# --- Resolution-awaiting-confirmation template, keyed by language. Used by
+# the `escalate_down_time` async job when a ticket is `resolved` and waiting
+# on a production agent to confirm/reject it (push only). ---
+_RESOLUTION_REMINDER_TEMPLATES: dict[Language, tuple[str, str]] = {
+    Language.EN: (
+        "Resolution awaiting your confirmation",
+        "The downtime at {location} was marked resolved {duration} ago and "
+        "is waiting on you. Please close it if production is back to "
+        "normal, or reject the resolution.",
+    ),
+    Language.FR: (
+        "Résolution en attente de votre confirmation",
+        "L'arrêt à {location} a été marqué résolu il y a {duration} et "
+        "attend votre confirmation. Merci de le clôturer si la production "
+        "est revenue à la normale, ou de rejeter la résolution.",
+    ),
+}
+
+
+def resolution_reminder_notification(
+    language: Language, location: str, duration: str
+) -> tuple[str, str]:
+    """Build the (title, body) push copy reminding production agents to
+    confirm/reject a resolved-but-unclosed downtime ticket. `duration` is the
+    time elapsed since `resolved_at` (NOT `created_at` — unlike every other
+    builder in this module). Unknown languages fall back to English."""
+    lang = language if language in _RESOLUTION_REMINDER_TEMPLATES else Language.EN
+    title_template, body_template = _RESOLUTION_REMINDER_TEMPLATES[lang]
+    return (
+        title_template.format(location=location, duration=duration),
+        body_template.format(location=location, duration=duration),
+    )
+
+
 # --- Bilingual elapsed-duration formatter (pure, no I/O). ---
 def format_duration(seconds: float, language: Language) -> str:
     """Render an elapsed duration in seconds as a short bilingual string:

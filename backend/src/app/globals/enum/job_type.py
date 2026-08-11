@@ -6,3 +6,4 @@ class JobType(str, Enum):
 
     ADD_DOWN_TIME = "add_down_time"
     NOTIFY_DOWN_TIME_UPDATE = "notify_down_time_update"
+    ESCALATE_DOWN_TIME = "escalate_down_time"

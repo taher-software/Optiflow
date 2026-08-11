@@ -38,6 +38,16 @@ forever, corrupting the `ongoing`/`resolved` KPI buckets. See
 `_is_close_only` / `_permission_flags` for the exact predicate and the
 resulting `can_acknowledge`/`can_resolve`/`can_close`/`can_reject`/
 `can_delete` flags.
+
+`close_down_time` / `delete_down_time` are also where the escalation chain
+ends: each reads the issue's `escalation_task_id` (absent on legacy
+documents that predate the field — read defensively) and calls
+`core.escalation.cancel_escalation`, clearing the field on the same update
+so a stale id never lingers pointing at a cancelled/nonexistent task.
+Cancellation is best-effort — `cancel_escalation` already swallows its own
+errors, and the close/delete transition itself must never fail because of
+it; the `escalate_down_time` async handler's own `closed`/missing-issue
+branches are the belt-and-braces fallback if a cancel call doesn't land.
 """
 
 import logging
@@ -47,6 +57,7 @@ from typing import Any, Optional
 from fastapi import HTTPException, status
 
 from src.app.gcp import get_pubsub_publisher
+from src.app.core.escalation import cancel_escalation
 from src.app.core.firestore import (
     NAMESPACE_COLLECTION,
     PRODUCTION_LINE_COLLECTION,
@@ -784,6 +795,27 @@ def reject_resolution(issue_id: str, current: dict[str, Any]) -> DownTimeOut:
     return _to_down_time_out(issue, current, users_by_id, now)
 
 
+def _cancel_escalation_best_effort(issue: dict[str, Any]) -> None:
+    """Cancel the issue's currently-scheduled escalation Cloud Task, if any.
+
+    Reads `escalation_task_id` defensively (absent on every legacy document
+    — Firestore has no migrations) and delegates to
+    `core.escalation.cancel_escalation`, which is itself best-effort and
+    never raises. Wrapped in a try/except anyway (belt-and-braces on top of
+    belt-and-braces) so nothing this function does can ever turn a
+    successful close/delete into a 500 — if cancellation doesn't land, the
+    `escalate_down_time` async handler's own `closed`/missing-issue branches
+    are the real safety net that stops the chain."""
+    try:
+        cancel_escalation(issue.get("escalation_task_id"))
+    except Exception:
+        logger.warning(
+            "down_time.services: escalation cancellation raised unexpectedly "
+            f"for down_time_id={issue.get('id')}.",
+            exc_info=True,
+        )
+
+
 def close_down_time(issue_id: str, current: dict[str, Any]) -> DownTimeOut:
     """Close a downtime ticket. Restricted to production agents. For a
     close-only `down_time_type` (see `CLOSE_ONLY_DOWNTIME_TYPES`) the ticket
@@ -798,7 +830,13 @@ def close_down_time(issue_id: str, current: dict[str, Any]) -> DownTimeOut:
     forbidden for close-only types, so it could never legally transition
     again, and it would permanently inflate the `ongoing`/`resolved` KPI
     buckets. Allowing close from any non-closed status keeps every legacy
-    ticket reachable."""
+    ticket reachable.
+
+    Closing is the terminal state: after the status update succeeds, the
+    scheduled escalation Cloud Task (if any) is cancelled and
+    `escalation_task_id` is cleared in the same update (see
+    `_cancel_escalation_best_effort` / module docstring) so no further
+    escalation can fire on this ticket."""
     client = get_firestore_client()
     namespace_id = current["namespace_id"]
     issue = _get_issue_or_404(client, namespace_id, issue_id)
@@ -828,10 +866,12 @@ def close_down_time(issue_id: str, current: dict[str, Any]) -> DownTimeOut:
         "closed_at": now_iso,
         "closed_by": current["id"],
         "updated_at": now_iso,
+        "escalation_task_id": None,
     }
     client.update_subdocument(
         DOWN_TIME_COLLECTION, namespace_id, ISSUES_SUBCOLLECTION, issue_id, updates
     )
+    _cancel_escalation_best_effort(issue)
     issue.update(updates)
 
     users_by_id = _batch_fetch_actor_names(client, [issue])
@@ -841,7 +881,13 @@ def close_down_time(issue_id: str, current: dict[str, Any]) -> DownTimeOut:
 def delete_down_time(issue_id: str, current: dict[str, Any]) -> DownTimeOut:
     """Delete a still-pending downtime ticket. Restricted to the production
     agent who opened it (`created_by`); 409 unless the ticket is currently
-    `pending`."""
+    `pending`.
+
+    A deleted ticket leaves the workflow entirely, so its scheduled
+    escalation Cloud Task (if any) is cancelled before the document is
+    deleted — otherwise the task would still fire 30 minutes later, find no
+    issue, and log noise every cycle (see `_cancel_escalation_best_effort` /
+    module docstring)."""
     client = get_firestore_client()
     namespace_id = current["namespace_id"]
     issue = _get_issue_or_404(client, namespace_id, issue_id)
@@ -864,6 +910,7 @@ def delete_down_time(issue_id: str, current: dict[str, Any]) -> DownTimeOut:
     users_by_id = _batch_fetch_actor_names(client, [issue])
     result = _to_down_time_out(issue, current, users_by_id, now)
 
+    _cancel_escalation_best_effort(issue)
     client.delete_subdocument(
         DOWN_TIME_COLLECTION, namespace_id, ISSUES_SUBCOLLECTION, issue_id
     )
