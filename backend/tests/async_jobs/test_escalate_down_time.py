@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 import pytest
 
 from src.app.core.escalation import ScheduleEscalationResult
+from src.app.core.push import PushDeliveryError
 from src.app.gcp.firestore import FirestoreClient
 from src.app.globals.enum import DownTimeStatus, Process, ProductionScope, Role
 
@@ -687,6 +688,35 @@ def test_notification_failure_now_propagates_and_is_retried(
     # invoked `max_tries` times, proving the failure was retried, not
     # swallowed on the first attempt.
     escalate_down_time(NS, _payload(), "job-notify-retried")
+
+    assert calls["n"] == 3
+
+
+def test_total_push_failure_propagates_to_backoff_and_retries(
+    _wire_firestore, seed_user, monkeypatch
+):
+    """`send_push_notifications` now raises `PushDeliveryError` when every
+    token in a batch fails (see `core.push`). This call site is NOT
+    contained (unlike `add_down_time`'s), so the raise must reach this
+    handler's own `backoff` decorator and genuinely retry — mirroring
+    `test_notification_failure_now_propagates_and_is_retried` above, but
+    proving it end-to-end through the real `send_push_notifications` /
+    `PushDeliveryError` contract instead of a generic `RuntimeError`."""
+    _seed_issue(_wire_firestore, status=DownTimeStatus.PENDING.value)
+    seed_user(namespace_id=NS, role=Role.MANAGER.value, push_token="tok")
+
+    calls = {"n": 0}
+
+    def _always_fails(*args, **kwargs):
+        calls["n"] += 1
+        raise PushDeliveryError("send_push_notifications: all 1 push send(s) failed.")
+
+    monkeypatch.setattr(escalate_module, "send_push_notifications", _always_fails)
+
+    # `on_giveup` swallows and returns normally — the job doesn't raise out
+    # to the caller even after exhausting retries, but
+    # `send_push_notifications` was genuinely invoked `max_tries` (3) times.
+    escalate_down_time(NS, _payload(), "job-push-total-fail-retried")
 
     assert calls["n"] == 3
 

@@ -7,14 +7,17 @@ from datetime import datetime, timedelta
 
 import pytest
 
+from src.app.async_jobs.exceptions import SystemJobError
 from src.app.core.escalation import ScheduleEscalationResult
 from src.app.core.firestore import NAMESPACE_COLLECTION
+from src.app.core.push import PushDeliveryError
 from src.app.gcp.firestore import FirestoreClient
 from src.app.globals.enum import DownTimeType, ProductionScope, Role, WorkstationType
 
 add_down_time_module = importlib.import_module("src.app.async_jobs.add_down_time")
 common_module = importlib.import_module("src.app.async_jobs._common")
 add_down_time = add_down_time_module.add_down_time
+_notify_production_supervisors = add_down_time_module._notify_production_supervisors
 
 NS = "ns-handler"
 
@@ -261,6 +264,88 @@ class TestSupervisorNotifications:
 
 
 # --------------------------------------------------------------------------- #
+# `_notify_production_supervisors` — total-failure -> `SystemJobError`
+# (direct unit tests: `add_down_time`'s own containment would otherwise
+# swallow the raise before these assertions could observe it).
+# --------------------------------------------------------------------------- #
+
+
+class TestNotifyProductionSupervisorsTotalFailure:
+    def test_total_push_failure_still_attempts_email_then_raises(
+        self, fake_db, seed_user, email_spy, monkeypatch
+    ):
+        seed_user(
+            namespace_id=NS, role=Role.PRODUCTION_SUPERVISOR.value,
+            push_token="tok-sup", email="sup@example.com",
+        )
+        firestore = FirestoreClient(client=fake_db)
+
+        def _always_fails(*args, **kwargs):
+            raise PushDeliveryError("all 1 push send(s) failed.")
+
+        monkeypatch.setattr(add_down_time_module, "send_push_notifications", _always_fails)
+
+        with pytest.raises(SystemJobError, match="push"):
+            _notify_production_supervisors(
+                firestore, NS, "en", "Plant", "job-push-total-fail"
+            )
+
+        # The email channel was still attempted even though push failed
+        # first and entirely.
+        assert {c["to"] for c in email_spy} == {"sup@example.com"}
+
+    def test_total_email_failure_raises(self, fake_db, seed_user, push_spy, email_spy):
+        seed_user(
+            namespace_id=NS, role=Role.PRODUCTION_SUPERVISOR.value,
+            push_token="tok-sup-a", email="a@example.com",
+        )
+        seed_user(
+            namespace_id=NS, role=Role.PRODUCTION_SUPERVISOR.value,
+            push_token="tok-sup-b", email="b@example.com",
+        )
+        email_spy.fail_for.update({"a@example.com", "b@example.com"})
+        firestore = FirestoreClient(client=fake_db)
+
+        with pytest.raises(SystemJobError, match="email"):
+            _notify_production_supervisors(
+                firestore, NS, "en", "Plant", "job-email-total-fail"
+            )
+
+        # The push channel was still attempted.
+        assert len(push_spy) == 1
+
+    def test_no_supervisor_email_is_not_a_failure(self, fake_db, seed_user, push_spy):
+        seed_user(
+            namespace_id=NS, role=Role.PRODUCTION_SUPERVISOR.value,
+            push_token="tok-sup", email=None,
+        )
+        firestore = FirestoreClient(client=fake_db)
+
+        # Should not raise: no recipient had an email, so the email channel
+        # was never "attempted" in a way that can fail.
+        _notify_production_supervisors(firestore, NS, "en", "Plant", "job-no-email")
+        assert len(push_spy) == 1
+
+    def test_single_failing_email_recipient_among_several_does_not_raise(
+        self, fake_db, seed_user, push_spy, email_spy
+    ):
+        seed_user(
+            namespace_id=NS, role=Role.PRODUCTION_SUPERVISOR.value,
+            push_token="tok-sup-a", email="fails@example.com",
+        )
+        seed_user(
+            namespace_id=NS, role=Role.PRODUCTION_SUPERVISOR.value,
+            push_token="tok-sup-b", email="ok@example.com",
+        )
+        email_spy.fail_for.add("fails@example.com")
+        firestore = FirestoreClient(client=fake_db)
+
+        # Should not raise: at least one email succeeded.
+        _notify_production_supervisors(firestore, NS, "en", "Plant", "job-partial-email")
+        assert {c["to"] for c in email_spy} == {"fails@example.com", "ok@example.com"}
+
+
+# --------------------------------------------------------------------------- #
 # Bilingual notification copy, driven by the namespace's `language` field
 # --------------------------------------------------------------------------- #
 
@@ -431,23 +516,89 @@ class TestResolveLocation:
 # --------------------------------------------------------------------------- #
 
 
-def test_notification_phase_failure_does_not_fail_or_retry_the_job(
+def test_notification_phase_failure_now_propagates_and_is_retried(
     fake_db, monkeypatch
 ):
-    """A transient failure while resolving notification recipients must not
-    propagate: the ticket is already written, and a retry would just hit the
-    idempotency guard and notify nobody. The job must still report success
-    and the issue must exist."""
+    """The notification phase is no longer contained: a transient failure
+    must propagate to `backoff` and genuinely retry the whole run, up to
+    `max_tries` (3). Prove the retry actually happened by counting
+    invocations, mirroring `test_escalate_down_time.py`'s equivalent test."""
+    calls = {"n": 0}
 
-    def _boom(*args, **kwargs):
+    def _always_fails(*args, **kwargs):
+        calls["n"] += 1
         raise RuntimeError("simulated transient Firestore error")
 
-    monkeypatch.setattr(add_down_time_module, "_notify_process_agents", _boom)
+    monkeypatch.setattr(add_down_time_module, "_notify_process_agents", _always_fails)
 
     result = add_down_time(NS, _payload(), "job-notify-fails")
 
-    assert result == {"status": "created", "down_time_id": "job-notify-fails"}
+    assert calls["n"] == 3
+    # The ticket itself was created on attempt 1 and stays created even
+    # though notifications never fully succeeded — `on_giveup` swallows the
+    # exhausted retry and the handler still returns a meaningful dict
+    # (never `None`) reporting that.
+    assert result == {
+        "status": "created_notifications_failed",
+        "reason": "notification phase failed after all retries",
+        "down_time_id": "job-notify-fails",
+    }
     assert _issue(fake_db, NS, "job-notify-fails") is not None
+
+
+def test_notification_failure_retries_but_creates_the_issue_only_once(
+    fake_db, monkeypatch
+):
+    """A retry of the notification phase must not create a second issue
+    document — `create_subdocument` fires exactly once across all
+    attempts."""
+    create_calls = {"n": 0}
+    real_create = add_down_time_module.get_firestore_client
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("simulated transient notification failure")
+
+    monkeypatch.setattr(add_down_time_module, "_notify_process_agents", _boom)
+
+    firestore = real_create()
+    original_create_subdocument = firestore.create_subdocument
+
+    def _counting_create_subdocument(*args, **kwargs):
+        create_calls["n"] += 1
+        return original_create_subdocument(*args, **kwargs)
+
+    monkeypatch.setattr(firestore, "create_subdocument", _counting_create_subdocument)
+    monkeypatch.setattr(add_down_time_module, "get_firestore_client", lambda: firestore)
+
+    add_down_time(NS, _payload(), "job-notify-fails-once")
+
+    assert create_calls["n"] == 1
+    assert _issue_count(fake_db, NS) == 1
+
+
+def test_notification_failure_succeeds_on_second_attempt_still_reports_created(
+    fake_db, monkeypatch
+):
+    """A retry that succeeds on its second attempt must report a clean
+    `created` (not `created_notifications_failed`) — and must not have
+    created a second issue document."""
+    calls = {"n": 0}
+
+    def _fails_once_then_succeeds(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("simulated transient failure")
+        return None
+
+    monkeypatch.setattr(
+        add_down_time_module, "_notify_process_agents", _fails_once_then_succeeds
+    )
+
+    result = add_down_time(NS, _payload(), "job-notify-recovers")
+
+    assert calls["n"] == 2
+    assert result == {"status": "created", "down_time_id": "job-notify-recovers"}
+    assert _issue_count(fake_db, NS) == 1
 
 
 def test_idempotent_replay_sends_no_notifications(
@@ -477,6 +628,34 @@ def test_idempotent_replay_sends_no_notifications(
     }
     assert push_spy == []
     assert len(email_spy) == 1  # unchanged — no new email sent on replay
+
+
+def test_genuine_redelivery_after_full_success_is_skipped_not_retried(
+    fake_db, seed_user, push_spy
+):
+    """A FRESH invocation (its own attempt counter, `is_first_attempt=True`)
+    that finds the issue already fully processed is a genuine broker
+    redelivery, not a `backoff` retry — must still return `skipped` and send
+    nothing, exactly like before this unit's change."""
+    seed_user(
+        namespace_id=NS, role=Role.MAINTENANCE_AGENT.value,
+        online=True, push_token="tok",
+    )
+
+    first = add_down_time(NS, _payload(), "job-genuine-redelivery")
+    assert first == {"status": "created", "down_time_id": "job-genuine-redelivery"}
+    assert len(push_spy) == 1
+
+    push_spy.clear()
+    second = add_down_time(NS, _payload(), "job-genuine-redelivery")  # fresh call
+
+    assert second == {
+        "status": "skipped",
+        "reason": "already processed",
+        "down_time_id": "job-genuine-redelivery",
+    }
+    assert push_spy == []
+    assert _issue_count(fake_db, NS) == 1
 
 
 # --------------------------------------------------------------------------- #
@@ -673,13 +852,13 @@ class TestEscalationScheduling:
             NS, _payload(production_scope=ProductionScope.PLANT.value), "job-schedule-fails"
         )
 
-        # Ticket creation is unaffected: the job still reports success. Since
-        # `schedule_escalation` itself returned falsy (creation failed), the
-        # shared composition never writes escalation bookkeeping to the
-        # issue at all — this handler's own retry cannot help here (a retry
-        # would just hit the idempotency guard and return early), so the
-        # ticket ends up with NO escalation chain at all, which is the
-        # accepted, documented limitation (see the module docstring).
+        # Ticket creation is unaffected: the job still reports success.
+        # `schedule_escalation_cycle` doesn't raise on a failed Cloud Tasks
+        # creation (`task_id is None` is a reported outcome, not an
+        # exception — see its docstring), so no `backoff` retry is triggered
+        # by this at all, and the shared composition never writes escalation
+        # bookkeeping to the issue. The ticket ends up with NO escalation
+        # chain for this cycle.
         assert result == {"status": "created", "down_time_id": "job-schedule-fails"}
         issue = _issue(fake_db, NS, "job-schedule-fails")
         assert "escalation_task_id" not in issue
@@ -758,3 +937,63 @@ class TestEscalationScheduling:
         assert "escalation_task_id" not in issue
         assert "escalation_count" not in issue
         assert "escalated_at" not in issue
+
+    def test_escalation_task_not_double_created_across_retries(
+        self, fake_db, seed_user, push_spy, monkeypatch
+    ):
+        """Exercises the exact retry-fallthrough path `backoff` drives (the
+        idempotency guard's "retry, not first attempt" branch — see
+        `_run_add_down_time`'s docstring/comments): calling it twice for the
+        SAME `job_id`, first with `is_first_attempt=True` then again with
+        `is_first_attempt=False` (as `_add_down_time_attempt` would on a
+        `backoff` re-entry), must not create a second, PARALLEL escalation
+        Cloud Task. The deterministic `task_id` (`f"{job_id}-1"`) means the
+        second call collapses into Cloud Tasks' `AlreadyExists` — simulated
+        here by a stateful fake that reports `already_existed=True` the
+        second time it sees the same `task_id`, exactly like the real GCP
+        client would — so only the FIRST call's bookkeeping write lands."""
+        seed_user(
+            namespace_id=NS, role=Role.MAINTENANCE_AGENT.value,
+            online=True, push_token="tok",
+        )
+
+        schedule_calls: list[dict] = []
+        seen_task_ids: set[str] = set()
+
+        def _stateful_schedule_escalation(
+            namespace_id, down_time_id, timezone_name, task_id=None, escalation_number=None
+        ):
+            already_existed = task_id in seen_task_ids
+            seen_task_ids.add(task_id)
+            schedule_calls.append({"task_id": task_id, "already_existed": already_existed})
+            return ScheduleEscalationResult(task_id=task_id, already_existed=already_existed)
+
+        monkeypatch.setattr(
+            common_module, "schedule_escalation", _stateful_schedule_escalation
+        )
+
+        job_id = "job-escalation-no-double-create"
+        payload = _payload(production_scope=ProductionScope.PLANT.value)
+
+        first = add_down_time_module._run_add_down_time(
+            NS, payload, job_id, is_first_attempt=True
+        )
+        assert first == {"status": "created", "down_time_id": job_id}
+
+        # Simulate `backoff` re-entering after a downstream notification
+        # failure on a later phase of the SAME delivery.
+        second = add_down_time_module._run_add_down_time(
+            NS, payload, job_id, is_first_attempt=False
+        )
+        assert second == {"status": "created", "down_time_id": job_id}
+
+        # The primitive is invoked once per call (2 total), but only the
+        # first ever actually creates the task — the second call's
+        # deterministic id collapses into `already_existed=True`, so no
+        # second, parallel task is created.
+        assert len(schedule_calls) == 2
+        assert [c["already_existed"] for c in schedule_calls] == [False, True]
+        assert {c["task_id"] for c in schedule_calls} == {f"{job_id}-1"}
+        assert _issue_count(fake_db, NS) == 1  # no second issue document either
+        issue = _issue(fake_db, NS, job_id)
+        assert issue["escalation_task_id"] == f"{job_id}-1"
