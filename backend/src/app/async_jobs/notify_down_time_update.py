@@ -16,22 +16,44 @@ Recipients per event:
     `_notify_process_agents` in `add_down_time` uses), told the downtime is
     still awaiting resolution and how long it has been open.
 
+Failure & retry model — notifications propagate and are retried (this is a
+change from the earlier contained version, mirroring `escalate_down_time`):
+the notification phase is NO LONGER swallowed. If the single addressed user's
+push fails (`_notify_user` → `PushDeliveryError`) or the process-agent fan-out
+fails for EVERY agent (`send_push_notifications` → `PushDeliveryError`), the
+exception propagates to this handler's `backoff` decorator and the whole run
+is retried (up to 3). A `FunctionalJobError` (invalid input / unknown tenant /
+unknown issue) is still acked without retry.
+
+`notify_user` — a cross-retry, in-memory flag (default `True`) that suppresses
+a DUPLICATE push to the single addressed user across the retries of ONE
+invocation. Once that user has been reached (or there was nobody to notify),
+the flag flips to `False`, so a retry triggered by a still-failing
+process-agent fan-out re-runs ONLY the fan-out (chasing "at least one agent
+notified") and never re-pushes the already-notified user. It lives outside the
+`backoff`-decorated function so it survives across retries; it is per
+invocation, NOT persisted, so it does not (and is not meant to) dedupe a
+separate redelivered job message.
+
 Deliberate, signed-off deviation from `.claude/skills/async` idempotency rule
 ("replaying the same `job_id` must cause no duplicate side effects"): this
-handler does NOT dedupe a redelivery, and a second push to the same device is
-a real, user-visible duplicate side effect (not merely cosmetic) — e.g. a
-resolver could see "Production rejected your resolution" twice. The
+handler does NOT dedupe a separate redelivery, and a second push to the same
+device is a real, user-visible duplicate side effect (not merely cosmetic) —
+e.g. a resolver could see "Production rejected your resolution" twice. The
 deviation was accepted anyway, deliberately, because:
   * `_publish_down_time_update` (the trigger, in the api sub-factory) mints a
     fresh `job_id` on every publish call — `job_id` is per-publish, not
     per-logical-event, so it carries no dedupe value at any layer here even
     if this handler tried to key off it.
   * Push delivery is already at-least-once / best-effort end-to-end (Expo
-    makes no delivery guarantee, and `core.push` is fire-and-forget), so a
-    Firestore write added purely to dedupe this job's own redeliveries would
-    buy little on top of that existing unreliability, at the cost of a write
-    per notification. This handler writes nothing to Firestore (verified: no
-    counters, no markers) and stays that way.
+    makes no delivery guarantee), so a Firestore write added purely to dedupe
+    this job's own redeliveries would buy little on top of that existing
+    unreliability, at the cost of a write per notification. This handler
+    writes nothing to Firestore (verified: no counters, no markers) and stays
+    that way. The `notify_user` flag above is in-memory only — it is NOT such
+    a write, and a retry across process-agents MAY still re-push agents
+    already reached in an earlier partial fan-out (accepted, same trade as
+    `escalate_down_time`).
 This is an accepted exception, not an oversight — do not "fix" it by adding
 a dedupe write.
 
@@ -65,9 +87,13 @@ _VALID_EVENTS = {"acknowledged", "resolved", "rejected"}
 def _notify_user(
     firestore, namespace_id: str, user_id: str, title: str, body: str, down_time_id: str, event: str
 ) -> None:
-    """Best-effort push to a single user by id. No-op if the user doesn't
-    exist, belongs to another tenant (forged/stale message guard, same as
-    `add_down_time`), or has no push token."""
+    """Push to a single user by id. No-op (returns, never raises) if the user
+    doesn't exist, belongs to another tenant (forged/stale message guard, same
+    as `add_down_time`), or has no push token — those are "nobody to notify",
+    not delivery failures. When there IS a token, the send is delegated to
+    `send_push_notifications`, which raises `PushDeliveryError` if it fails —
+    and that is deliberately NOT caught here: it propagates so the caller's
+    `notify_user`-gated retry can re-attempt the addressed user."""
     user = firestore.get_document(USERS_COLLECTION, user_id)
     if not user or user.get("namespace_id") != namespace_id:
         return
@@ -169,6 +195,26 @@ def _on_giveup(details: dict) -> None:
     )
 
 
+def notify_down_time_update(namespace_id: str, payload: dict, job_id: str) -> dict:
+    """
+    Notify the relevant people about a downtime-ticket lifecycle transition.
+
+    Owns the cross-retry `notify_user` flag and delegates the actual work
+    (with its `backoff` retry) to `_notify_down_time_update_attempt`. The flag
+    is created HERE — outside the decorated function — so it is shared across,
+    and survives, every retry of this one invocation: once the single
+    addressed user has been reached (or there was nobody to notify) it flips to
+    `False`, and subsequent retries chasing a still-failing process-agent
+    fan-out never re-push that user (see the module docstring).
+
+    Returns:
+        A small result dict (`{status, ...}`) describing the outcome, which
+        the worker route returns to the broker.
+    """
+    state = {"notify_user": True}
+    return _notify_down_time_update_attempt(namespace_id, payload, job_id, state)
+
+
 @backoff.on_exception(
     backoff.expo,
     Exception,
@@ -176,23 +222,24 @@ def _on_giveup(details: dict) -> None:
     on_giveup=_on_giveup,
     raise_on_giveup=False,
 )
-def notify_down_time_update(namespace_id: str, payload: dict, job_id: str) -> dict:
+def _notify_down_time_update_attempt(
+    namespace_id: str, payload: dict, job_id: str, state: dict
+) -> dict:
     """
-    Notify the relevant people about a downtime-ticket lifecycle transition.
+    One `backoff`-retried attempt of the notification work.
 
     Retry model (per `.claude/skills/async`): the body is wrapped in
     `try/except`. A `FunctionalJobError` (invalid input, unknown namespace,
     unknown issue) is logged and returns an OK result — it is NOT retried.
-    Any other (system/external/transient) failure propagates to the
-    `backoff` decorator, which retries up to 3 times; on exhaustion
-    `_on_giveup` logs and the handler returns (OK to the broker).
-
-    Returns:
-        A small result dict (`{status, ...}`) describing the outcome, which
-        the worker route returns to the broker.
+    Any other (system/external/transient) failure — including a
+    `PushDeliveryError` from the addressed-user push or the process-agent
+    fan-out — propagates to the `backoff` decorator, which retries up to 3
+    times; on exhaustion `_on_giveup` logs and the handler returns (OK to the
+    broker). `backoff` re-invokes this function with the SAME `state` dict, so
+    the `notify_user` flag set on a prior attempt is still in effect.
     """
     try:
-        return _run_notify_down_time_update(namespace_id, payload, job_id)
+        return _run_notify_down_time_update(namespace_id, payload, job_id, state)
     except FunctionalJobError as e:
         logger.warning(
             f"notify_down_time_update: functional failure (job_id={job_id}): "
@@ -205,7 +252,9 @@ def notify_down_time_update(namespace_id: str, payload: dict, job_id: str) -> di
         }
 
 
-def _run_notify_down_time_update(namespace_id: str, payload: dict, job_id: str) -> dict:
+def _run_notify_down_time_update(
+    namespace_id: str, payload: dict, job_id: str, state: dict
+) -> dict:
     """The actual work. Raises `FunctionalJobError` for invalid input /
     unknown tenant / unknown issue (caught and acked by
     `notify_down_time_update`); lets any system/transient error propagate to
@@ -251,32 +300,39 @@ def _run_notify_down_time_update(namespace_id: str, payload: dict, job_id: str) 
             f"namespace '{namespace_id}'."
         )
 
-    # Contain the whole recipient-lookup + fan-out phase: this job writes
-    # nothing, so a transient Firestore blip here must not escape to the
-    # `backoff` decorator — a retry would just recompute and re-send the same
-    # best-effort notifications, which is a silent duplicate-push risk with
-    # no corresponding benefit (mirrors the containment
-    # `add_down_time._run_add_down_time` applies around its own notification
-    # phase, and the same reasoning: log and move on).
-    try:
-        language = language_of(namespace)
-        scope_source = {
-            "production_scope": issue.get("down_time_scope"),
-            "workstation_id": issue.get("workstation_id"),
-            "production_line_id": issue.get("production_line_id"),
-            "uap_id": issue.get("uap_id"),
-        }
-        location = resolve_location(firestore, namespace_id, namespace, scope_source, language)
-        created_by = issue.get("created_by")
+    # NO containment here (unlike the earlier version, and unlike
+    # `add_down_time`): a delivery failure must reach the `backoff` decorator
+    # and retry — see the module docstring. Duplicate pushes across retries are
+    # bounded by the `notify_user` flag for the single addressed user; the
+    # process-agent fan-out may re-send (accepted, same trade as
+    # `escalate_down_time`).
+    language = language_of(namespace)
+    scope_source = {
+        "production_scope": issue.get("down_time_scope"),
+        "workstation_id": issue.get("workstation_id"),
+        "production_line_id": issue.get("production_line_id"),
+        "uap_id": issue.get("uap_id"),
+    }
+    location = resolve_location(firestore, namespace_id, namespace, scope_source, language)
+    created_by = issue.get("created_by")
 
-        if event in ("acknowledged", "resolved"):
+    if event in ("acknowledged", "resolved"):
+        # Single addressed user only (the creator). Gated by `notify_user` so a
+        # retry doesn't re-push someone already reached on a prior attempt.
+        if state["notify_user"]:
             if created_by and created_by != actor_id:
                 title, body = lifecycle_notification(event, language, location)
                 _notify_user(
                     firestore, namespace_id, created_by, title, body, down_time_id, event
                 )
-        else:  # event == "rejected"
-            resolver_id = payload.get("rejected_resolver_id")
+            # Reached this line ⇒ the user was pushed OR there was nobody to
+            # notify (and `_notify_user` raises on a genuine delivery failure,
+            # never getting here). Either way the addressed-user obligation is
+            # discharged — flip the flag so any retry skips it.
+            state["notify_user"] = False
+    else:  # event == "rejected"
+        resolver_id = payload.get("rejected_resolver_id")
+        if state["notify_user"]:
             if resolver_id and resolver_id != actor_id:
                 title, body = lifecycle_notification(
                     "rejected_resolver", language, location
@@ -284,37 +340,38 @@ def _run_notify_down_time_update(namespace_id: str, payload: dict, job_id: str) 
                 _notify_user(
                     firestore, namespace_id, resolver_id, title, body, down_time_id, event
                 )
+            state["notify_user"] = False
 
-            try:
-                process = Process(issue.get("process"))
-            except ValueError:
-                process = None
+        # Process-agent fan-out: at least one agent must be reached.
+        # `_notify_process_agents` → `send_push_notifications` raises
+        # `PushDeliveryError` only when EVERY agent token fails, so a total
+        # outage propagates and the whole run retries (with `notify_user` now
+        # False, so only this fan-out is re-attempted).
+        try:
+            process = Process(issue.get("process"))
+        except ValueError:
+            process = None
 
-            if process is not None:
-                duration = _elapsed_duration_string(issue, namespace, namespace_id, language)
-                variant = "rejected_agents" if duration else "rejected_agents_generic"
-                title, body = lifecycle_notification(
-                    variant, language, location, duration=duration
-                )
-                # Never notify the actor about their own action, and never
-                # double-notify a resolver who is also a process agent (they
-                # already got the `rejected_resolver` copy above).
-                exclude_user_ids = frozenset(
-                    uid for uid in (actor_id, resolver_id) if uid
-                )
-                _notify_process_agents(
-                    firestore,
-                    namespace_id,
-                    process,
-                    title,
-                    body,
-                    down_time_id,
-                    exclude_user_ids=exclude_user_ids,
-                )
-    except Exception as e:
-        logger.error(
-            f"notify_down_time_update: notification phase failed for issue "
-            f"'{down_time_id}' in namespace '{namespace_id}': {e}"
-        )
+        if process is not None:
+            duration = _elapsed_duration_string(issue, namespace, namespace_id, language)
+            variant = "rejected_agents" if duration else "rejected_agents_generic"
+            title, body = lifecycle_notification(
+                variant, language, location, duration=duration
+            )
+            # Never notify the actor about their own action, and never
+            # double-notify a resolver who is also a process agent (they
+            # already got the `rejected_resolver` copy above).
+            exclude_user_ids = frozenset(
+                uid for uid in (actor_id, resolver_id) if uid
+            )
+            _notify_process_agents(
+                firestore,
+                namespace_id,
+                process,
+                title,
+                body,
+                down_time_id,
+                exclude_user_ids=exclude_user_ids,
+            )
 
     return {"status": "notified", "down_time_id": down_time_id, "event": event}

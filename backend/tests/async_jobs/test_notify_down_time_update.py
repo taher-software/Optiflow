@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from src.app.core.push import PushDeliveryError
 from src.app.gcp.firestore import FirestoreClient
 from src.app.globals.enum import DownTimeStatus, ProductionScope, Process, Role
 
@@ -378,6 +379,94 @@ class TestFunctionalFailures:
 # --------------------------------------------------------------------------- #
 # Redelivery is harmless (no state change, same message)
 # --------------------------------------------------------------------------- #
+
+
+# --------------------------------------------------------------------------- #
+# Delivery-failure retry model (propagate to backoff) + the notify_user flag
+# --------------------------------------------------------------------------- #
+
+
+def _raising_spy(monkeypatch, fail_tokens):
+    """Install a `send_push_notifications` spy that records every call and
+    mimics the real contract: it raises `PushDeliveryError` when EVERY token
+    in the (non-empty) batch is in `fail_tokens`, and returns otherwise. The
+    `_no_real_backoff_sleep` autouse fixture keeps the retries instant."""
+    calls: list[dict] = []
+
+    def _spy(tokens, title, body, data=None):
+        calls.append({"tokens": list(tokens), "title": title, "body": body, "data": data})
+        valid = [t for t in tokens if t]
+        if valid and all(t in fail_tokens for t in valid):
+            raise PushDeliveryError("simulated total delivery failure")
+
+    monkeypatch.setattr(notify_module, "send_push_notifications", _spy)
+    return calls
+
+
+class TestDeliveryFailureRetries:
+    def test_user_push_failure_propagates_and_retries_three_times(
+        self, _wire_firestore, seed_user, monkeypatch
+    ):
+        """A genuine delivery failure to the single addressed user must reach
+        `backoff` and retry the whole run `max_tries` (3) times — no longer
+        swallowed. `raise_on_giveup=False` means it still doesn't raise out."""
+        _seed_issue(_wire_firestore, created_by="creator-1")
+        seed_user(id="creator-1", namespace_id=NS, push_token="tok-creator")
+        calls = _raising_spy(monkeypatch, fail_tokens={"tok-creator"})
+
+        result = notify_down_time_update(NS, _payload(event="acknowledged"), "job-r1")
+
+        # 3 attempts, every one re-pushing the (still-failing) creator.
+        assert len(calls) == 3
+        assert all(c["tokens"] == ["tok-creator"] for c in calls)
+        assert result is None  # gave up (raise_on_giveup=False) -> acks
+
+    def test_total_agent_failure_propagates_and_retries_three_times(
+        self, _wire_firestore, seed_user, monkeypatch
+    ):
+        """Rejected with no resolver to notify: the process-agent fan-out is
+        the only work, and a total agent outage propagates and retries."""
+        _seed_issue(_wire_firestore, process=Process.MAINTENANCE.value)
+        seed_user(
+            namespace_id=NS, role=Role.MAINTENANCE_AGENT.value,
+            online=True, push_token="tok-agent",
+        )
+        calls = _raising_spy(monkeypatch, fail_tokens={"tok-agent"})
+
+        notify_down_time_update(NS, _payload(event="rejected"), "job-r2")
+
+        assert len(calls) == 3
+        assert all("tok-agent" in c["tokens"] for c in calls)
+
+    def test_notify_user_flag_stops_the_user_being_re_pushed_on_agent_retries(
+        self, _wire_firestore, seed_user, monkeypatch
+    ):
+        """The core of the requirement: once the addressed user (the rejected
+        resolver) is reached, `notify_user` flips False, so the retries driven
+        by a still-failing process-agent fan-out re-push ONLY the agents — the
+        resolver is pushed exactly once across all 3 attempts."""
+        _seed_issue(_wire_firestore, process=Process.MAINTENANCE.value)
+        seed_user(
+            id="resolver-1", namespace_id=NS, role=Role.PRODUCTION_AGENT.value,
+            push_token="tok-resolver",
+        )
+        seed_user(
+            namespace_id=NS, role=Role.MAINTENANCE_AGENT.value,
+            online=True, push_token="tok-agent",
+        )
+        # Only the agent fan-out fails; the resolver push succeeds.
+        calls = _raising_spy(monkeypatch, fail_tokens={"tok-agent"})
+
+        notify_down_time_update(
+            NS,
+            _payload(event="rejected", rejected_resolver_id="resolver-1"),
+            "job-r3",
+        )
+
+        resolver_calls = [c for c in calls if "tok-resolver" in c["tokens"]]
+        agent_calls = [c for c in calls if "tok-agent" in c["tokens"]]
+        assert len(resolver_calls) == 1  # notified once, never re-pushed
+        assert len(agent_calls) == 3     # retried until giveup
 
 
 def test_redelivery_resends_but_causes_no_state_change(
