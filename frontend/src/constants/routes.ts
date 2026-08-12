@@ -26,4 +26,6 @@ export const ROUTES = {
   stations: "/app/workstations",
   /** New workstation form. */
   newStation: "/app/workstations/new",
+  /** Namespace plant settings (shifts + escalation delay). */
+  settings: "/app/settings",
 } as const;

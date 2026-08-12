@@ -140,6 +140,32 @@ const fr = {
       uaps: "Zones de production",
       lines: "Lignes de production",
       stations: "Postes de travail",
+      settings: "Paramètres",
+    },
+
+    settings: {
+      title: "Paramètres de l'usine",
+      subtitle:
+        "Configurez l'organisation des équipes et le délai d'escalade des arrêts.",
+      loading: "Chargement…",
+      shiftNumber: {
+        label: "Nombre d'équipes",
+        help: "Nombre d'équipes (shifts) par jour. Par exemple, une usine fonctionnant 24h/24 avec trois équipes de 8 heures en compte 3.",
+      },
+      shift: {
+        title: "Équipe {{number}}",
+        start: "Heure de début",
+        end: "Heure de fin",
+      },
+      escalate: {
+        label: "Délai d'escalade (secondes)",
+        help: "Durée pendant laquelle un arrêt peut rester non résolu avant d'être escaladé aux responsables. Par défaut 1800 secondes (30 minutes).",
+        approx: "(≈ {{minutes}} min)",
+      },
+      save: "Enregistrer",
+      saving: "Enregistrement…",
+      saved: "Paramètres enregistrés.",
+      saveError: "Impossible d'enregistrer les paramètres.",
     },
 
     lines: {

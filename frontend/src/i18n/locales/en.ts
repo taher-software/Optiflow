@@ -136,6 +136,32 @@ const en = {
       uaps: "Production areas",
       lines: "Production lines",
       stations: "Work stations",
+      settings: "Settings",
+    },
+
+    settings: {
+      title: "Plant settings",
+      subtitle:
+        "Configure your plant's shift schedule and downtime escalation delay.",
+      loading: "Loading…",
+      shiftNumber: {
+        label: "Number of shifts",
+        help: "How many shifts the plant runs per day. For example, a plant running 24/7 with three 8-hour shifts has 3.",
+      },
+      shift: {
+        title: "Shift {{number}}",
+        start: "Start time",
+        end: "End time",
+      },
+      escalate: {
+        label: "Escalation delay (seconds)",
+        help: "How long a downtime may stay unresolved before it is escalated to managers. Default is 1800 seconds (30 minutes).",
+        approx: "(≈ {{minutes}} min)",
+      },
+      save: "Save settings",
+      saving: "Saving…",
+      saved: "Settings saved.",
+      saveError: "Could not save the settings.",
     },
 
     lines: {

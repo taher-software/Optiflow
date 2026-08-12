@@ -27,6 +27,7 @@ import src.app.routers.registration.services as registration_services_module
 import src.app.routers.uap.services as uap_services_module
 import src.app.routers.user.services as user_services_module
 import src.app.routers.production_line.services as production_line_services_module
+import src.app.routers.settings.services as settings_services_module
 import src.app.routers.workstation.services as workstation_services_module
 from src.app.core.firestore import (
     NAMESPACE_COLLECTION,
@@ -73,6 +74,9 @@ def fake_db(monkeypatch):
     )
     monkeypatch.setattr(
         workstation_services_module, "get_firestore_client", lambda: client
+    )
+    monkeypatch.setattr(
+        settings_services_module, "get_firestore_client", lambda: client
     )
     monkeypatch.setattr(auth_services_module, "get_firestore_client", lambda: client)
     monkeypatch.setattr(
