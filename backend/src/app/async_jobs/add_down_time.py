@@ -16,8 +16,19 @@ shared `_common.schedule_escalation_cycle(..., escalation_number=1)` — see
 its docstring for the deterministic Cloud Task id (`f"{job_id}-1"`) and the
 write-on-success-only rule (the issue is only updated with
 `escalation_task_id` once the Cloud Task actually exists). `escalate_down_time`
-then re-evaluates and reschedules itself every 30 minutes until the ticket
-closes.
+then re-evaluates and reschedules itself per the namespace's configured
+escalation delay (`NamespaceSettings.time_to_escalate`, defaulting to 1800s —
+see `_common._resolve_escalation_delay`) until the ticket closes.
+
+**Shift assignment.** When the namespace's `NamespaceSettings` doc has
+`shift_number > 1`, the newly created issue is stamped with `shift` — the
+1-based shift number (`shift_1`/`shift_2`/`shift_3` windows) whose
+`[start_time, end_time)` contains the creation moment in the namespace's
+local time, or `None` for a gap between configured windows. See
+`_resolve_shift` (pure, unit-testable) for the midnight-wrap handling. A
+single-shift namespace (no settings doc, or `shift_number` missing/<=1) gets
+no `shift` key at all — this is a purely additive, backward-compatible
+change to the issue document shape.
 
 **The notification/escalation phase is NOT contained.** Any failure there —
 including a total push/email failure surfaced by `_notify_production_supervisors`
@@ -71,12 +82,16 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
+from typing import Optional
 
 import backoff
 
 from src.app.core.email import send_down_time_supervisor_email
 from src.app.core.escalation import should_escalate
-from src.app.core.firestore import NAMESPACE_COLLECTION, USERS_COLLECTION
+from src.app.core.firestore import (
+    NAMESPACE_COLLECTION,
+    USERS_COLLECTION,
+)
 from src.app.core.notifications import agent_notification, supervisor_notification
 from src.app.core.push import PushDeliveryError, send_push_notifications
 from src.app.core.timezone import namespace_timezone
@@ -95,6 +110,7 @@ from src.app.globals.enum import (
 from ._common import (
     DOWN_TIME_COLLECTION,
     ISSUES_SUBCOLLECTION,
+    read_namespace_settings,
     resolve_location,
     resolve_scope_document,
     schedule_escalation_cycle,
@@ -108,6 +124,74 @@ _REQUIRED_FIELDS = (
     "production_scope",
     "down_time_type",
 )
+
+
+def _parse_hhmm(value: str) -> int:
+    """Parse an "HH:MM" string into minutes-since-midnight. Raises `ValueError`
+    on anything malformed — callers treat that as "no match", never as a
+    reason to fail ticket creation."""
+    hours_str, minutes_str = value.split(":")
+    hours, minutes = int(hours_str), int(minutes_str)
+    if not (0 <= hours < 24 and 0 <= minutes < 60):
+        raise ValueError(f"hour/minute out of range in '{value}'")
+    return hours * 60 + minutes
+
+
+def _resolve_shift(settings: dict | None, now_local: datetime) -> Optional[int]:
+    """Which shift (1/2/3) the given local moment falls into, per the
+    namespace's `NamespaceSettings` doc — pure function, no I/O, so it's
+    trivially unit-testable.
+
+    Returns `None` when `settings` is falsy or `shift_number <= 1` — the
+    caller then must NOT add a `shift` key at all (single-shift namespaces
+    behave exactly as before this feature existed). When `shift_number > 1`,
+    returns the matched shift number, or `None` for a genuine gap (no
+    configured `shift_i` window contains `now_local`) — that `None` IS
+    meaningful in that case and the caller stores it.
+
+    Each `shift_i` window is `{"start_time": "HH:MM", "end_time": "HH:MM"}`.
+    A window where `end <= start` wraps past midnight (e.g. 22:00-06:00) and
+    covers `[start, 1440) u [0, end)`; otherwise it covers `[start, end)`.
+    An unparsable/malformed "HH:MM" value is logged at warning and treated
+    as no-match for that shift — a bad settings value must never break
+    ticket creation.
+    """
+    if not settings:
+        return None
+    shift_number = settings.get("shift_number")
+    if not isinstance(shift_number, int) or shift_number <= 1:
+        return None
+
+    now_minutes = now_local.hour * 60 + now_local.minute
+
+    for i in range(1, shift_number + 1):
+        window = settings.get(f"shift_{i}")
+        if not window:
+            continue
+        try:
+            start = _parse_hhmm(window["start_time"])
+            end = _parse_hhmm(window["end_time"])
+        except (KeyError, TypeError, ValueError) as e:
+            logger.warning(
+                f"_resolve_shift: unparsable shift_{i} window {window!r}: {e}. "
+                "Treating as no-match."
+            )
+            continue
+
+        if start == end:
+            # Zero-length window (misconfiguration): match nothing rather than
+            # silently covering the whole day and masking later shifts. The
+            # write schema also forbids equal start/end, so this is defense in
+            # depth over raw Firestore data.
+            continue
+        if end < start:  # wraps past midnight
+            if now_minutes >= start or now_minutes < end:
+                return i
+        else:
+            if start <= now_minutes < end:
+                return i
+
+    return None
 
 
 def _resolve_process(down_time_type: DownTimeType, department: str | None) -> Process:
@@ -411,6 +495,14 @@ def _run_add_down_time(
             "a downtime for an unknown tenant."
         )
 
+    # Namespace settings (shift schedule + escalation delay) — read once,
+    # best-effort (never raises: a settings-read blip must not fail ticket
+    # creation, a purely additive feature). Used for shift assignment on the
+    # create path below, and reused for the escalation delay further down on
+    # BOTH the create and idempotent-replay paths, so the same doc is never
+    # read twice in one run.
+    settings = read_namespace_settings(firestore, namespace_id)
+
     if existing is None:
         tz = namespace_timezone(namespace_id, namespace)
         now_iso = datetime.now(tz).isoformat()
@@ -432,6 +524,17 @@ def _run_add_down_time(
             "status": DownTimeStatus.PENDING.value,
             "created_by": payload["created_by"],
         }
+
+        # Shift assignment — best-effort, namespace-settings-driven. A
+        # single-shift namespace (no settings doc, or `shift_number` missing
+        # / <= 1) behaves exactly as before this feature: no `shift` key at
+        # all. Only a multi-shift namespace (`shift_number > 1`) gets one,
+        # even when the moment falls in a gap between configured windows
+        # (`_resolve_shift` returns `None` for that case, and we still store
+        # it — `None` there is meaningful, distinct from "not applicable").
+        shift_number = (settings or {}).get("shift_number")
+        if isinstance(shift_number, int) and shift_number > 1:
+            issue_data["shift"] = _resolve_shift(settings, datetime.now(tz))
 
         firestore.create_subdocument(
             DOWN_TIME_COLLECTION,
@@ -497,6 +600,8 @@ def _run_add_down_time(
         # deterministic `task_id` (`f"{job_id}-1"`, derived only from the
         # retry-invariant literal `1`) makes a repeat collapse into
         # `already_existed=True` with no duplicate Firestore write.
-        schedule_escalation_cycle(firestore, namespace_id, namespace, job_id, 1)
+        schedule_escalation_cycle(
+            firestore, namespace_id, namespace, job_id, 1, settings=settings
+        )
 
     return {"status": "created", "down_time_id": job_id}

@@ -28,9 +28,11 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 
-from src.app.core.escalation import schedule_escalation
+from src.app.core.escalation import ESCALATION_DELAY_SECONDS, schedule_escalation
 from src.app.core.firestore import (
+    NAMESPACE_SETTINGS_COLLECTION,
     PRODUCTION_LINE_COLLECTION,
+    SETTINGS_SUBCOLLECTION,
     UAP_COLLECTION,
     WORKSTATION_COLLECTION,
 )
@@ -134,12 +136,62 @@ def resolve_location(
     return _FALLBACK_LOCATION[language]
 
 
+# Sentinel distinguishing "settings arg not supplied" (read it) from an
+# explicitly-passed `None` (a caller that already read it and found none).
+_SETTINGS_UNSET: object = object()
+
+
+def read_namespace_settings(firestore, namespace_id: str):
+    """Best-effort read of `NamespaceSettings/{namespace_id}/settings/
+    {namespace_id}`. Returns the settings dict, or `None` when the subdoc
+    doesn't exist OR the read itself raises. NEVER raises — a settings lookup
+    is purely additive and must never block ticket creation or escalation
+    scheduling. The single shared reader both the shift-assignment and the
+    escalation-delay paths use, so the never-raise guard lives in one place."""
+    try:
+        return firestore.get_subdocument(
+            NAMESPACE_SETTINGS_COLLECTION,
+            namespace_id,
+            SETTINGS_SUBCOLLECTION,
+            namespace_id,
+        )
+    except Exception as e:  # settings lookup must never block the caller
+        logger.warning(
+            f"read_namespace_settings: failed to read settings for namespace "
+            f"'{namespace_id}': {e}. Treating as no settings."
+        )
+        return None
+
+
+def _resolve_escalation_delay_from_settings(settings: dict | None) -> int:
+    """Pure resolve of the escalation delay (seconds) from an already-read
+    settings dict. Defaults to `ESCALATION_DELAY_SECONDS` when `settings` is
+    `None`, or `time_to_escalate` is missing/`None`/not a positive int (a
+    `bool` is rejected — `True`/`False` are `int` subclasses)."""
+    delay = (settings or {}).get("time_to_escalate")
+    if isinstance(delay, bool) or not isinstance(delay, int) or delay <= 0:
+        return ESCALATION_DELAY_SECONDS
+    return delay
+
+
+def _resolve_escalation_delay(firestore, namespace_id: str) -> int:
+    """Best-effort read + resolve of the namespace's configured
+    `time_to_escalate` (seconds). Thin wrapper over `read_namespace_settings`
+    + `_resolve_escalation_delay_from_settings`, for callers that only have
+    `(firestore, namespace_id)` and haven't already read the settings doc.
+    Never raises, never blocks scheduling on a bad/absent value."""
+    return _resolve_escalation_delay_from_settings(
+        read_namespace_settings(firestore, namespace_id)
+    )
+
+
 def schedule_escalation_cycle(
     firestore,
     namespace_id: str,
     namespace: dict | None,
     down_time_id: str,
     escalation_number: int,
+    settings=_SETTINGS_UNSET,
 ) -> str | None:
     """Schedule one escalation cycle (`escalation_number`, the cycle being
     scheduled — NOT the one that just ran) and, only on success, persist its
@@ -147,6 +199,13 @@ def schedule_escalation_cycle(
     `add_down_time` (cycle 1) and `escalate_down_time` (cycle `n+1`, for
     every `n` it just ran) call — see the module docstring for why there
     must be exactly one.
+
+    Also the single place that resolves the namespace's configured
+    `time_to_escalate` delay (`_resolve_escalation_delay`, falling back to
+    `ESCALATION_DELAY_SECONDS` when settings are absent/invalid) and passes
+    it to `schedule_escalation` — both the first cycle and every reschedule
+    go through here, so this one change point governs the delay for the
+    whole chain.
 
     **Deterministic id, and why `escalation_number` must be retry-invariant.**
     `task_id = f"{down_time_id}-{escalation_number}"`. This is safe to call
@@ -206,12 +265,19 @@ def schedule_escalation_cycle(
         creation failed outright.
     """
     task_id = f"{down_time_id}-{escalation_number}"
+    # Reuse a settings doc the caller already read (e.g. `add_down_time`, which
+    # reads it for shift assignment) to avoid a second read of the same doc in
+    # one run; otherwise read it here (best-effort, never raises).
+    if settings is _SETTINGS_UNSET:
+        settings = read_namespace_settings(firestore, namespace_id)
+    delay = _resolve_escalation_delay_from_settings(settings)
     result = schedule_escalation(
         namespace_id,
         down_time_id,
         (namespace or {}).get("timezone"),
         task_id=task_id,
         escalation_number=escalation_number,
+        delay=delay,
     )
 
     if result.task_id is None:

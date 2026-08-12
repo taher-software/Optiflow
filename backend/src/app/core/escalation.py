@@ -126,6 +126,7 @@ def schedule_escalation(
     timezone_name: Optional[str],
     task_id: Optional[str] = None,
     escalation_number: Optional[int] = None,
+    delay: Optional[int] = None,
 ) -> ScheduleEscalationResult:
     """Schedule the next escalation cycle via a delayed Cloud Task.
 
@@ -152,6 +153,12 @@ def schedule_escalation(
             is a distinct, meaningful case the handler defaults itself
             (defaults to the next cycle being `1`), not something this
             function should paper over.
+        delay: Seconds to wait before the escalation Cloud Task fires.
+            Defaults to `ESCALATION_DELAY_SECONDS` (1800) when omitted/`None`
+            — callers that want the namespace's configured
+            `time_to_escalate` (see `NamespaceSettings`) resolve it
+            themselves and pass it in here; this function has no Firestore
+            access to a namespace's settings and does not look it up itself.
 
     Returns:
         A `ScheduleEscalationResult`:
@@ -174,9 +181,10 @@ def schedule_escalation(
         payload["escalation_number"] = escalation_number
 
     try:
+        resolved_delay = ESCALATION_DELAY_SECONDS if delay is None else delay
         manager = get_cloud_task_manager()
         created_task_id = manager.create_task(
-            delay=ESCALATION_DELAY_SECONDS,
+            delay=resolved_delay,
             namespace_id=namespace_id,
             job_type=JobType.ESCALATE_DOWN_TIME,
             timezone_name=timezone_name,

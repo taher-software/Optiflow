@@ -9,7 +9,11 @@ import pytest
 
 from src.app.async_jobs.exceptions import SystemJobError
 from src.app.core.escalation import ScheduleEscalationResult
-from src.app.core.firestore import NAMESPACE_COLLECTION
+from src.app.core.firestore import (
+    NAMESPACE_COLLECTION,
+    NAMESPACE_SETTINGS_COLLECTION,
+    SETTINGS_SUBCOLLECTION,
+)
 from src.app.core.push import PushDeliveryError
 from src.app.gcp.firestore import FirestoreClient
 from src.app.globals.enum import DownTimeType, ProductionScope, Role, WorkstationType
@@ -18,6 +22,8 @@ add_down_time_module = importlib.import_module("src.app.async_jobs.add_down_time
 common_module = importlib.import_module("src.app.async_jobs._common")
 add_down_time = add_down_time_module.add_down_time
 _notify_production_supervisors = add_down_time_module._notify_production_supervisors
+_resolve_shift = add_down_time_module._resolve_shift
+_parse_hhmm = add_down_time_module._parse_hhmm
 
 NS = "ns-handler"
 
@@ -93,6 +99,30 @@ def _payload(**overrides):
     }
     base.update(overrides)
     return base
+
+
+@pytest.fixture
+def seed_namespace_settings(fake_db):
+    """Factory fixture: seed_namespace_settings(namespace_id=..., shift_number=...,
+    shift_1=..., ...) -> the settings dict, seeded directly into the fake
+    Firestore at `NamespaceSettings/{namespace_id}/settings/{namespace_id}`
+    (mirrors `NAMESPACE_SETTINGS_COLLECTION`/`SETTINGS_SUBCOLLECTION`, the
+    exact document `_run_add_down_time` reads for shift assignment)."""
+
+    def _seed(namespace_id=NS, **overrides) -> dict:
+        wire = FirestoreClient(client=fake_db)
+        data = {"id": namespace_id}
+        data.update(overrides)
+        wire.create_subdocument(
+            NAMESPACE_SETTINGS_COLLECTION,
+            namespace_id,
+            SETTINGS_SUBCOLLECTION,
+            data,
+            document_id=namespace_id,
+        )
+        return data
+
+    return _seed
 
 
 def test_idempotent_on_repeated_job_id(fake_db, seed_user, push_spy):
@@ -674,7 +704,7 @@ def schedule_escalation_spy(monkeypatch):
     always succeeds by echoing the `task_id` back."""
     calls: list[dict] = []
 
-    def _spy(namespace_id, down_time_id, timezone_name, task_id=None, escalation_number=None):
+    def _spy(namespace_id, down_time_id, timezone_name, task_id=None, escalation_number=None, delay=None):
         calls.append(
             {
                 "namespace_id": namespace_id,
@@ -700,13 +730,16 @@ def schedule_escalation_cycle_spy(monkeypatch):
     state."""
     calls: list[dict] = []
 
-    def _spy(firestore, namespace_id, namespace, down_time_id, escalation_number):
+    def _spy(
+        firestore, namespace_id, namespace, down_time_id, escalation_number, settings=None
+    ):
         calls.append(
             {
                 "namespace_id": namespace_id,
                 "namespace": namespace,
                 "down_time_id": down_time_id,
                 "escalation_number": escalation_number,
+                "settings": settings,
             }
         )
         return f"{down_time_id}-{escalation_number}"
@@ -961,7 +994,7 @@ class TestEscalationScheduling:
         seen_task_ids: set[str] = set()
 
         def _stateful_schedule_escalation(
-            namespace_id, down_time_id, timezone_name, task_id=None, escalation_number=None
+            namespace_id, down_time_id, timezone_name, task_id=None, escalation_number=None, delay=None
         ):
             already_existed = task_id in seen_task_ids
             seen_task_ids.add(task_id)
@@ -997,3 +1030,209 @@ class TestEscalationScheduling:
         assert _issue_count(fake_db, NS) == 1  # no second issue document either
         issue = _issue(fake_db, NS, job_id)
         assert issue["escalation_task_id"] == f"{job_id}-1"
+
+
+# --------------------------------------------------------------------------- #
+# `_parse_hhmm` — pure "HH:MM" -> minutes-since-midnight parsing
+# --------------------------------------------------------------------------- #
+
+
+class TestParseHHMM:
+    def test_parses_valid_time_into_minutes_since_midnight(self):
+        assert _parse_hhmm("09:30") == 570
+
+    def test_midnight_parses_to_zero(self):
+        assert _parse_hhmm("00:00") == 0
+
+    def test_last_minute_of_day_parses_correctly(self):
+        assert _parse_hhmm("23:59") == 23 * 60 + 59
+
+    def test_malformed_value_raises_value_error(self):
+        with pytest.raises(ValueError):
+            _parse_hhmm("not-a-time")
+
+    def test_out_of_range_hour_raises_value_error(self):
+        with pytest.raises(ValueError):
+            _parse_hhmm("24:00")
+
+    def test_out_of_range_minute_raises_value_error(self):
+        with pytest.raises(ValueError):
+            _parse_hhmm("10:60")
+
+
+# --------------------------------------------------------------------------- #
+# `_resolve_shift` — pure shift-window matching (no I/O)
+# --------------------------------------------------------------------------- #
+
+
+class TestResolveShift:
+    def test_no_settings_returns_none(self):
+        assert _resolve_shift(None, datetime(2024, 1, 15, 10, 0)) is None
+
+    def test_empty_settings_returns_none(self):
+        assert _resolve_shift({}, datetime(2024, 1, 15, 10, 0)) is None
+
+    def test_shift_number_one_returns_none(self):
+        settings = {
+            "shift_number": 1,
+            "shift_1": {"start_time": "00:00", "end_time": "23:59"},
+        }
+        assert _resolve_shift(settings, datetime(2024, 1, 15, 10, 0)) is None
+
+    def test_non_int_shift_number_returns_none(self):
+        settings = {
+            "shift_number": "2",
+            "shift_1": {"start_time": "00:00", "end_time": "23:59"},
+        }
+        assert _resolve_shift(settings, datetime(2024, 1, 15, 10, 0)) is None
+
+    def test_two_shift_day_windows_match_the_correct_shift(self):
+        settings = {
+            "shift_number": 2,
+            "shift_1": {"start_time": "06:00", "end_time": "18:00"},
+            "shift_2": {"start_time": "18:00", "end_time": "06:00"},
+        }
+        assert _resolve_shift(settings, datetime(2024, 1, 15, 10, 0)) == 1
+        assert _resolve_shift(settings, datetime(2024, 1, 15, 20, 0)) == 2
+
+    def test_three_shift_schedule_matches_each_shift(self):
+        settings = {
+            "shift_number": 3,
+            "shift_1": {"start_time": "06:00", "end_time": "14:00"},
+            "shift_2": {"start_time": "14:00", "end_time": "22:00"},
+            "shift_3": {"start_time": "22:00", "end_time": "06:00"},
+        }
+        assert _resolve_shift(settings, datetime(2024, 1, 15, 7, 0)) == 1
+        assert _resolve_shift(settings, datetime(2024, 1, 15, 15, 0)) == 2
+        assert _resolve_shift(settings, datetime(2024, 1, 15, 23, 0)) == 3
+
+    def test_midnight_wrapping_window_matches_both_sides_of_midnight(self):
+        settings = {
+            "shift_number": 2,
+            "shift_1": {"start_time": "06:00", "end_time": "22:00"},
+            "shift_2": {"start_time": "22:00", "end_time": "06:00"},
+        }
+        assert _resolve_shift(settings, datetime(2024, 1, 15, 23, 30)) == 2
+        assert _resolve_shift(settings, datetime(2024, 1, 15, 2, 0)) == 2
+
+    def test_gap_between_configured_windows_returns_none(self):
+        settings = {
+            "shift_number": 2,
+            "shift_1": {"start_time": "06:00", "end_time": "12:00"},
+            "shift_2": {"start_time": "14:00", "end_time": "20:00"},
+        }
+        assert _resolve_shift(settings, datetime(2024, 1, 15, 13, 0)) is None
+
+    def test_malformed_window_is_treated_as_no_match_and_does_not_raise(self):
+        settings = {
+            "shift_number": 2,
+            "shift_1": {"start_time": "not-a-time", "end_time": "12:00"},
+            "shift_2": {"start_time": "12:00", "end_time": "20:00"},
+        }
+        # shift_1's window is unparsable -> no match for it (never raises);
+        # shift_2 still matches normally.
+        assert _resolve_shift(settings, datetime(2024, 1, 15, 15, 0)) == 2
+
+    def test_missing_window_key_is_treated_as_no_match(self):
+        settings = {"shift_number": 2, "shift_2": {"start_time": "12:00", "end_time": "20:00"}}
+        assert _resolve_shift(settings, datetime(2024, 1, 15, 15, 0)) == 2
+        assert _resolve_shift(settings, datetime(2024, 1, 15, 5, 0)) is None
+
+
+# --------------------------------------------------------------------------- #
+# Shift assignment wiring in `_run_add_down_time`
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture
+def freeze_add_down_time_clock(monkeypatch):
+    """Pins `add_down_time`'s `datetime.now(tz)` to a fixed local wall-clock
+    time (10:00) so shift-window assertions are deterministic. `freezegun`
+    is not among this project's installed test dependencies, so this patches
+    the module's imported `datetime` name directly instead — same effect,
+    scoped to just this module."""
+    fixed = datetime(2024, 1, 15, 10, 0, 0)
+
+    class _FixedDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed.replace(tzinfo=tz) if tz else fixed
+
+    monkeypatch.setattr(add_down_time_module, "datetime", _FixedDatetime)
+    return fixed
+
+
+class TestShiftAssignmentWiring:
+    def test_multi_shift_settings_stamps_issue_with_matched_shift(
+        self, fake_db, seed_user, seed_namespace_settings, push_spy,
+        freeze_add_down_time_clock,
+    ):
+        seed_user(
+            namespace_id=NS, role=Role.MAINTENANCE_AGENT.value,
+            online=True, push_token="tok",
+        )
+        seed_namespace_settings(
+            shift_number=2,
+            shift_1={"start_time": "09:00", "end_time": "11:00"},
+            shift_2={"start_time": "11:00", "end_time": "09:00"},
+        )
+
+        add_down_time(NS, _payload(), "job-shift-assigned")
+
+        issue = _issue(fake_db, NS, "job-shift-assigned")
+        assert "shift" in issue
+        assert issue["shift"] == 1
+
+    def test_no_settings_doc_leaves_issue_without_a_shift_key(
+        self, fake_db, seed_user, push_spy
+    ):
+        seed_user(
+            namespace_id=NS, role=Role.MAINTENANCE_AGENT.value,
+            online=True, push_token="tok",
+        )
+
+        add_down_time(NS, _payload(), "job-no-shift-settings")
+
+        issue = _issue(fake_db, NS, "job-no-shift-settings")
+        assert "shift" not in issue
+
+    def test_shift_number_one_leaves_issue_without_a_shift_key(
+        self, fake_db, seed_user, seed_namespace_settings, push_spy
+    ):
+        seed_user(
+            namespace_id=NS, role=Role.MAINTENANCE_AGENT.value,
+            online=True, push_token="tok",
+        )
+        seed_namespace_settings(
+            shift_number=1,
+            shift_1={"start_time": "00:00", "end_time": "23:59"},
+        )
+
+        add_down_time(NS, _payload(), "job-single-shift")
+
+        issue = _issue(fake_db, NS, "job-single-shift")
+        assert "shift" not in issue
+
+    def test_gap_between_windows_stores_shift_as_none_not_omitted(
+        self, fake_db, seed_user, seed_namespace_settings, push_spy,
+        freeze_add_down_time_clock,
+    ):
+        """A multi-shift namespace still gets a `shift` KEY even when the
+        creation moment falls in a gap between configured windows — `None`
+        is meaningful there (see `_resolve_shift`'s docstring), distinct
+        from "not applicable" (no key at all, the single-shift case)."""
+        seed_user(
+            namespace_id=NS, role=Role.MAINTENANCE_AGENT.value,
+            online=True, push_token="tok",
+        )
+        seed_namespace_settings(
+            shift_number=2,
+            shift_1={"start_time": "12:00", "end_time": "14:00"},
+            shift_2={"start_time": "14:00", "end_time": "16:00"},
+        )  # frozen clock is 10:00 -> falls in the gap before shift_1 starts
+
+        add_down_time(NS, _payload(), "job-shift-gap")
+
+        issue = _issue(fake_db, NS, "job-shift-gap")
+        assert "shift" in issue
+        assert issue["shift"] is None

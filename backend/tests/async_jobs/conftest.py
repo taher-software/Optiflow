@@ -60,7 +60,7 @@ def _stub_schedule_escalation_by_default(monkeypatch):
     monkeypatch.setattr(
         common_module,
         "schedule_escalation",
-        lambda namespace_id, down_time_id, timezone_name, task_id=None, escalation_number=None: (
+        lambda namespace_id, down_time_id, timezone_name, task_id=None, escalation_number=None, delay=None: (
             ScheduleEscalationResult(task_id=task_id, already_existed=False)
         ),
     )

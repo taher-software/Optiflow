@@ -84,7 +84,7 @@ def reschedule_spy(monkeypatch):
     always succeeds by echoing the `task_id` back."""
     calls: list[dict] = []
 
-    def _spy(namespace_id, down_time_id, timezone_name, task_id=None, escalation_number=None):
+    def _spy(namespace_id, down_time_id, timezone_name, task_id=None, escalation_number=None, delay=None):
         calls.append(
             {
                 "namespace_id": namespace_id,
@@ -524,7 +524,7 @@ class TestDeterministicReschedule:
 
         seen = {}
 
-        def _spy(namespace_id, down_time_id, timezone_name, task_id=None, escalation_number=None):
+        def _spy(namespace_id, down_time_id, timezone_name, task_id=None, escalation_number=None, delay=None):
             seen["task_id"] = task_id
             return ScheduleEscalationResult(task_id=task_id, already_existed=True)
 
@@ -547,7 +547,7 @@ class TestDeterministicReschedule:
 
         attempts = {"n": 0}
 
-        def _spy(namespace_id, down_time_id, timezone_name, task_id=None, escalation_number=None):
+        def _spy(namespace_id, down_time_id, timezone_name, task_id=None, escalation_number=None, delay=None):
             attempts["n"] += 1
             already_existed = attempts["n"] > 1
             return ScheduleEscalationResult(task_id=task_id, already_existed=already_existed)

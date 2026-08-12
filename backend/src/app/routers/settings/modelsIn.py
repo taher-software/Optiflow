@@ -10,7 +10,9 @@ _MAX_SHIFTS = 3
 
 
 class ShiftTime(BaseModel):
-    """The clock window of a single work shift."""
+    """The clock window of a single work shift. `end_time` may be earlier than
+    `start_time` (a shift that runs past midnight, e.g. 22:00 → 06:00), but the
+    two must differ — a zero-length window is rejected."""
 
     start_time: str = Field(
         ..., pattern=_TIME_PATTERN, description="Shift start, 24h `HH:MM` (e.g. `06:00`)."
@@ -18,6 +20,12 @@ class ShiftTime(BaseModel):
     end_time: str = Field(
         ..., pattern=_TIME_PATTERN, description="Shift end, 24h `HH:MM` (e.g. `14:00`)."
     )
+
+    @model_validator(mode="after")
+    def _reject_zero_length(self) -> "ShiftTime":
+        if self.start_time == self.end_time:
+            raise ValueError("start_time and end_time must differ")
+        return self
 
 
 def _shift_fields(values: "CreateNamespaceSettingsIn") -> list[Optional[ShiftTime]]:
@@ -40,10 +48,10 @@ class CreateNamespaceSettingsIn(BaseModel):
     shift_3: Optional[ShiftTime] = Field(default=None, description="Clock window of shift 3.")
     time_to_escalate: int = Field(
         default=1800,
-        ge=0,
+        ge=1,
         description=(
             "Seconds a downtime may stay unresolved before it escalates to "
-            "management. Defaults to 1800 (30 minutes)."
+            "management. Must be positive. Defaults to 1800 (30 minutes)."
         ),
     )
 
@@ -70,4 +78,8 @@ class UpdateNamespaceSettingsIn(BaseModel):
     shift_1: Optional[ShiftTime] = Field(default=None)
     shift_2: Optional[ShiftTime] = Field(default=None)
     shift_3: Optional[ShiftTime] = Field(default=None)
-    time_to_escalate: Optional[int] = Field(default=1800, ge=0)
+    # No `default` here: this is a PATCH — an omitted field must stay absent
+    # from `model_fields_set` so the merge in `services.py` leaves it untouched
+    # (a default would make an omitted value indistinguishable from an
+    # explicit 1800).
+    time_to_escalate: Optional[int] = Field(default=None, ge=1)
