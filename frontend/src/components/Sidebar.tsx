@@ -85,6 +85,12 @@ export function Sidebar() {
       ),
       show: canManageSettings,
     },
+    {
+      to: ROUTES.stats,
+      label: t("nav.stats"),
+      icon: icon("M3 21h18M6 17V9m6 8V5m6 12v-6"),
+      show: true,
+    },
   ];
 
   const onSignOut = () => {

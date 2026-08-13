@@ -9,6 +9,7 @@ import LoginPage from "../pages/LoginPage";
 import ProspectPage from "../pages/ProspectPage";
 import RegisterPage from "../pages/RegisterPage";
 import SettingsPage from "../pages/SettingsPage";
+import StatsPage from "../pages/StatsPage";
 import ProductionLineFormPage from "../pages/ProductionLineFormPage";
 import ProductionLinesPage from "../pages/ProductionLinesPage";
 import UapFormPage from "../pages/UapFormPage";
@@ -54,6 +55,7 @@ export function AppRouter() {
               element={<WorkstationFormPage />}
             />
             <Route path={ROUTES.settings} element={<SettingsPage />} />
+            <Route path={ROUTES.stats} element={<StatsPage />} />
           </Route>
         </Route>
       </Routes>

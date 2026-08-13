@@ -28,4 +28,6 @@ export const ROUTES = {
   newStation: "/app/workstations/new",
   /** Namespace plant settings (shifts + escalation delay). */
   settings: "/app/settings",
+  /** Stats explorer (daily KPI tracking + episode comparison). */
+  stats: "/app/stats",
 } as const;
