@@ -15,9 +15,11 @@ import {
   type StatsMetric,
   type StatsMode,
 } from "../constants/dashboard";
+import { useProductionLinesStore } from "../stores/useProductionLinesStore";
 import { useStatsStore } from "../stores/useStatsStore";
+import { useUapsStore } from "../stores/useUapsStore";
+import { useWorkstationsStore } from "../stores/useWorkstationsStore";
 import { formatDuration, formatMetric } from "../utils/dashboardFormat";
-import { mockScopeOptions } from "../utils/dashboardMock";
 
 const METRICS: StatsMetric[] = ["duration", "count", "mttr"];
 
@@ -49,12 +51,42 @@ export function StatsPage() {
   const setEpisode1 = useStatsStore((s) => s.setEpisode1);
   const setEpisode2 = useStatsStore((s) => s.setEpisode2);
 
+  const uaps = useUapsStore((s) => s.uaps);
+  const fetchUaps = useUapsStore((s) => s.fetchUaps);
+  const lines = useProductionLinesStore((s) => s.lines);
+  const fetchLines = useProductionLinesStore((s) => s.fetchLines);
+  const stations = useWorkstationsStore((s) => s.workstations);
+  const fetchWorkstations = useWorkstationsStore((s) => s.fetchWorkstations);
+
   useEffect(() => {
     if (searchParams.get("mode") === "compare") setMode("compare");
     void fetchSeries();
-  }, [searchParams, setMode, fetchSeries]);
+    void fetchUaps();
+    void fetchLines();
+    void fetchWorkstations();
+  }, [
+    searchParams,
+    setMode,
+    fetchSeries,
+    fetchUaps,
+    fetchLines,
+    fetchWorkstations,
+  ]);
 
-  const scopeOptions = mockScopeOptions();
+  const scopeOptions: {
+    kind: "plant" | "uap" | "line" | "station";
+    id: string;
+    label: string;
+  }[] = [
+    { kind: "plant", id: "", label: "" },
+    ...uaps.map((u) => ({ kind: "uap" as const, id: u.id, label: u.name })),
+    ...lines.map((l) => ({ kind: "line" as const, id: l.id, label: l.name })),
+    ...stations.map((w) => ({
+      kind: "station" as const,
+      id: w.id,
+      label: w.name,
+    })),
+  ];
   const scopeLabel =
     filters.scope_kind === "plant"
       ? t("stats.filters.wholePlant")

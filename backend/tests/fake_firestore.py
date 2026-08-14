@@ -86,6 +86,20 @@ def _matches(data: dict[str, Any], field: str, op: str, value: Any) -> bool:
     actual = data.get(field)
     if op == "==":
         return actual == value
+    if op == "!=":
+        return actual != value
+    if op == ">=":
+        return actual is not None and actual >= value
+    if op == "<=":
+        return actual is not None and actual <= value
+    if op == ">":
+        return actual is not None and actual > value
+    if op == "<":
+        return actual is not None and actual < value
+    if op == "in":
+        return actual in value
+    if op == "not-in":
+        return actual not in value
     raise NotImplementedError(f"FakeQuery does not support operator {op!r}")
 
 

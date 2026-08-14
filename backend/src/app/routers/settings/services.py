@@ -20,10 +20,15 @@ _SHIFT_FIELDS = ("shift_1", "shift_2", "shift_3")
 
 def _shift_from_stored(value: Any) -> Optional[ShiftTime]:
     """Rebuild a `ShiftTime` from its stored dict, tolerating a missing/`None`
-    value (a shift that was never configured)."""
+    value (a shift that was never configured) and legacy stored documents
+    that still carry a `break_minutes` field (§5bis.3 — ignored, `ShiftTime`
+    no longer has that field)."""
     if not isinstance(value, dict):
         return None
-    return ShiftTime(start_time=value.get("start_time", ""), end_time=value.get("end_time", ""))
+    return ShiftTime(
+        start_time=value.get("start_time", ""),
+        end_time=value.get("end_time", ""),
+    )
 
 
 def _to_out(doc: dict[str, Any]) -> NamespaceSettingsOut:

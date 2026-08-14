@@ -1,18 +1,17 @@
 /** KPI dashboard domain — types, dimensions et système de couleurs.
  *
- * Réfs contractuelles : `.claude/specs/kpi-dashboard.md` (règles) et
- * `frontend/design/kpi-dashboard-mockup.html` (visuel validé). Les données
- * viennent de `utils/dashboardMock.ts` tant que les endpoints `/kpi/*`
- * n'existent pas — seuls les stores changeront au branchement réel. */
+ * Réfs contractuelles : `.claude/specs/kpi-dashboard.md` (règles + contrat
+ * des endpoints `/kpi/*` que ces types miroitent exactement). */
 
 /** Les 5 KPIs de tête, calculés pour n'importe quelle tranche. */
 export interface Kpis {
   downtime_seconds: number;
   count: number;
   mttr_seconds: number;
-  mtbf_seconds: number;
-  /** Ratio 0..1. */
-  availability: number;
+  /** `null` quand le temps planifié est inconnu (pas de dénominateur). */
+  mtbf_seconds: number | null;
+  /** Ratio 0..1, ou `null` quand le temps planifié est inconnu. */
+  availability: number | null;
 }
 
 /** Dimensions d'analyse. Une sélection n'est jamais décortiquée par la sienne. */
@@ -162,6 +161,7 @@ export const TYPE_IDS = [
   "wip_shortage",
   "material_shortage",
   "setup_changeover",
+  "others",
 ] as const;
 
 /** Un type d'arrêt est toujours associé à un processus (miroir backend).

@@ -30,13 +30,15 @@ const TILES: {
   {
     key: "mtbf",
     color: RAMP_REPAIR[0],
-    value: (k) => formatDuration(k.mtbf_seconds),
+    value: (k) =>
+      k.mtbf_seconds === null ? "–" : formatDuration(k.mtbf_seconds),
     hintKey: "dashboard.kpi.mtbfHint",
   },
   {
     key: "availability",
     color: COLOR_DISPO,
-    value: (k) => formatPercent(k.availability),
+    value: (k) =>
+      k.availability === null ? "–" : formatPercent(k.availability),
   },
 ];
 

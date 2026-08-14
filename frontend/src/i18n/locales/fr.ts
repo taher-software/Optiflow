@@ -191,6 +191,7 @@ const fr = {
         wip_shortage: "Rupture WIP",
         material_shortage: "Rupture composants",
         setup_changeover: "Setup / Changeover",
+        others: "Autre",
       },
       filters: {
         process: "Processus",
@@ -267,6 +268,9 @@ const fr = {
         title: "Équipe {{number}}",
         start: "Heure de début",
         end: "Heure de fin",
+        break: "Pause (min)",
+        breakHelp:
+          "Temps de pause total pendant cette équipe, en minutes. Il est déduit de la fenêtre du shift pour calculer le temps de production planifié (KPIs de disponibilité).",
       },
       escalate: {
         label: "Délai d'escalade (secondes)",

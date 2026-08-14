@@ -23,6 +23,7 @@ import src.app.core.email as email_module
 import src.app.core.push as push_module
 import src.app.routers.auth.services as auth_services_module
 import src.app.routers.down_time.services as down_time_services_module
+import src.app.routers.kpi.services as kpi_services_module
 import src.app.routers.registration.services as registration_services_module
 import src.app.routers.uap.services as uap_services_module
 import src.app.routers.user.services as user_services_module
@@ -85,6 +86,9 @@ def fake_db(monkeypatch):
     monkeypatch.setattr(user_services_module, "get_firestore_client", lambda: client)
     monkeypatch.setattr(
         down_time_services_module, "get_firestore_client", lambda: client
+    )
+    monkeypatch.setattr(
+        kpi_services_module, "get_firestore_client", lambda: client
     )
     # The worker route runs `add_down_time` (via the registry) with the same
     # fake — its own `get_firestore_client` reference must be patched too (via

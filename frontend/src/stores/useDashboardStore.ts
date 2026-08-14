@@ -8,7 +8,7 @@ import {
   type PeriodPreset,
 } from "../constants/dashboard";
 import { isoDayAfter, isoToday } from "../utils/dashboardFormat";
-import { mockDashboard, mockDrilldown } from "../utils/dashboardMock";
+import { request } from "./apiClient";
 
 /** Bornes ISO [from..to] de la période courante. */
 function periodRange(
@@ -73,15 +73,34 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
       drillShift,
     } = get();
     set({ loading: true, error: null });
-    await Promise.resolve(); // frontière du futur fetch réseau
     const { from, to } = periodRange(period, customFrom, customTo);
-    set({
-      data: mockDashboard(from, to),
-      drilldown: drillPath.length
-        ? mockDrilldown(drillPath, drillProcess, drillShift, from, to)
-        : null,
-      loading: false,
-    });
+
+    const dashRes = await request<DashboardData>(
+      `/kpi/dashboard?${new URLSearchParams({ from, to })}`,
+      "GET",
+    );
+    if (!dashRes.ok) {
+      set({ error: dashRes.error ?? "error", loading: false });
+      return;
+    }
+
+    let drilldown: DrilldownData | null = null;
+    if (drillPath.length) {
+      const params = new URLSearchParams({
+        path: drillPath.map((s) => `${s.kind}:${s.id}`).join(">"),
+        from,
+        to,
+      });
+      if (drillProcess) params.set("process", drillProcess);
+      if (drillShift) params.set("shift", drillShift);
+      const drillRes = await request<DrilldownData>(
+        `/kpi/drilldown?${params}`,
+        "GET",
+      );
+      if (drillRes.ok) drilldown = drillRes.data ?? null;
+    }
+
+    set({ data: dashRes.data ?? null, drilldown, loading: false });
   },
 
   setPeriod: (period) => {

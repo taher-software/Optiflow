@@ -7,7 +7,22 @@ import type {
   StatsMode,
 } from "../constants/dashboard";
 import { isoDayAfter, isoToday } from "../utils/dashboardFormat";
-import { mockDaily } from "../utils/dashboardMock";
+import { request } from "./apiClient";
+
+/** Chemin `/kpi/daily` pour une métrique + un jeu de filtres. */
+function dailyPath(metric: StatsMetric, f: StatsFilters): string {
+  const params = new URLSearchParams({
+    metric,
+    scope_kind: f.scope_kind,
+    from: f.from,
+    to: f.to,
+  });
+  if (f.scope_kind !== "plant" && f.scope_id)
+    params.set("scope_id", f.scope_id);
+  if (f.process) params.set("process", f.process);
+  if (f.shift) params.set("shift", f.shift);
+  return `/kpi/daily?${params}`;
+}
 
 function defaultFilters(): StatsFilters {
   return {
@@ -20,26 +35,26 @@ function defaultFilters(): StatsFilters {
   };
 }
 
-/** Préréglages de la comparaison (exemple du spec : même scope/processus,
- * deux périodes différentes). */
+/** Préréglages de la comparaison : usine entière (les ids d'endroits
+ * dépendent du tenant), 30 derniers jours vs les 31 précédents. */
 function defaultEpisode1(): StatsFilters {
   return {
-    scope_kind: "uap",
-    scope_id: "uap-1",
-    process: "maintenance",
+    scope_kind: "plant",
+    scope_id: "",
+    process: "",
     shift: "",
-    from: "2026-01-01",
-    to: "2026-01-31",
+    from: isoDayAfter(isoToday(), -30),
+    to: isoToday(),
   };
 }
 function defaultEpisode2(): StatsFilters {
   return {
-    scope_kind: "uap",
-    scope_id: "uap-1",
-    process: "maintenance",
+    scope_kind: "plant",
+    scope_id: "",
+    process: "",
     shift: "",
-    from: "2025-02-01",
-    to: "2025-02-28",
+    from: isoDayAfter(isoToday(), -61),
+    to: isoDayAfter(isoToday(), -31),
   };
 }
 
@@ -81,11 +96,19 @@ export const useStatsStore = create<StatsState>((set, get) => ({
   fetchSeries: async () => {
     const { metric, filters, episode1, episode2 } = get();
     set({ loading: true, error: null });
-    await Promise.resolve(); // frontière du futur fetch réseau
+    const [res, res1, res2] = await Promise.all([
+      request<{ points: DailyPoint[] }>(dailyPath(metric, filters), "GET"),
+      request<{ points: DailyPoint[] }>(dailyPath(metric, episode1), "GET"),
+      request<{ points: DailyPoint[] }>(dailyPath(metric, episode2), "GET"),
+    ]);
+    if (!res.ok) {
+      set({ error: res.error ?? "error", loading: false });
+      return;
+    }
     set({
-      daily: mockDaily(metric, filters),
-      daily1: mockDaily(metric, episode1),
-      daily2: mockDaily(metric, episode2),
+      daily: res.data?.points ?? [],
+      daily1: res1.ok ? (res1.data?.points ?? []) : [],
+      daily2: res2.ok ? (res2.data?.points ?? []) : [],
       loading: false,
     });
   },

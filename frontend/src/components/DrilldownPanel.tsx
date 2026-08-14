@@ -95,7 +95,7 @@ export function DrilldownPanel({
           <h2 className="mt-0.5 text-lg font-bold text-[#16181d]">
             {dimensionLabel(t, sel.kind, sel.id, sel.label)}
           </h2>
-          {sel.kind === "type" && (
+          {sel.kind === "type" && TYPE_PROCESS[sel.id] && (
             <span className="mt-1.5 inline-flex items-center gap-1.5 rounded-lg bg-[#f3f4f6] px-2.5 py-1 text-[12px] text-[#4b5563]">
               {t("dashboard.drill.associatedProcess")}{" "}
               <b>{t(`dashboard.process.${TYPE_PROCESS[sel.id]}`)}</b>

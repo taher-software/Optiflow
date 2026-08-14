@@ -1,7 +1,9 @@
-/** The clock window of a single work shift ("HH:MM" 24h). */
+/** The clock window of a single work shift ("HH:MM" 24h), with its total
+ * break/pause time in minutes (used for planned-time / availability KPIs). */
 export interface ShiftTime {
   start_time: string;
   end_time: string;
+  break_minutes: number;
 }
 
 /** Plant settings of a namespace as returned by the API (mirrors

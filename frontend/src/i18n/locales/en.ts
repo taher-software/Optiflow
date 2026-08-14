@@ -187,6 +187,7 @@ const en = {
         wip_shortage: "WIP shortage",
         material_shortage: "Material shortage",
         setup_changeover: "Setup / Changeover",
+        others: "Other",
       },
       filters: {
         process: "Process",
@@ -260,6 +261,9 @@ const en = {
         title: "Shift {{number}}",
         start: "Start time",
         end: "End time",
+        break: "Break (min)",
+        breakHelp:
+          "Total break/pause time during this shift, in minutes. It is subtracted from the shift window to compute planned production time (availability KPIs).",
       },
       escalate: {
         label: "Escalation delay (seconds)",

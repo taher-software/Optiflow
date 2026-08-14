@@ -10,6 +10,11 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# Operators Firestore's `Query.where` accepts.
+_ALLOWED_OPERATORS = frozenset(
+    {"==", "!=", "<", "<=", ">", ">=", "in", "not-in", "array-contains", "array-contains-any"}
+)
+
 
 class FirestoreClient:
     """
@@ -924,23 +929,50 @@ class FirestoreClient:
         that matches all provided parameters (AND logic). With no (or empty)
         `params`, every document in the subcollection is returned.
 
+        Each `params` value is either a plain value (equality, `==` — the
+        original behavior) or a list/tuple of `(operator, value)` pairs
+        applied to that field, e.g. for a `created_at` range. `operator` must
+        be one of Firestore's allowed comparison operators: `==`, `!=`, `<`,
+        `<=`, `>`, `>=`, `in`, `not-in`, `array-contains`, `array-contains-any`.
+        Because a list/tuple value is interpreted as `(operator, value)`
+        pairs, equality against an array-valued field must now be spelled out
+        explicitly as `[("==", [...])]` — passing the raw list directly is no
+        longer treated as an equality value (it would previously have been
+        silently misinterpreted as a list of pairs).
+
         Args:
             parent_collection: Name of the top-level collection (e.g. "down_time")
             parent_id: Id of the parent document (e.g. a namespace id)
             sub_collection: Name of the subcollection (e.g. "issues")
-            params: Optional dictionary of field-value pairs to match
+            params: Optional dictionary of field-value pairs to match. A value
+                may be a plain value (equality) or a list/tuple of
+                `(operator, value)` pairs for range/other comparisons.
 
         Returns:
             list[dict]: Document data (including 'id') for every match, in no
                 particular order.
 
         Raises:
-            ValueError: If any path part or params is invalid
+            ValueError: If any path part or params is invalid, or an
+                unsupported operator is used
             Exception: On Firestore API errors (see top-level `find_documents`)
 
         Example:
             open_issues = client.find_subdocuments(
                 "down_time", namespace_id, "issues", {"status": "ongoing"}
+            )
+
+            # Range filter on created_at (list of (operator, value) pairs).
+            july_issues = client.find_subdocuments(
+                "down_time",
+                namespace_id,
+                "issues",
+                {
+                    "created_at": [
+                        (">=", "2026-07-01"),
+                        ("<=", "2026-07-31T23:59:59"),
+                    ]
+                },
             )
         """
         if params is not None and not isinstance(params, dict):
@@ -956,9 +988,28 @@ class FirestoreClient:
                 f"'{parent_collection}/{parent_id}/{sub_collection}' with params: {params}"
             )
 
+            # Validate every param BEFORE building the query, so a malformed
+            # param never causes a partially-built (and misleading) query.
+            for field, value in (params or {}).items():
+                if not isinstance(value, (list, tuple)):
+                    continue
+                for pair in value:
+                    if (
+                        not isinstance(pair, (list, tuple))
+                        or len(pair) != 2
+                        or pair[0] not in _ALLOWED_OPERATORS
+                    ):
+                        raise ValueError(
+                            f"params[{field}] must be a list of (operator, value) pairs"
+                        )
+
             query = collection_ref
             for field, value in (params or {}).items():
-                query = query.where(field, "==", value)
+                if isinstance(value, (list, tuple)):
+                    for operator, operand in value:
+                        query = query.where(field, operator, operand)
+                else:
+                    query = query.where(field, "==", value)
 
             results = []
             for doc in query.stream():
