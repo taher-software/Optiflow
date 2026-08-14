@@ -20,7 +20,7 @@ La couleur encode la MÉTRIQUE, jamais l'entité :
 | Temps d'arrêt | rouge | `#dc2626 #ef4444 #f87171 #fca5a5` |
 | Causes / nb d'arrêts (Pareto) | violet | `#6d28d9 #7c3aed #8b5cf6 #a78bfa` |
 | Temps de réparation / MTTR | vert | `#059669 #10b981 #34d399 #6ee7b9` |
-| Disponibilité / UI | teal | `#0d9488` |
+| Accents UI (drill-down, sélection) | teal | `#0d9488` |
 | Comparaison épisodes | ép.1 `#dc2626` ↔ ép.2 `#2563eb` (paire validée CVD — ne pas remplacer le bleu par du vert) |
 
 Tokens : ground `#fafafa`, cartes `#ffffff`, encre `#16181d`/`#4b5563`/`#9ca3af`.
@@ -29,8 +29,10 @@ valeur/max (seuils 0.8 / 0.55 / 0.3).
 
 ## 2. Écrans (déjà implémentés, mock)
 
-- **Dashboard** (`/app`) : nom du namespace, 5 KPI (Temps d'arrêt · Nb ·
-  MTTR · MTBF · Disponibilité), période Aujourd'hui/7j/30j/plage ; cartes :
+- **Dashboard** (`/app`) : nom du namespace, 4 KPI (Temps d'arrêt · Nb ·
+  MTTR · MTBF — disponibilité supprimée en révision 2, §5bis.3 ; le temps
+  d'arrêt est pondéré par poste et porte un hint qui l'explique, §5bis.1bis),
+  période Aujourd'hui/7j/30j/plage ; cartes :
   par équipe (si `shift_number>1`), par UAP (sinon lignes, sinon postes),
   Pareto processus (% + cumul), réparation par processus, par type. Boutons
   « Explorer les stats » et « ⇄ Comparer » en haut à droite.
@@ -76,8 +78,9 @@ closed_at/rejected_at` (tz namespace), `status`, `process`, `down_time_type`,
 `shift` (int|null — seulement namespaces multi-shifts, tickets récents),
 `uap_id/production_line_id/workstation_id/down_time_scope`, `resolved_by`.
 Settings `NamespaceSettings/{ns}/settings/{ns}` : `shift_number`, `shift_1..3
-{start_time, end_time}`, `time_to_escalate` — **+ `break_minutes` à ajouter
-(§5bis.3)**. Namespace : `company_name`, `timezone`.
+{start_time, end_time}`, `time_to_escalate` (pas de `break_minutes` : retiré en
+révision 2 avec la disponibilité, §5bis.3). Namespace : `company_name`,
+`timezone`.
 
 Plomberie requise : `FirestoreClient.find_subdocuments` ne supporte que
 l'égalité — ajouter le filtrage par plage (`>=`/`<=` sur `created_at`).

@@ -1,13 +1,12 @@
 import { useTranslation } from "react-i18next";
 
 import {
-  COLOR_DISPO,
   RAMP_COUNT,
   RAMP_DOWNTIME,
   RAMP_REPAIR,
   type Kpis,
 } from "../constants/dashboard";
-import { formatDuration, formatPercent } from "../utils/dashboardFormat";
+import { formatDuration } from "../utils/dashboardFormat";
 
 const TILES: {
   key: string;
@@ -19,6 +18,7 @@ const TILES: {
     key: "downtime",
     color: RAMP_DOWNTIME[0],
     value: (k) => formatDuration(k.downtime_seconds),
+    hintKey: "dashboard.kpi.downtimeHint",
   },
   { key: "count", color: RAMP_COUNT[1], value: (k) => String(k.count) },
   {
@@ -34,20 +34,14 @@ const TILES: {
       k.mtbf_seconds === null ? "–" : formatDuration(k.mtbf_seconds),
     hintKey: "dashboard.kpi.mtbfHint",
   },
-  {
-    key: "availability",
-    color: COLOR_DISPO,
-    value: (k) =>
-      k.availability === null ? "–" : formatPercent(k.availability),
-  },
 ];
 
-/** Bandeau des 5 KPI (soulignement à la couleur de la métrique — spec §1).
+/** Bandeau des 4 KPI (soulignement à la couleur de la métrique — spec §1).
  * `compact` : variante réduite pour le panneau drill-down. */
 export function KpiCards({ kpis, compact }: { kpis: Kpis; compact?: boolean }) {
   const { t } = useTranslation();
   return (
-    <div className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-5">
+    <div className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-4">
       {TILES.map((tile) => (
         <div
           key={tile.key}

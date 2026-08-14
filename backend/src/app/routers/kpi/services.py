@@ -54,7 +54,13 @@ from src.app.core.shift_time import parse_hhmm as _strict_parse_hhmm
 from src.app.core.timezone import namespace_timezone
 from src.app.gcp import get_firestore_client
 from src.app.gcp.firestore import FirestoreClient
-from src.app.globals.enum import DOWNTIME_TYPE_PROCESS, DownTimeStatus, DownTimeType, Process
+from src.app.globals.enum import (
+    DOWNTIME_TYPE_PROCESS,
+    DownTimeStatus,
+    DownTimeType,
+    Process,
+    ProductionScope,
+)
 
 from src.app.routers.kpi.modelsIn import (
     MAX_PATH_STEPS,
@@ -211,7 +217,7 @@ def _compute_kpis(
     pass `0.0`). MTBF no longer depends on downtime at all (planned/count).
     """
     count_source = tickets if count_tickets is None else count_tickets
-    weight_fn = weight_of if weight_of is not None else (lambda _issue: 1)
+    weight_fn = weight_of if weight_of is not None else _flat_weight
     downtime = sum(
         _ticket_downtime_seconds(issue, period_start, period_end, now) * weight_fn(issue)
         for issue in tickets
@@ -282,8 +288,8 @@ def _planned_seconds_per_day(
 ) -> float:
     """Planned production seconds per day. `shift_filter` narrows to a single
     shift's own window (0 when that shift isn't configured). With no filter:
-    sum of every configured shift's window, or 24h/0-break when the
-    namespace has no settings/no configured shift windows at all."""
+    sum of every configured shift's window, or 24h/day when the namespace has
+    no settings/no configured shift windows at all."""
     shifts = _configured_shifts(settings)
     if shift_filter is not None:
         shifts = [(sid, shift) for sid, shift in shifts if sid == shift_filter]
@@ -367,8 +373,8 @@ def _planned_seconds(
         shifts = [(sid, shift) for sid, shift in shifts if sid == shift_filter]
 
     if not shifts:
-        # No configured shift windows -> implicit single 24h/no-break
-        # "shift" starting at local midnight.
+        # No configured shift windows -> implicit single 24h/day "shift"
+        # starting at local midnight.
         last_day_planned = min(_seconds_of_day(effective_end), 24 * 3600.0)
     else:
         last_day_planned = sum(_shift_seconds_prorated(shift, effective_end) for _, shift in shifts)
@@ -407,13 +413,13 @@ def _location_hierarchy(client: FirestoreClient, namespace_id: str) -> dict[str,
     }
 
 
-def _ticket_weight(issue: dict[str, Any], hierarchy: dict[str, Any]) -> int:
-    """§5bis.1bis (revision 2) — number of workstations `issue`'s scope
-    affects, the weight every downtime-seconds sum multiplies that ticket's
-    clamped duration by. The most specific of the ticket's own stored
-    `workstation_id` / `production_line_id` / `uap_id` wins (none of the
-    three -> plant-wide); floored at 1 so a line/UAP with no workstations
-    referenced under it still counts as 1, never 0."""
+def _weight_from_ids(issue: dict[str, Any], hierarchy: dict[str, Any]) -> int:
+    """Legacy fallback: infers a weight from the most specific of the
+    ticket's own stored `workstation_id` / `production_line_id` / `uap_id`
+    (none of the three -> plant-wide); floored at 1 so a line/UAP with no
+    workstations referenced under it still counts as 1, never 0. Used by
+    `_ticket_weight` only when `down_time_scope` is absent/unrecognized, or
+    names a level whose id the ticket doesn't actually carry."""
     if issue.get("workstation_id"):
         return 1
     line_id = issue.get("production_line_id")
@@ -427,11 +433,59 @@ def _ticket_weight(issue: dict[str, Any], hierarchy: dict[str, Any]) -> int:
     return max(1, len(hierarchy["stations"]))
 
 
+def _ticket_weight(issue: dict[str, Any], hierarchy: dict[str, Any]) -> int:
+    """§5bis.1bis (revision 2) — number of workstations `issue`'s scope
+    affects, the weight every downtime-seconds sum multiplies that ticket's
+    clamped duration by. Branches on the ticket's own stored
+    `down_time_scope` (the `ProductionScope` value `add_down_time` stores,
+    review fix W1) first — a ticket declared at UAP level weighs the UAP's
+    workstations even if it also carries a (legitimate, contextual)
+    `production_line_id`/`workstation_id`. Falls back to inferring the scope
+    from the most specific id present (`_weight_from_ids`) only for legacy
+    documents with no `down_time_scope`, an unrecognized value, or a stored
+    scope whose own id field is missing from the ticket. Floored at 1 in
+    every branch."""
+    scope = issue.get("down_time_scope")
+    if scope == ProductionScope.WORK_STATION.value:
+        if issue.get("workstation_id"):
+            return 1
+        return _weight_from_ids(issue, hierarchy)
+    if scope == ProductionScope.PRODUCTION_LINE.value:
+        line_id = issue.get("production_line_id")
+        if line_id:
+            return max(1, len(hierarchy["stations_by_line"].get(line_id, [])))
+        return _weight_from_ids(issue, hierarchy)
+    if scope == ProductionScope.UAP.value:
+        uap_id = issue.get("uap_id")
+        if uap_id:
+            lines = hierarchy["lines_by_uap"].get(uap_id, [])
+            total = sum(len(hierarchy["stations_by_line"].get(line["id"], [])) for line in lines)
+            return max(1, total)
+        return _weight_from_ids(issue, hierarchy)
+    if scope == ProductionScope.PLANT.value:
+        return max(1, len(hierarchy["stations"]))
+    # Absent/unrecognized `down_time_scope` (legacy document) -> infer.
+    return _weight_from_ids(issue, hierarchy)
+
+
 def _weight_of_builder(hierarchy: dict[str, Any]) -> Callable[[dict[str, Any]], int]:
     """A `weight_of` closure over `hierarchy`, built once per request and
     threaded through every downtime-sum computation (`_compute_kpis` and the
-    process/shift/type aggregations)."""
-    return lambda issue: _ticket_weight(issue, hierarchy)
+    process/shift/type aggregations). Memoizes per ticket id (review I2 — a
+    ticket is otherwise re-weighed once per aggregation it appears in,
+    ~5-6x per dashboard request); falls back to a direct (uncached) call when
+    a ticket has no `id`."""
+    cache: dict[str, int] = {}
+
+    def weight_of(issue: dict[str, Any]) -> int:
+        issue_id = issue.get("id")
+        if issue_id is None:
+            return _ticket_weight(issue, hierarchy)
+        if issue_id not in cache:
+            cache[issue_id] = _ticket_weight(issue, hierarchy)
+        return cache[issue_id]
+
+    return weight_of
 
 
 def _flat_weight(_issue: dict[str, Any]) -> int:
@@ -925,8 +979,8 @@ def _fetch_tickets(
 def _namespace_context(
     client: FirestoreClient, namespace_id: str
 ) -> tuple[dict[str, Any], Any, dict[str, Any]]:
-    """`(namespace_doc, tz, settings_doc)` — settings defaults to `{}` (24h/day,
-    single shift, no breaks — see `_planned_seconds_per_day`)."""
+    """`(namespace_doc, tz, settings_doc)` — settings defaults to `{}` (24h/day
+    — see `_planned_seconds_per_day`)."""
     namespace = client.get_document(NAMESPACE_COLLECTION, namespace_id) or {}
     tz = namespace_timezone(namespace_id, namespace)
     settings = (
@@ -1034,11 +1088,11 @@ def get_drilldown(query: DrilldownQueryIn, namespace_id: str) -> DrilldownData:
         current = [t for t in current if str(t.get("shift")) == query.shift]
         carry_overs = [t for t in carry_overs if str(t.get("shift")) == query.shift]
         dims_fixed.add("shift")
-    # A `type` step fixes the process too (it implies one, §5bis.7) — no
-    # pareto/repair-by-process makes sense once the process is effectively
-    # singular.
-    if "type" in dims_fixed:
-        dims_fixed.add("process")
+    # Review fix W3: a `type` step no longer fixes `process` — since §5bis.7
+    # the process is read off each ticket, not inferred from its type, so a
+    # `type` slice can (and structurally does, for `setup_changeover`) span
+    # several processes. `pareto_by_process`/`repair_by_process` stay
+    # available on a type drill-down instead of being suppressed.
 
     all_tickets = current + carry_overs
 
@@ -1208,11 +1262,13 @@ def get_daily(query: DailyQueryIn, namespace_id: str) -> DailyPointsOut:
 
     current, carry_overs = _fetch_tickets(client, namespace_id, period_start, period_end)
 
-    # The hierarchy is always needed now: `metric == "duration"` weights
-    # every ticket's downtime by workstations affected (§5bis.1bis), not
-    # just the scope-filtering that used to be the only reason to load it.
-    hierarchy = _location_hierarchy(client, namespace_id)
-    weight_of = _weight_of_builder(hierarchy)
+    # The hierarchy (3 full-collection reads) is only needed for scope
+    # filtering (any `scope_kind` other than plant) or to weight `duration`
+    # by workstations affected (§5bis.1bis) — skip it for plant-scoped
+    # `count`/`mttr` requests, which use neither (review fix W5).
+    needs_hierarchy = query.scope_kind != "plant" or query.metric == "duration"
+    hierarchy = _location_hierarchy(client, namespace_id) if needs_hierarchy else None
+    weight_of = _weight_of_builder(hierarchy) if hierarchy is not None else None
     if query.scope_kind != "plant":
         current = _filter_by_scope(current, hierarchy, query.scope_kind, query.scope_id or "")
         carry_overs = _filter_by_scope(

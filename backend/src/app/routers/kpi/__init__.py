@@ -100,13 +100,14 @@ async def get_dashboard(
         "has no location step at all, a trailing shift/type/process step "
         "falls back to the dashboard's top location level), and only the "
         "breakdown sections whose own dimension isn't already fixed by the "
-        "path/params (a `type` step also fixes `process` — no "
-        "pareto/repair-by-process in that case, but `mttr_by_agent`/"
-        "`count_by_agent` are still returned since a type implies a "
-        "process). Selecting a process (via path, `process`, or a `type` "
-        "step) returns `mttr_by_agent`/`count_by_agent`. Omitted sections "
-        "are absent from the response body entirely (not `null`). "
-        "Restricted to owner/admin/manager/production supervisor."
+        "path/params. A `type` step does NOT fix `process` (a type can span "
+        "several processes since the process is read per-ticket, not "
+        "inferred from the type) — `pareto_by_process`/`repair_by_process` "
+        "stay available on a type drill-down. Selecting a process (via "
+        "path, `process`, or a `type` step) returns `mttr_by_agent`/"
+        "`count_by_agent`. Omitted sections are absent from the response "
+        "body entirely (not `null`). Restricted to owner/admin/manager/"
+        "production supervisor."
     ),
     responses={
         403: {"description": "Caller lacks the required role."},

@@ -11,12 +11,6 @@ export function formatDuration(seconds: number): string {
   return `${d} j ${h % 24} h`;
 }
 
-/** Ratio 0..1 → "97,3 %". Pure. */
-export function formatPercent(ratio: number): string {
-  if (!Number.isFinite(ratio)) return "–";
-  return `${(ratio * 100).toFixed(1).replace(".", ",")} %`;
-}
-
 /** Valeur d'une métrique stats pour l'affichage. */
 export function formatMetric(value: number, metric: StatsMetric): string {
   return metric === "count" ? String(value) : formatDuration(value);

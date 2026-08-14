@@ -18,7 +18,7 @@ from fastapi import HTTPException
 
 from src.app.core.firestore import PRODUCTION_LINE_COLLECTION, UAP_COLLECTION, USERS_COLLECTION, WORKSTATION_COLLECTION
 from src.app.gcp.firestore import FirestoreClient
-from src.app.globals.enum import DownTimeStatus
+from src.app.globals.enum import DOWNTIME_TYPE_PROCESS, DownTimeStatus, DownTimeType, Process
 from src.app.routers.kpi.services import (
     _compute_kpis,
     _configured_shifts,
@@ -29,6 +29,7 @@ from src.app.routers.kpi.services import (
     _pareto_by_process,
     _planned_seconds,
     _planned_seconds_per_day,
+    _process_for_ticket,
     _resolve_location,
     _ticket_downtime_seconds,
     _ticket_weight,
@@ -569,6 +570,75 @@ class TestTicketWeight:
         assert weight_of(_issue(production_line_id="l1")) == 2
         assert weight_of(_issue(workstation_id="s1")) == 1
 
+    # -- review fix W1: `down_time_scope` (when present) wins over the most
+    # -- specific stored id, since `CreateDownTimeIn` doesn't forbid a client
+    # -- from also sending a broader/narrower id alongside the declared scope.
+
+    def test_stored_uap_scope_wins_even_with_a_narrower_line_and_station_id(self):
+        """A ticket declared `down_time_scope="uap"` that also carries
+        `production_line_id`/`workstation_id` (legitimate context, allowed by
+        `CreateDownTimeIn`) must weigh the UAP, not the line/station."""
+        hierarchy = _hierarchy(
+            stations_by_line={"l1": [{"id": "s1"}, {"id": "s2"}], "l2": [{"id": "s3"}]},
+            lines_by_uap={"u1": [{"id": "l1"}, {"id": "l2"}]},
+        )
+        issue = _issue(
+            down_time_scope="uap", uap_id="u1", production_line_id="l1", workstation_id="s1"
+        )
+
+        assert _ticket_weight(issue, hierarchy) == 3
+
+    def test_stored_line_scope_wins_even_with_a_narrower_station_id(self):
+        hierarchy = _hierarchy(stations_by_line={"l1": [{"id": "s1"}, {"id": "s2"}]})
+        issue = _issue(
+            down_time_scope="production line", production_line_id="l1", workstation_id="s1"
+        )
+
+        assert _ticket_weight(issue, hierarchy) == 2
+
+    def test_stored_plant_scope_wins_even_with_ids_present(self):
+        hierarchy = _hierarchy(
+            stations_by_line={"l1": [{"id": "s1"}, {"id": "s2"}]}, total_stations=9
+        )
+        issue = _issue(down_time_scope="plant", production_line_id="l1", workstation_id="s1")
+
+        assert _ticket_weight(issue, hierarchy) == 9
+
+    def test_scope_with_missing_own_id_falls_back_to_id_inference(self):
+        """`down_time_scope="uap"` but no `uap_id` on the ticket (shouldn't
+        happen given `CreateDownTimeIn`'s validators, but must not crash) ->
+        repli on the most-specific-id inference, still floored at 1."""
+        hierarchy = _hierarchy(stations_by_line={"l1": [{"id": "s1"}, {"id": "s2"}]})
+        issue = _issue(down_time_scope="uap", production_line_id="l1")
+
+        assert _ticket_weight(issue, hierarchy) == 2
+
+    def test_missing_down_time_scope_falls_back_to_id_inference(self):
+        """Legacy document with no `down_time_scope` field at all -> same
+        most-specific-id inference as before revision 2's fix."""
+        hierarchy = _hierarchy(stations_by_line={"l1": [{"id": "s1"}, {"id": "s2"}]})
+        issue = _issue(production_line_id="l1")
+
+        assert _ticket_weight(issue, hierarchy) == 2
+
+    def test_unknown_down_time_scope_falls_back_to_id_inference(self):
+        hierarchy = _hierarchy(stations_by_line={"l1": [{"id": "s1"}, {"id": "s2"}]})
+        issue = _issue(down_time_scope="not-a-real-scope", production_line_id="l1")
+
+        assert _ticket_weight(issue, hierarchy) == 2
+
+    def test_weight_of_builder_memoizes_per_ticket_id(self):
+        """Review fix I2: `weight_of` caches by ticket id — a second call for
+        the same ticket doesn't recompute (proven here by mutating the
+        hierarchy in between and observing the first, cached answer)."""
+        hierarchy = _hierarchy(stations_by_line={"l1": [{"id": "s1"}, {"id": "s2"}]})
+        issue = _issue(id="fixed-id", down_time_scope="production line", production_line_id="l1")
+        weight_of = _weight_of_builder(hierarchy)
+
+        assert weight_of(issue) == 2
+        hierarchy["stations_by_line"]["l1"] = []
+        assert weight_of(issue) == 2
+
 
 class TestByAgentBars:
     def test_attributed_to_resolved_by_closed_only(self, fake_db):
@@ -594,3 +664,45 @@ class TestByAgentBars:
         assert mttr_bars[0].label == "Jane Doe"
         assert mttr_bars[0].value == 2 * 3600
         assert count_bars[0].value == 1
+
+
+# --------------------------------------------------------------------------
+# _process_for_ticket — §5bis.7 (revision 2): read the stored `process`
+# field first, fall back to DOWNTIME_TYPE_PROCESS[type] for legacy docs.
+# --------------------------------------------------------------------------
+
+
+class TestProcessForTicket:
+    def test_stored_process_wins_even_when_type_would_map_elsewhere(self):
+        """A break_down ticket (which maps to MAINTENANCE) but whose stored
+        `process` is PRODUCTION is counted under PRODUCTION — the stored
+        field always wins over the type mapping."""
+        issue = _issue(down_time_type=DownTimeType.BREAKDOWN.value, process=Process.PRODUCTION.value)
+
+        assert _process_for_ticket(issue) == Process.PRODUCTION.value
+
+    def test_legacy_ticket_without_process_field_falls_back_to_type_mapping(self):
+        issue = _issue(down_time_type=DownTimeType.QUALITY_ISSUE.value)
+        assert "process" not in issue
+
+        assert _process_for_ticket(issue) == Process.QUALITY.value
+
+    def test_invalid_stored_process_falls_back_to_type_mapping(self):
+        issue = _issue(down_time_type=DownTimeType.MATERIAL_SHORTAGE.value, process="not-a-process")
+
+        assert _process_for_ticket(issue) == Process.LOGISTIC.value
+
+    def test_invalid_process_and_unrecognized_type_returns_none(self):
+        issue = _issue(down_time_type="not-a-real-type", process="not-a-process")
+
+        assert _process_for_ticket(issue) is None
+
+    def test_setup_changeover_type_has_no_fixed_mapping_and_no_stored_process_returns_none(self):
+        """`SETUP_CHANGEOVER` is deliberately absent from
+        `DOWNTIME_TYPE_PROCESS` (its process is chosen at creation time, not
+        fixed) — a legacy document with no usable stored `process` resolves
+        to `None` rather than crashing on a missing mapping entry."""
+        assert DownTimeType.SETUP_CHANGEOVER not in DOWNTIME_TYPE_PROCESS
+        issue = _issue(down_time_type=DownTimeType.SETUP_CHANGEOVER.value)
+
+        assert _process_for_ticket(issue) is None

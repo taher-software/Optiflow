@@ -131,6 +131,37 @@ class TestCreateSettings:
         data = res.json()["data"]
         assert data["shift_1"] == {"start_time": "06:00", "end_time": "14:00"}
 
+    def test_get_legacy_shift_amputated_of_start_and_end_time_is_ignored_not_500(
+        self, client, fake_db, seed_user, auth_headers
+    ):
+        """Review fix W6: a stored shift missing `start_time`/`end_time`
+        entirely (e.g. a document that only ever carried `break_minutes`)
+        used to re-validate against `ShiftTime`'s own field constraints
+        (`pattern`, zero-length rejection) and raise an uncaught
+        `pydantic.ValidationError` -> 500. It must now degrade to "not
+        configured" instead, exactly like the KPI module's `_parse_hhmm`
+        (fix #9) tolerates the same class of corrupted document."""
+        actor = _actor(seed_user)
+        FirestoreClient(client=fake_db).create_subdocument(
+            NAMESPACE_SETTINGS_COLLECTION,
+            actor["namespace_id"],
+            SETTINGS_SUBCOLLECTION,
+            {
+                "namespace_id": actor["namespace_id"],
+                "shift_number": 1,
+                "shift_1": {"break_minutes": 30},
+                "shift_2": None,
+                "shift_3": None,
+                "time_to_escalate": 1800,
+            },
+            document_id=actor["namespace_id"],
+        )
+        res = client.get(
+            f"{SETTINGS_URL}/{actor['namespace_id']}", headers=auth_headers(actor)
+        )
+        assert res.status_code == 200, res.text
+        assert res.json()["data"]["shift_1"] is None
+
     def test_create_multi_shift_missing_window_is_422(
         self, client, seed_user, auth_headers
     ):
@@ -217,6 +248,32 @@ class TestUpdateSettings:
         data = res.json()["data"]
         assert data["shift_number"] == 1
         assert data["shift_2"] is None
+
+    def test_patch_shift_with_break_minutes_is_ignored(
+        self, client, fake_db, seed_user, auth_headers
+    ):
+        """Same drop-unknown-field behavior as create (§5bis.3), exercised
+        through PATCH's merge path."""
+        actor = _actor(seed_user)
+        client.post(SETTINGS_URL, json={"shift_number": 1}, headers=auth_headers(actor))
+
+        res = client.patch(
+            SETTINGS_URL,
+            json={
+                "shift_1": {
+                    "start_time": "06:00",
+                    "end_time": "14:00",
+                    "break_minutes": 45,
+                }
+            },
+            headers=auth_headers(actor),
+        )
+        assert res.status_code == 200, res.text
+        data = res.json()["data"]
+        assert data["shift_1"] == {"start_time": "06:00", "end_time": "14:00"}
+
+        stored = _stored(fake_db, actor["namespace_id"])
+        assert "break_minutes" not in stored["shift_1"]
 
     def test_patch_without_existing_settings_is_404(
         self, client, seed_user, auth_headers

@@ -1,6 +1,8 @@
+import logging
 from typing import Any, Optional
 
 from fastapi import HTTPException, status
+from pydantic import ValidationError
 
 from src.app.core.firestore import (
     NAMESPACE_SETTINGS_COLLECTION,
@@ -15,6 +17,8 @@ from src.app.routers.settings.modelsIn import (
 )
 from src.app.routers.settings.modelsOut import NamespaceSettingsOut
 
+logger = logging.getLogger(__name__)
+
 _SHIFT_FIELDS = ("shift_1", "shift_2", "shift_3")
 
 
@@ -22,13 +26,22 @@ def _shift_from_stored(value: Any) -> Optional[ShiftTime]:
     """Rebuild a `ShiftTime` from its stored dict, tolerating a missing/`None`
     value (a shift that was never configured) and legacy stored documents
     that still carry a `break_minutes` field (§5bis.3 — ignored, `ShiftTime`
-    no longer has that field)."""
+    no longer has that field). Review fix W6: a stored shift missing/blank
+    `start_time`/`end_time` (an amputated legacy document) fails `ShiftTime`'s
+    own validation (`pattern`/zero-length checks) — caught here and treated
+    as "not configured" (logged, never a 500), mirroring how the KPI module
+    was hardened against the same kind of corrupted document (fix #9,
+    `kpi/services.py::_parse_hhmm`)."""
     if not isinstance(value, dict):
         return None
-    return ShiftTime(
-        start_time=value.get("start_time", ""),
-        end_time=value.get("end_time", ""),
-    )
+    try:
+        return ShiftTime(
+            start_time=value.get("start_time", ""),
+            end_time=value.get("end_time", ""),
+        )
+    except ValidationError:
+        logger.warning("settings: unparsable stored shift %r, treating as unconfigured.", value)
+        return None
 
 
 def _to_out(doc: dict[str, Any]) -> NamespaceSettingsOut:

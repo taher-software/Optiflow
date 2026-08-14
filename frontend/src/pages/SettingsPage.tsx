@@ -14,13 +14,11 @@ import { useSettingsStore } from "../stores/useSettingsStore";
 type ShiftDraft = {
   start_time: string;
   end_time: string;
-  break_minutes: string;
 };
 
 const EMPTY_SHIFT: ShiftDraft = {
   start_time: "",
   end_time: "",
-  break_minutes: "0",
 };
 
 /** Namespace plant settings: number of shifts + each shift's clock window, and
@@ -58,11 +56,7 @@ export function SettingsPage() {
     setShiftNumber(settings.shift_number);
     const toDraft = (s: ShiftTime | null): ShiftDraft =>
       s
-        ? {
-            start_time: s.start_time,
-            end_time: s.end_time,
-            break_minutes: String(s.break_minutes ?? 0),
-          }
+        ? { start_time: s.start_time, end_time: s.end_time }
         : { ...EMPTY_SHIFT };
     setShifts([
       toDraft(settings.shift_1),
@@ -86,15 +80,11 @@ export function SettingsPage() {
     Number.isInteger(escalateSeconds) &&
     escalateSeconds >= 0;
 
-  const breakValid = (s: ShiftDraft) => {
-    const n = Number(s.break_minutes);
-    return s.break_minutes.trim() !== "" && Number.isInteger(n) && n >= 0;
-  };
   const shiftsValid =
     shiftNumber === 1 ||
     shifts
       .slice(0, shiftNumber)
-      .every((s) => s.start_time !== "" && s.end_time !== "" && breakValid(s));
+      .every((s) => s.start_time !== "" && s.end_time !== "");
 
   const valid = escalateValid && shiftsValid;
 
@@ -109,11 +99,7 @@ export function SettingsPage() {
       i < shiftNumber &&
       shifts[i].start_time !== "" &&
       shifts[i].end_time !== ""
-        ? {
-            start_time: shifts[i].start_time,
-            end_time: shifts[i].end_time,
-            break_minutes: Number(shifts[i].break_minutes) || 0,
-          }
+        ? { start_time: shifts[i].start_time, end_time: shifts[i].end_time }
         : null;
 
     const payload: SaveSettingsPayload = {
@@ -175,7 +161,7 @@ export function SettingsPage() {
                   <p className="mb-3 text-sm font-semibold text-slate-200">
                     {t("settings.shift.title", { number: i + 1 })}
                   </p>
-                  <div className="grid grid-cols-3 gap-4">
+                  <div className="grid grid-cols-2 gap-4">
                     <TimeInput
                       id={`shift_${i}_start`}
                       label={t("settings.shift.start")}
@@ -188,29 +174,7 @@ export function SettingsPage() {
                       value={s.end_time}
                       onChange={(v) => setShift(i, { end_time: v })}
                     />
-                    <div>
-                      <label
-                        htmlFor={`shift_${i}_break`}
-                        className="mb-1 block text-xs font-medium text-slate-400"
-                      >
-                        {t("settings.shift.break")}
-                      </label>
-                      <input
-                        id={`shift_${i}_break`}
-                        type="number"
-                        min={0}
-                        step={1}
-                        value={s.break_minutes}
-                        onChange={(e) =>
-                          setShift(i, { break_minutes: e.target.value })
-                        }
-                        className="w-full rounded-xl border border-slate-700 bg-slate-900 px-4 py-2.5 text-sm text-white focus:border-teal-400 focus:outline-none"
-                      />
-                    </div>
                   </div>
-                  <p className="mt-2 text-xs text-slate-500">
-                    {t("settings.shift.breakHelp")}
-                  </p>
                 </div>
               ))}
           </section>

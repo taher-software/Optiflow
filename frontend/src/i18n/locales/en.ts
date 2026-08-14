@@ -142,7 +142,8 @@ const en = {
         count: "Downtimes",
         mttr: "MTTR",
         mtbf: "MTBF",
-        availability: "Availability",
+        downtimeHint:
+          "Totalled per workstation: downtime declared on a group (line, UAP, plant) counts once for every workstation it halts.",
         mttrHint: "mean time to repair",
         mtbfHint: "mean time between failures",
       },
@@ -198,7 +199,7 @@ const en = {
       drill: {
         root: "Plant",
         close: "Close",
-        associatedProcess: "Associated process:",
+        associatedProcess: "Usual process:",
         childrenTitle: "Downtime by location",
         locationsHint: "click a location to go down the hierarchy",
         linesHint: "click a line to go down to its stations",
@@ -261,9 +262,6 @@ const en = {
         title: "Shift {{number}}",
         start: "Start time",
         end: "End time",
-        break: "Break (min)",
-        breakHelp:
-          "Total break/pause time during this shift, in minutes. It is subtracted from the shift window to compute planned production time (availability KPIs).",
       },
       escalate: {
         label: "Escalation delay (seconds)",

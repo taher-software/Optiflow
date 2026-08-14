@@ -146,7 +146,8 @@ const fr = {
         count: "Nb d'arrêts",
         mttr: "MTTR",
         mtbf: "MTBF",
-        availability: "Disponibilité",
+        downtimeHint:
+          "Cumulé par poste de travail : un arrêt déclaré sur un ensemble (ligne, UAP, usine) compte pour chacun des postes qu'il immobilise.",
         mttrHint: "temps moyen de réparation",
         mtbfHint: "temps moyen entre pannes",
       },
@@ -202,7 +203,7 @@ const fr = {
       drill: {
         root: "Usine",
         close: "Fermer",
-        associatedProcess: "Processus associé :",
+        associatedProcess: "Processus habituel :",
         childrenTitle: "Temps d'arrêt par endroit",
         locationsHint: "cliquez un endroit pour descendre dans la hiérarchie",
         linesHint: "cliquez une ligne pour descendre aux postes",
@@ -268,9 +269,6 @@ const fr = {
         title: "Équipe {{number}}",
         start: "Heure de début",
         end: "Heure de fin",
-        break: "Pause (min)",
-        breakHelp:
-          "Temps de pause total pendant cette équipe, en minutes. Il est déduit de la fenêtre du shift pour calculer le temps de production planifié (KPIs de disponibilité).",
       },
       escalate: {
         label: "Délai d'escalade (secondes)",

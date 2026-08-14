@@ -3,15 +3,15 @@
  * Réfs contractuelles : `.claude/specs/kpi-dashboard.md` (règles + contrat
  * des endpoints `/kpi/*` que ces types miroitent exactement). */
 
-/** Les 5 KPIs de tête, calculés pour n'importe quelle tranche. */
+/** Les 4 KPIs de tête, calculés pour n'importe quelle tranche.
+ * La disponibilité a été supprimée en révision 2 (spec §5bis.3). */
 export interface Kpis {
+  /** Somme pondérée par poste de travail (spec §5bis.1bis). */
   downtime_seconds: number;
   count: number;
   mttr_seconds: number;
   /** `null` quand le temps planifié est inconnu (pas de dénominateur). */
   mtbf_seconds: number | null;
-  /** Ratio 0..1, ou `null` quand le temps planifié est inconnu. */
-  availability: number | null;
 }
 
 /** Dimensions d'analyse. Une sélection n'est jamais décortiquée par la sienne. */
@@ -135,7 +135,6 @@ export const RAMP_REPAIR = [
   "#34d399",
   "#6ee7b9",
 ] as const;
-export const COLOR_DISPO = "#0d9488";
 /** Comparaison d'épisodes — paire validée CVD ; ne pas remplacer le bleu. */
 export const COLOR_EP1 = "#dc2626";
 export const COLOR_EP2 = "#2563eb";
@@ -164,15 +163,19 @@ export const TYPE_IDS = [
   "others",
 ] as const;
 
-/** Un type d'arrêt est toujours associé à un processus (miroir backend).
- * Setup/Changeover dépend du département du ticket — simplifié ici. */
+/** Processus *habituel* d'un type d'arrêt — miroir exact de `DOWNTIME_TYPE_PROCESS`
+ * (`backend/src/app/globals/enum/process.py`). Depuis la révision 2 (§5bis.7) le
+ * processus est lu sur le ticket lui-même ; cette table n'est plus qu'un repli pour
+ * les documents hérités, donc une tranche « type » peut couvrir plusieurs processus.
+ * `setup_changeover` en est volontairement absent : son processus est choisi à la
+ * déclaration et varie d'un ticket à l'autre. */
 export const TYPE_PROCESS: Record<string, string> = {
   break_down: "maintenance",
   quality_issue: "quality",
   absenteeism: "production",
-  wip_shortage: "logistic",
+  wip_shortage: "production",
   material_shortage: "logistic",
-  setup_changeover: "production",
+  others: "production",
 };
 
 export const SHIFT_IDS = ["1", "2", "3"] as const;
