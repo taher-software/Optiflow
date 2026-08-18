@@ -943,28 +943,35 @@ def _fetch_tickets(
     )
     current_ids = {issue.get("id") for issue in current}
 
-    open_before = client.find_subdocuments(
+    # Each carry-over query filters on ONE field only: mixing an equality/`in`
+    # on `status` with a range on a date field would require a Firestore
+    # composite index. The remaining condition is applied in Python, on the
+    # narrower of the two sets: (b) starts from the open tickets (always a
+    # small set), (c) from the tickets resolved since `period_start`.
+    still_open = client.find_subdocuments(
         DOWN_TIME_COLLECTION,
         namespace_id,
         ISSUES_SUBCOLLECTION,
-        params={
-            "status": [("in", _OPEN_STATUSES)],
-            "created_at": [("<", period_start.isoformat())],
-        },
+        params={"status": [("in", _OPEN_STATUSES)]},
     )
-    closed_resolved_in_range = client.find_subdocuments(
+    open_before = [
+        issue
+        for issue in still_open
+        if (created := _parse_iso(issue.get("created_at"))) is not None and created < period_start
+    ]
+
+    resolved_in_range = client.find_subdocuments(
         DOWN_TIME_COLLECTION,
         namespace_id,
         ISSUES_SUBCOLLECTION,
-        params={
-            "status": [("==", DownTimeStatus.CLOSED.value)],
-            "resolved_at": [(">=", period_start.isoformat())],
-        },
+        params={"resolved_at": [(">=", period_start.isoformat())]},
     )
     closed_carry_overs = [
         issue
-        for issue in closed_resolved_in_range
-        if (created := _parse_iso(issue.get("created_at"))) is not None and created < period_start
+        for issue in resolved_in_range
+        if issue.get("status") == DownTimeStatus.CLOSED.value
+        and (created := _parse_iso(issue.get("created_at"))) is not None
+        and created < period_start
     ]
 
     carry_overs: dict[str, dict[str, Any]] = {}

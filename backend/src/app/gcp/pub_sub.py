@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 class PubSubInteraction:
 
-    def __init__(self, topic_name="bodor_jobs"):
+    def __init__(self, topic_name="optiflow_jobs"):
         self.publisher_client = pubsub_v1.PublisherClient()
         self.subscriber_client = pubsub_v1.SubscriberClient()
         self.topic_path = self._create_topic(topic_name)
