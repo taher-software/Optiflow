@@ -4,6 +4,7 @@ import { useNavigate } from "react-router-dom";
 
 import { DowntimeRows } from "../components/DowntimeRows";
 import { DrilldownPanel } from "../components/DrilldownPanel";
+import { ErrorState } from "../components/ErrorState";
 import { HBars } from "../components/HBars";
 import { KpiCards } from "../components/KpiCards";
 import { ParetoRows } from "../components/ParetoRows";
@@ -30,37 +31,6 @@ function Card({
         {hint && <span className="font-normal text-[#9ca3af]"> — {hint}</span>}
       </h3>
       {children}
-    </section>
-  );
-}
-
-/** Bandeau d'erreur du dashboard : un serveur injoignable ne doit jamais être
- * confondu avec « aucune donnée pour cette période ». */
-function ErrorState({
-  title,
-  detail,
-  retryLabel,
-  onRetry,
-}: {
-  title: string;
-  detail: string;
-  retryLabel: string;
-  onRetry: () => void;
-}) {
-  return (
-    <section
-      role="alert"
-      className="mt-10 rounded-2xl border border-[#fecaca] bg-[#fef2f2] p-5"
-    >
-      <h2 className="text-[14px] font-semibold text-[#b91c1c]">{title}</h2>
-      <p className="mt-1 text-[13px] text-[#7f1d1d]">{detail}</p>
-      <button
-        type="button"
-        onClick={onRetry}
-        className="mt-4 rounded-lg border border-[#fca5a5] bg-white px-3 py-1.5 text-[13px] font-medium text-[#b91c1c] hover:bg-[#fff1f2]"
-      >
-        {retryLabel}
-      </button>
     </section>
   );
 }
@@ -165,11 +135,11 @@ export function DashboardPage() {
           <ErrorState
             title={
               offline
-                ? t("dashboard.errors.unreachable")
-                : t("dashboard.errors.title")
+                ? t("common.errors.unreachable")
+                : t("common.errors.title")
             }
-            detail={offline ? t("dashboard.errors.unreachableHint") : error}
-            retryLabel={t("dashboard.errors.retry")}
+            detail={offline ? t("common.errors.unreachableHint") : error}
+            retryLabel={t("common.errors.retry")}
             onRetry={() => void fetchDashboard()}
           />
         ) : !data ? (

@@ -7,6 +7,13 @@ const fr = {
     common: {
       showPassword: "Afficher le mot de passe",
       hidePassword: "Masquer le mot de passe",
+      errors: {
+        title: "Les données n'ont pas pu être chargées.",
+        unreachable: "Impossible de contacter le serveur.",
+        unreachableHint:
+          "Le serveur est injoignable : aucune donnée n'a pu être récupérée. Vérifiez votre connexion, puis réessayez.",
+        retry: "Réessayer",
+      },
     },
 
     prospect: {
@@ -136,13 +143,6 @@ const fr = {
       signOut: "Se déconnecter",
       loading: "Chargement…",
       empty: "Aucune donnée pour cette période.",
-      errors: {
-        title: "Le tableau de bord n'a pas pu être chargé.",
-        unreachable: "Impossible de contacter le serveur.",
-        unreachableHint:
-          "Le tableau de bord n'a pas pu être chargé : le serveur est injoignable. Vérifiez votre connexion, puis réessayez.",
-        retry: "Réessayer",
-      },
       exploreStats: "Explorer les stats",
       compareEpisodes: "Comparer deux épisodes",
       shiftN: "Équipe {{n}}",

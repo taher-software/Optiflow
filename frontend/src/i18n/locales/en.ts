@@ -4,7 +4,17 @@ const en = {
 
     language: { fr: "Français", en: "English" },
 
-    common: { showPassword: "Show password", hidePassword: "Hide password" },
+    common: {
+      showPassword: "Show password",
+      hidePassword: "Hide password",
+      errors: {
+        title: "The data could not be loaded.",
+        unreachable: "Cannot reach the server.",
+        unreachableHint:
+          "The server is unreachable, so no data could be retrieved. Check your connection, then try again.",
+        retry: "Try again",
+      },
+    },
 
     prospect: {
       badge: "Downtime management for modern plants",
@@ -132,13 +142,6 @@ const en = {
       signOut: "Sign out",
       loading: "Loading…",
       empty: "No data for this period.",
-      errors: {
-        title: "The dashboard could not be loaded.",
-        unreachable: "Cannot reach the server.",
-        unreachableHint:
-          "The dashboard could not be loaded: the server is unreachable. Check your connection, then try again.",
-        retry: "Try again",
-      },
       exploreStats: "Explore stats",
       compareEpisodes: "Compare two episodes",
       shiftN: "Shift {{n}}",

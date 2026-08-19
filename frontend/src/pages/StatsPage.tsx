@@ -4,6 +4,7 @@ import { useSearchParams } from "react-router-dom";
 
 import { BarChart } from "../components/BarChart";
 import { EpisodeCard } from "../components/EpisodeCard";
+import { ErrorState } from "../components/ErrorState";
 import { HBars } from "../components/HBars";
 import {
   COLOR_EP1,
@@ -44,6 +45,9 @@ export function StatsPage() {
   const daily = useStatsStore((s) => s.daily);
   const daily1 = useStatsStore((s) => s.daily1);
   const daily2 = useStatsStore((s) => s.daily2);
+  const loading = useStatsStore((s) => s.loading);
+  const error = useStatsStore((s) => s.error);
+  const offline = useStatsStore((s) => s.offline);
   const fetchSeries = useStatsStore((s) => s.fetchSeries);
   const setMetric = useStatsStore((s) => s.setMetric);
   const setMode = useStatsStore((s) => s.setMode);
@@ -95,6 +99,29 @@ export function StatsPage() {
         )?.label ?? "");
 
   const fmt = (v: number) => formatMetric(v, metric);
+
+  /* Rien n'est tracé tant qu'on n'a pas de séries : sans ce garde-fou, un
+     backend injoignable produisait des barres à zéro et un écart « +0,0 % »
+     calculés sur des tableaux vides — des chiffres faux, indiscernables de
+     vraies mesures. Erreur > chargement > vide, puis seulement les données. */
+  const hasData =
+    mode === "follow"
+      ? daily.length > 0
+      : daily1.length > 0 || daily2.length > 0;
+  const statusBlock = error ? (
+    <ErrorState
+      title={
+        offline ? t("common.errors.unreachable") : t("common.errors.title")
+      }
+      detail={offline ? t("common.errors.unreachableHint") : error}
+      retryLabel={t("common.errors.retry")}
+      onRetry={() => void fetchSeries()}
+    />
+  ) : !hasData ? (
+    <p className="mt-10 text-[13px] text-[#9ca3af]">
+      {loading ? t("dashboard.loading") : t("dashboard.empty")}
+    </p>
+  ) : null;
 
   /* Comparaison : alignement par index de jour (J1 → Jn). */
   const len = Math.max(daily1.length, daily2.length);
@@ -241,44 +268,46 @@ export function StatsPage() {
               </label>
             </div>
 
-            {/* Graphe journalier */}
-            <section className="rounded-2xl border border-[#e8e8ec] bg-white p-5 pb-2 shadow-sm">
-              <div className="mb-1 flex items-baseline justify-between gap-3">
-                <h3 className="text-[14px] font-semibold">
-                  {t(`stats.metricTitle.${metric}`)}
-                </h3>
-                <div className="flex items-center gap-1.5 text-[12px] text-[#4b5563]">
-                  <span
-                    className="h-2.5 w-2.5 rounded-[3px]"
-                    style={{ background: METRIC_COLOR[metric] }}
-                  />
-                  {scopeLabel} ·{" "}
-                  {filters.process
-                    ? t(`dashboard.process.${filters.process}`)
-                    : t("dashboard.filters.allProcesses")}{" "}
-                  ·{" "}
-                  {filters.shift
-                    ? t("dashboard.shiftN", { n: filters.shift })
-                    : t("dashboard.filters.allShifts")}
+            {/* Graphe journalier — masqué tant qu'il n'y a pas de données */}
+            {statusBlock ?? (
+              <section className="rounded-2xl border border-[#e8e8ec] bg-white p-5 pb-2 shadow-sm">
+                <div className="mb-1 flex items-baseline justify-between gap-3">
+                  <h3 className="text-[14px] font-semibold">
+                    {t(`stats.metricTitle.${metric}`)}
+                  </h3>
+                  <div className="flex items-center gap-1.5 text-[12px] text-[#4b5563]">
+                    <span
+                      className="h-2.5 w-2.5 rounded-[3px]"
+                      style={{ background: METRIC_COLOR[metric] }}
+                    />
+                    {scopeLabel} ·{" "}
+                    {filters.process
+                      ? t(`dashboard.process.${filters.process}`)
+                      : t("dashboard.filters.allProcesses")}{" "}
+                    ·{" "}
+                    {filters.shift
+                      ? t("dashboard.shiftN", { n: filters.shift })
+                      : t("dashboard.filters.allShifts")}
+                  </div>
                 </div>
-              </div>
-              <BarChart
-                series={[
-                  {
-                    name: scopeLabel,
-                    color: METRIC_COLOR[metric],
-                    values: daily.map((p) => p.value),
-                  },
-                ]}
-                labelOf={(i) => {
-                  const d = daily[i];
-                  return d
-                    ? `${d.date.slice(8, 10)}/${d.date.slice(5, 7)}`
-                    : "";
-                }}
-                format={fmt}
-              />
-            </section>
+                <BarChart
+                  series={[
+                    {
+                      name: scopeLabel,
+                      color: METRIC_COLOR[metric],
+                      values: daily.map((p) => p.value),
+                    },
+                  ]}
+                  labelOf={(i) => {
+                    const d = daily[i];
+                    return d
+                      ? `${d.date.slice(8, 10)}/${d.date.slice(5, 7)}`
+                      : "";
+                  }}
+                  format={fmt}
+                />
+              </section>
+            )}
           </>
         ) : (
           <>
@@ -300,80 +329,84 @@ export function StatsPage() {
               />
             </div>
 
-            <div className="mb-4 flex flex-wrap gap-3">
-              {[
-                { label: t("stats.compare.total1"), value: fmt(total1) },
-                { label: t("stats.compare.total2"), value: fmt(total2) },
-              ].map((d) => (
-                <div
-                  key={d.label}
-                  className="rounded-xl border border-[#e8e8ec] bg-white px-4 py-2.5 text-[12px] text-[#4b5563]"
-                >
-                  {d.label}
-                  <b className="block text-[16px] tabular-nums text-[#16181d]">
-                    {d.value}
-                  </b>
+            {statusBlock ?? (
+              <>
+                <div className="mb-4 flex flex-wrap gap-3">
+                  {[
+                    { label: t("stats.compare.total1"), value: fmt(total1) },
+                    { label: t("stats.compare.total2"), value: fmt(total2) },
+                  ].map((d) => (
+                    <div
+                      key={d.label}
+                      className="rounded-xl border border-[#e8e8ec] bg-white px-4 py-2.5 text-[12px] text-[#4b5563]"
+                    >
+                      {d.label}
+                      <b className="block text-[16px] tabular-nums text-[#16181d]">
+                        {d.value}
+                      </b>
+                    </div>
+                  ))}
+                  <div className="rounded-xl border border-[#e8e8ec] bg-white px-4 py-2.5 text-[12px] text-[#4b5563]">
+                    {t("stats.compare.gap")}
+                    <b
+                      className="block text-[16px] tabular-nums"
+                      style={{ color: gap >= 0 ? COLOR_EP1 : "#059669" }}
+                    >
+                      {gap >= 0 ? "+" : ""}
+                      {gap.toFixed(1).replace(".", ",")} %
+                    </b>
+                  </div>
                 </div>
-              ))}
-              <div className="rounded-xl border border-[#e8e8ec] bg-white px-4 py-2.5 text-[12px] text-[#4b5563]">
-                {t("stats.compare.gap")}
-                <b
-                  className="block text-[16px] tabular-nums"
-                  style={{ color: gap >= 0 ? COLOR_EP1 : "#059669" }}
-                >
-                  {gap >= 0 ? "+" : ""}
-                  {gap.toFixed(1).replace(".", ",")} %
-                </b>
-              </div>
-            </div>
 
-            <section className="rounded-2xl border border-[#e8e8ec] bg-white p-5 pb-3 shadow-sm">
-              <div className="mb-1 flex items-baseline justify-between gap-3">
-                <h3 className="text-[14px] font-semibold">
-                  {t(`stats.metricTitle.${metric}`)} —{" "}
-                  {t("stats.compare.title")}
-                </h3>
-                <div className="flex gap-4 text-[12px] text-[#4b5563]">
-                  <span className="flex items-center gap-1.5">
-                    <span
-                      className="h-2.5 w-2.5 rounded-[3px]"
-                      style={{ background: COLOR_EP1 }}
-                    />
-                    {t("stats.compare.ep1")}
-                  </span>
-                  <span className="flex items-center gap-1.5">
-                    <span
-                      className="h-2.5 w-2.5 rounded-[3px]"
-                      style={{ background: COLOR_EP2 }}
-                    />
-                    {t("stats.compare.ep2")}
-                  </span>
-                </div>
-              </div>
-              <BarChart
-                series={[
-                  {
-                    name: t("stats.compare.ep1"),
-                    color: COLOR_EP1,
-                    values: pad(daily1.map((p) => p.value)),
-                  },
-                  {
-                    name: t("stats.compare.ep2"),
-                    color: COLOR_EP2,
-                    values: pad(daily2.map((p) => p.value)),
-                  },
-                ]}
-                labelOf={(i) => `J${i + 1}`}
-                format={fmt}
-              />
-              <p className="mb-1 mt-1.5 text-[11px] text-[#9ca3af]">
-                {t("stats.compare.axisHint")}
-              </p>
-            </section>
+                <section className="rounded-2xl border border-[#e8e8ec] bg-white p-5 pb-3 shadow-sm">
+                  <div className="mb-1 flex items-baseline justify-between gap-3">
+                    <h3 className="text-[14px] font-semibold">
+                      {t(`stats.metricTitle.${metric}`)} —{" "}
+                      {t("stats.compare.title")}
+                    </h3>
+                    <div className="flex gap-4 text-[12px] text-[#4b5563]">
+                      <span className="flex items-center gap-1.5">
+                        <span
+                          className="h-2.5 w-2.5 rounded-[3px]"
+                          style={{ background: COLOR_EP1 }}
+                        />
+                        {t("stats.compare.ep1")}
+                      </span>
+                      <span className="flex items-center gap-1.5">
+                        <span
+                          className="h-2.5 w-2.5 rounded-[3px]"
+                          style={{ background: COLOR_EP2 }}
+                        />
+                        {t("stats.compare.ep2")}
+                      </span>
+                    </div>
+                  </div>
+                  <BarChart
+                    series={[
+                      {
+                        name: t("stats.compare.ep1"),
+                        color: COLOR_EP1,
+                        values: pad(daily1.map((p) => p.value)),
+                      },
+                      {
+                        name: t("stats.compare.ep2"),
+                        color: COLOR_EP2,
+                        values: pad(daily2.map((p) => p.value)),
+                      },
+                    ]}
+                    labelOf={(i) => `J${i + 1}`}
+                    format={fmt}
+                  />
+                  <p className="mb-1 mt-1.5 text-[11px] text-[#9ca3af]">
+                    {t("stats.compare.axisHint")}
+                  </p>
+                </section>
+              </>
+            )}
           </>
         )}
         {/* Répartitions du suivi (sous le graphe, mode suivi uniquement) */}
-        {mode === "follow" && (
+        {mode === "follow" && !statusBlock && (
           <div className="mt-4 grid gap-4 lg:grid-cols-2">
             <section className="rounded-2xl border border-[#e8e8ec] bg-white p-5 shadow-sm">
               <h3 className="mb-2 text-[13.5px] font-semibold text-[#4b5563]">

@@ -69,6 +69,10 @@ interface StatsState {
   daily2: DailyPoint[];
   loading: boolean;
   error: string | null;
+  /** Vrai quand le dernier échec vient d'un serveur injoignable (et non d'une
+   * erreur renvoyée par le backend) : la page affiche alors son propre message
+   * traduit au lieu du texte brut de `error`. */
+  offline: boolean;
   /** (Re)charge les séries du mode courant. MOCK : à remplacer par
    * `GET /kpi/daily` (la comparaison = 2 appels) — spec §5. */
   fetchSeries: () => Promise<void>;
@@ -92,23 +96,39 @@ export const useStatsStore = create<StatsState>((set, get) => ({
   daily2: [],
   loading: false,
   error: null,
+  offline: false,
 
   fetchSeries: async () => {
     const { metric, filters, episode1, episode2 } = get();
-    set({ loading: true, error: null });
-    const [res, res1, res2] = await Promise.all([
+    set({ loading: true, error: null, offline: false });
+    const results = await Promise.all([
       request<{ points: DailyPoint[] }>(dailyPath(metric, filters), "GET"),
       request<{ points: DailyPoint[] }>(dailyPath(metric, episode1), "GET"),
       request<{ points: DailyPoint[] }>(dailyPath(metric, episode2), "GET"),
     ]);
-    if (!res.ok) {
-      set({ error: res.error ?? "error", loading: false });
+
+    // Les trois séries échouent ensemble (même endpoint) dès que le serveur
+    // est injoignable. Un échec partiel est une vraie anomalie : la traiter
+    // comme « série vide » afficherait des barres à zéro et un écart calculé
+    // sur du vide (« +0,0 % ») — un chiffre faux présenté comme un fait.
+    const failed = results.find((r) => !r.ok);
+    if (failed) {
+      set({
+        error: failed.error ?? "error",
+        offline: failed.offline ?? false,
+        daily: [],
+        daily1: [],
+        daily2: [],
+        loading: false,
+      });
       return;
     }
+
+    const [res, res1, res2] = results;
     set({
       daily: res.data?.points ?? [],
-      daily1: res1.ok ? (res1.data?.points ?? []) : [],
-      daily2: res2.ok ? (res2.data?.points ?? []) : [],
+      daily1: res1.data?.points ?? [],
+      daily2: res2.data?.points ?? [],
       loading: false,
     });
   },
