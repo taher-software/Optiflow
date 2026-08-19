@@ -5,6 +5,10 @@ export interface Result<T> {
   ok: boolean;
   data?: T;
   error?: string;
+  /** Vrai quand la requête n'a jamais atteint le serveur (réseau coupé, API
+   * hors ligne, CORS) — par opposition à un serveur qui a répondu une erreur.
+   * `error` reste rempli pour les appelants qui ne distinguent pas les deux. */
+  offline?: boolean;
 }
 
 /** Authenticated JSON request against the API, unwrapping the ApiResponse
@@ -33,6 +37,10 @@ export async function request<T>(
     }
     return { ok: false, error };
   } catch {
-    return { ok: false, error: "Impossible de contacter le serveur." };
+    return {
+      ok: false,
+      error: "Impossible de contacter le serveur.",
+      offline: true,
+    };
   }
 }

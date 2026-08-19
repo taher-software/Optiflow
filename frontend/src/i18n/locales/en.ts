@@ -132,6 +132,13 @@ const en = {
       signOut: "Sign out",
       loading: "Loading…",
       empty: "No data for this period.",
+      errors: {
+        title: "The dashboard could not be loaded.",
+        unreachable: "Cannot reach the server.",
+        unreachableHint:
+          "The dashboard could not be loaded: the server is unreachable. Check your connection, then try again.",
+        retry: "Try again",
+      },
       exploreStats: "Explore stats",
       compareEpisodes: "Compare two episodes",
       shiftN: "Shift {{n}}",

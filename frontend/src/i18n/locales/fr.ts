@@ -136,6 +136,13 @@ const fr = {
       signOut: "Se déconnecter",
       loading: "Chargement…",
       empty: "Aucune donnée pour cette période.",
+      errors: {
+        title: "Le tableau de bord n'a pas pu être chargé.",
+        unreachable: "Impossible de contacter le serveur.",
+        unreachableHint:
+          "Le tableau de bord n'a pas pu être chargé : le serveur est injoignable. Vérifiez votre connexion, puis réessayez.",
+        retry: "Réessayer",
+      },
       exploreStats: "Explorer les stats",
       compareEpisodes: "Comparer deux épisodes",
       shiftN: "Équipe {{n}}",

@@ -34,6 +34,37 @@ function Card({
   );
 }
 
+/** Bandeau d'erreur du dashboard : un serveur injoignable ne doit jamais être
+ * confondu avec « aucune donnée pour cette période ». */
+function ErrorState({
+  title,
+  detail,
+  retryLabel,
+  onRetry,
+}: {
+  title: string;
+  detail: string;
+  retryLabel: string;
+  onRetry: () => void;
+}) {
+  return (
+    <section
+      role="alert"
+      className="mt-10 rounded-2xl border border-[#fecaca] bg-[#fef2f2] p-5"
+    >
+      <h2 className="text-[14px] font-semibold text-[#b91c1c]">{title}</h2>
+      <p className="mt-1 text-[13px] text-[#7f1d1d]">{detail}</p>
+      <button
+        type="button"
+        onClick={onRetry}
+        className="mt-4 rounded-lg border border-[#fca5a5] bg-white px-3 py-1.5 text-[13px] font-medium text-[#b91c1c] hover:bg-[#fff1f2]"
+      >
+        {retryLabel}
+      </button>
+    </section>
+  );
+}
+
 /** Dashboard KPI de l'usine (spec `.claude/specs/kpi-dashboard.md`, visuel
  * `frontend/design/kpi-dashboard-mockup.html`). Thème CLAIR (décision
  * client) sur coque sombre. Données MOCK via le store — seul le store change
@@ -51,6 +82,8 @@ export function DashboardPage() {
   const drillProcess = useDashboardStore((s) => s.drillProcess);
   const drillShift = useDashboardStore((s) => s.drillShift);
   const loading = useDashboardStore((s) => s.loading);
+  const error = useDashboardStore((s) => s.error);
+  const offline = useDashboardStore((s) => s.offline);
   const fetchDashboard = useDashboardStore((s) => s.fetchDashboard);
   const setPeriod = useDashboardStore((s) => s.setPeriod);
   const setCustomRange = useDashboardStore((s) => s.setCustomRange);
@@ -128,7 +161,18 @@ export function DashboardPage() {
           </div>
         </div>
 
-        {!data ? (
+        {error ? (
+          <ErrorState
+            title={
+              offline
+                ? t("dashboard.errors.unreachable")
+                : t("dashboard.errors.title")
+            }
+            detail={offline ? t("dashboard.errors.unreachableHint") : error}
+            retryLabel={t("dashboard.errors.retry")}
+            onRetry={() => void fetchDashboard()}
+          />
+        ) : !data ? (
           <p className="mt-10 text-[13px] text-[#9ca3af]">
             {loading ? t("dashboard.loading") : t("dashboard.empty")}
           </p>

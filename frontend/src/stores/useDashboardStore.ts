@@ -35,6 +35,10 @@ interface DashboardState {
   drillShift: string;
   loading: boolean;
   error: string | null;
+  /** Vrai quand le dernier échec vient d'un serveur injoignable (et non d'une
+   * erreur renvoyée par le backend) : la page affiche alors son propre message
+   * traduit au lieu du texte brut de `error`. */
+  offline: boolean;
   /** (Re)charge le dashboard pour la période courante. MOCK : à remplacer par
    * `GET /kpi/dashboard` (spec §5) — seul ce store change au branchement. */
   fetchDashboard: () => Promise<void>;
@@ -62,6 +66,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
   drillShift: "",
   loading: false,
   error: null,
+  offline: false,
 
   fetchDashboard: async () => {
     const {
@@ -72,7 +77,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
       drillProcess,
       drillShift,
     } = get();
-    set({ loading: true, error: null });
+    set({ loading: true, error: null, offline: false });
     const { from, to } = periodRange(period, customFrom, customTo);
 
     const dashRes = await request<DashboardData>(
@@ -80,7 +85,11 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
       "GET",
     );
     if (!dashRes.ok) {
-      set({ error: dashRes.error ?? "error", loading: false });
+      set({
+        error: dashRes.error ?? "error",
+        offline: dashRes.offline ?? false,
+        loading: false,
+      });
       return;
     }
 
