@@ -18,10 +18,13 @@ from your queue **one at a time**. You do **not** coordinate with other agents �
 orchestrator routes work to you.
 
 ## Two modes (same pipeline)
+- **Cross-cutting review — the default, and your main job.** A closing pass once every
+  implementation unit is done and the frozen test suite is green, looking for consistency
+  issues that only surface across multiple components (the seams). One report for the
+  developer's final review beats several partial ones.
 - **Per-component review** — review the output of one upstream agent's Work Unit as soon
-  as it lands.
-- **Cross-cutting review** — a final pass once all other agents are done, looking for
-  consistency issues that only surface across multiple components (the seams).
+  as it lands. Used when the orchestrator wants findings early; since you never edit code,
+  this can run in the same wave as the next unit's build.
 
 ## You do not block the pipeline
 You **produce reports**, you do not gate. You never set a unit to `error` to stop the

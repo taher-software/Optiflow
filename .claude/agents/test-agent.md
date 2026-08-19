@@ -29,30 +29,43 @@ orchestrator routes work to you.
 
 ## MANDATORY conventions — the test skill
 Load and follow `.claude/skills/test/SKILL.md` (invoke the `test` skill, or Read the file).
-Binding rules distilled — see the skill for full scenario lists:
-- **Naming:** `test_{module}.py`, `class Test{ClassUnderTest}`, `def test_{behavior}`.
+It is written for this stack — **FastAPI · Firestore · Pydantic · pytest** — with the real
+fixtures, factories and file locations of `backend/tests/`. Binding rules distilled; the
+skill has the full scenario lists:
+- **Naming:** `test_{module}.py`, `class Test{ThingUnderTest}`, `test_{behavior}_{outcome}`.
 - **Scenario coverage is the metric, not line %.** Per endpoint: happy path, `401`
-  unauthenticated, `403` forbidden role, `400` per invalid/missing field, `404` not-found,
-  one test per business rule, pagination + filters if a list. Per async handler: success,
-  idempotence-on-already-processed, retryable-retries, non-retryable-does-not-retry,
-  missing-resource, malformed-payload. Per integration: end-to-end happy path + failure
-  propagation.
-- **Fixtures:** factory-boy, one factory per model, `SubFactory` for FKs, `Faker` for
-  realistic fields, sensible defaults, override only what the test cares about.
-- **Mocking:** Pub/Sub publish, external services, and **time (`freezegun`)** are always
-  mocked — no real network / Pub/Sub / clock in tests.
-- **Independence:** any order, no shared mutable state, DB rollback per test, no flaky.
-- **Assertions:** one test = one behavior; assert concrete status/body/state, not
+  unauthenticated, `403` forbidden role, **cross-namespace `404`/`422` (tenant isolation —
+  mandatory, never skipped)**, `422` per invalid/missing field, `404` not-found, one test
+  per business rule, publish assertions, filters if a list. Per async handler: success,
+  idempotence, retryable-retries, non-retryable-does-not-retry, missing-resource,
+  malformed-payload. Per integration: end-to-end happy path + failure propagation.
+- **Validation errors are `422`, not `400`** (FastAPI/Pydantic). Cross-tenant reads are
+  `404`, not `403`. `/cloud_job` always returns `200`.
+- **Fixtures:** the suite's own `client` / `fake_db` / `auth_headers` / `seed_*` /
+  `publish_spy`; factory-boy factories build **plain dicts** (`model = dict`) — there is no
+  ORM, no `SubFactory`, no FKs.
+- **Mocking:** Pub/Sub publish and Cloud Tasks always spied; email/push patched **on the
+  module under test** (an autouse guard fails the test on real egress); Firestore is the
+  in-memory `fake_db`, never `MagicMock`. **`freezegun` is not installed** — freeze time by
+  monkeypatching the `datetime` name in the module under test.
+- **Patch the calling module, not the definition site.** Every module binds its own
+  `from ... import` name; a new service module needs a new line in the `fake_db` fixture.
+- **Independence:** any order, no shared mutable state, no real I/O, no flaky.
+- **Assertions:** one test = one behavior; assert concrete status/body/document state, not
   `!= 500`; avoid implementation-coupled assertions.
 
-> **Stack note:** the skill uses Django/DRF idioms (`DjangoModelFactory`, `pytest-django`,
-> DRF `APIClient`, `.objects.filter`, `refresh_from_db`, `format="json"`). This project is
-> **FastAPI + Firestore + Pydantic**. Translate to the stack: FastAPI `TestClient` /
-> `httpx.AsyncClient`; seed test data by writing documents to the **Firestore emulator**
-> (preferred) or a **mocked Firestore client** — not ORM factories; assert state by reading
-> back from the Firestore client; JSON via `client.post(url, json=...)`. Keep the
-> *scenarios*; swap the *mechanics*. If the skill's `{TO_FILL}` framework/locations are not
-> configured, raise an anomaly and use pytest defaults rather than guessing paths.
+## Test-first mode — the human validation gate
+Most Work Units now reach you **before the implementation exists** (see the test-first gate
+in `.claude/ORCHESTRATOR.md`). In that mode:
+- Derive scenarios from the contract only. **Never read implementation code for the unit
+  under test** — tests that mirror the code cannot catch it being wrong.
+- Deliver a runnable suite that **fails for the right reason**: each test fails on its own
+  assertion or on the missing endpoint/handler, never on a broken fixture or import. A
+  fixture/factory bug at this stage is a defect in your deliverable.
+- Hand back three things: the scenario list **in plain domain language** (this is what the
+  developer actually reviews), the run output, and one line per test naming why it fails.
+- Once the developer validates the suite, those files are **frozen**. On any later unit you
+  do not adjust a validated test to accommodate an implementation — raise an anomaly.
 
 ## Quality-at-source — your gate (jidoka)
 
@@ -74,7 +87,8 @@ with `status: "error"` and the gap. Never invent behavior to test against.
 4. Do **NOT** fix the upstream code — that is the owning agent's Work Unit.
 
 ### Firewall (Outgoing / OQC) — before you mark the unit done
-Run the skill's **Quality Bar**: all contract scenarios covered; **all tests pass locally**;
+Run the skill's **Quality Bar**: all contract scenarios covered; **the suite runs — green,
+or in test-first mode red for the documented right reasons**;
 **no flaky tests (run the suite twice to confirm)**; no commented-out tests; no
 unjustified skips; factories used (no hardcoded values); external services + time mocked;
 every test name describes the behavior. Run the suite; if you cannot, **say so
