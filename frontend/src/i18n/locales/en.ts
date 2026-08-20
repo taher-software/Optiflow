@@ -242,7 +242,11 @@ const en = {
         ep2: "Episode 2",
         total1: "Episode 1 total",
         total2: "Episode 2 total",
+        average1: "Episode 1 average MTTR",
+        average2: "Episode 2 average MTTR",
         gap: "Gap",
+        gapBasis: "{{latest}} (most recent) vs {{reference}}",
+        gapUndefined: "{{reference}} is zero: gap cannot be computed",
         title: "Episode 1 vs Episode 2",
         axisHint:
           "X axis: day of the episode (D1 → Dn) — both periods aligned by day index.",

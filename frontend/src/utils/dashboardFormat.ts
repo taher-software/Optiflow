@@ -1,4 +1,4 @@
-import type { StatsMetric } from "../constants/dashboard";
+import type { DailyPoint, StatsMetric } from "../constants/dashboard";
 
 /** Durée humaine : "45 min", "2 h 05", "1 j 3 h". Pure. */
 export function formatDuration(seconds: number): string {
@@ -42,4 +42,62 @@ export function isoDayAfter(from: string, offset: number): string {
 /** Aujourd'hui en ISO (YYYY-MM-DD). */
 export function isoToday(): string {
   return new Date().toISOString().slice(0, 10);
+}
+
+/** Agrégat d'un épisode pour la métrique choisie. Pur.
+ *
+ * `duration` et `count` se cumulent. `mttr` ne se cumule PAS : c'est déjà une
+ * moyenne, donc l'épisode vaut la moyenne de ses jours. Le backend renvoie un
+ * point par jour du calendrier et pose `0` les jours sans arrêt clôturé
+ * (`_mttr_seconds` → `0.0` sans ticket) : moyenner ces zéros ferait chuter le
+ * MTTR à mesure que la période s'allonge et comparerait des durées d'épisode
+ * plutôt que des délais de réparation. Seuls les jours effectivement réparés
+ * (valeur > 0) entrent donc dans la moyenne. */
+export function episodeAggregate(
+  points: readonly DailyPoint[],
+  metric: StatsMetric,
+): number {
+  if (metric !== "mttr") return points.reduce((sum, p) => sum + p.value, 0);
+  const repaired = points.filter((p) => p.value > 0);
+  if (repaired.length === 0) return 0;
+  return repaired.reduce((sum, p) => sum + p.value, 0) / repaired.length;
+}
+
+/** Comparaison de deux épisodes : lequel est le plus récent, leurs agrégats,
+ * et l'écart relatif du plus récent par rapport à l'autre. Pure.
+ *
+ * L'épisode le plus récent est celui dont la période se termine le plus tard
+ * (`to` seul ; à `to` égal, l'épisode 1). L'écart vaut
+ * `(récent − référence) / référence` — la référence (l'épisode le plus ancien)
+ * est toujours le dénominateur, quel que soit l'ordre d'affichage des cartes.
+ * `null` quand la référence est nulle : l'écart est alors indéfini, jamais
+ * « 0 % ». */
+export function compareEpisodes(
+  episode1: { points: readonly DailyPoint[]; to: string },
+  episode2: { points: readonly DailyPoint[]; to: string },
+  metric: StatsMetric,
+): {
+  total1: number;
+  total2: number;
+  latestIsEp1: boolean;
+  latest: number;
+  reference: number;
+  gapPct: number | null;
+} {
+  const total1 = episodeAggregate(episode1.points, metric);
+  const total2 = episodeAggregate(episode2.points, metric);
+
+  const latestIsEp1 = episode1.to >= episode2.to;
+
+  const latest = latestIsEp1 ? total1 : total2;
+  const reference = latestIsEp1 ? total2 : total1;
+
+  return {
+    total1,
+    total2,
+    latestIsEp1,
+    latest,
+    reference,
+    gapPct: reference === 0 ? null : ((latest - reference) / reference) * 100,
+  };
 }

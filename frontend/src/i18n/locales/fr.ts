@@ -246,7 +246,11 @@ const fr = {
         ep2: "Épisode 2",
         total1: "Total épisode 1",
         total2: "Total épisode 2",
+        average1: "MTTR moyen épisode 1",
+        average2: "MTTR moyen épisode 2",
         gap: "Écart",
+        gapBasis: "{{latest}} (le plus récent) vs {{reference}}",
+        gapUndefined: "{{reference}} est à zéro : écart non calculable",
         title: "Épisode 1 vs Épisode 2",
         axisHint:
           "Axe X : jour de l'épisode (J1 → Jn) — les deux périodes sont alignées par index de jour.",

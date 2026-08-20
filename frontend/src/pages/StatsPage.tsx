@@ -20,7 +20,11 @@ import { useProductionLinesStore } from "../stores/useProductionLinesStore";
 import { useStatsStore } from "../stores/useStatsStore";
 import { useUapsStore } from "../stores/useUapsStore";
 import { useWorkstationsStore } from "../stores/useWorkstationsStore";
-import { formatDuration, formatMetric } from "../utils/dashboardFormat";
+import {
+  compareEpisodes,
+  formatDuration,
+  formatMetric,
+} from "../utils/dashboardFormat";
 
 const METRICS: StatsMetric[] = ["duration", "count", "mttr"];
 
@@ -129,9 +133,22 @@ export function StatsPage() {
     arr.length >= len
       ? arr
       : [...arr, ...Array.from({ length: len - arr.length }, () => 0)];
-  const total1 = daily1.reduce((s, p) => s + p.value, 0);
-  const total2 = daily2.reduce((s, p) => s + p.value, 0);
-  const gap = total2 > 0 ? ((total1 - total2) / total2) * 100 : 0;
+
+  /* Écart = (épisode le plus récent − référence) / référence. Le plus récent
+     se déduit des périodes choisies, pas de l'ordre des cartes : l'utilisateur
+     peut très bien placer la période ancienne en épisode 1. Agrégats et écart
+     vivent dans `utils` (le MTTR se moyenne, il ne se cumule pas). */
+  const { total1, total2, latestIsEp1, gapPct } = compareEpisodes(
+    { points: daily1, to: episode1.to },
+    { points: daily2, to: episode2.to },
+    metric,
+  );
+  const latestLabel = latestIsEp1
+    ? t("stats.compare.ep1")
+    : t("stats.compare.ep2");
+  const referenceLabel = latestIsEp1
+    ? t("stats.compare.ep2")
+    : t("stats.compare.ep1");
 
   return (
     <div className="min-h-full bg-[#fafafa] px-8 py-8 text-[#16181d]">
@@ -333,8 +350,20 @@ export function StatsPage() {
               <>
                 <div className="mb-4 flex flex-wrap gap-3">
                   {[
-                    { label: t("stats.compare.total1"), value: fmt(total1) },
-                    { label: t("stats.compare.total2"), value: fmt(total2) },
+                    {
+                      label:
+                        metric === "mttr"
+                          ? t("stats.compare.average1")
+                          : t("stats.compare.total1"),
+                      value: fmt(total1),
+                    },
+                    {
+                      label:
+                        metric === "mttr"
+                          ? t("stats.compare.average2")
+                          : t("stats.compare.total2"),
+                      value: fmt(total2),
+                    },
                   ].map((d) => (
                     <div
                       key={d.label}
@@ -348,13 +377,34 @@ export function StatsPage() {
                   ))}
                   <div className="rounded-xl border border-[#e8e8ec] bg-white px-4 py-2.5 text-[12px] text-[#4b5563]">
                     {t("stats.compare.gap")}
-                    <b
-                      className="block text-[16px] tabular-nums"
-                      style={{ color: gap >= 0 ? COLOR_EP1 : "#059669" }}
-                    >
-                      {gap >= 0 ? "+" : ""}
-                      {gap.toFixed(1).replace(".", ",")} %
-                    </b>
+                    {gapPct === null ? (
+                      <>
+                        <b className="block text-[16px] tabular-nums text-[#9ca3af]">
+                          –
+                        </b>
+                        <span className="text-[11px] text-[#9ca3af]">
+                          {t("stats.compare.gapUndefined", {
+                            reference: referenceLabel,
+                          })}
+                        </span>
+                      </>
+                    ) : (
+                      <>
+                        <b
+                          className="block text-[16px] tabular-nums"
+                          style={{ color: gapPct >= 0 ? COLOR_EP1 : "#059669" }}
+                        >
+                          {gapPct >= 0 ? "+" : ""}
+                          {gapPct.toFixed(1).replace(".", ",")} %
+                        </b>
+                        <span className="text-[11px] text-[#9ca3af]">
+                          {t("stats.compare.gapBasis", {
+                            latest: latestLabel,
+                            reference: referenceLabel,
+                          })}
+                        </span>
+                      </>
+                    )}
                   </div>
                 </div>
 
