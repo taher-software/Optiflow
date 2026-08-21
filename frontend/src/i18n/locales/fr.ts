@@ -150,7 +150,7 @@ const fr = {
       paretoCumul: "cumul {{pct}} %",
       kpi: {
         downtime: "Temps d'arrêt",
-        count: "Nb d'arrêts",
+        count: "Nombre d'arrêts",
         mttr: "MTTR",
         mtbf: "MTBF",
         downtimeHint:
@@ -210,6 +210,7 @@ const fr = {
       drill: {
         root: "Usine",
         close: "Fermer",
+        loading: "Chargement du détail…",
         associatedProcess: "Processus habituel :",
         childrenTitle: "Temps d'arrêt par endroit",
         locationsHint: "cliquez un endroit pour descendre dans la hiérarchie",
@@ -232,10 +233,14 @@ const fr = {
         follow: "Suivi journalier",
         compare: "⇄ Comparer deux épisodes",
       },
-      metric: { duration: "Temps d'arrêt", count: "Nb d'arrêts", mttr: "MTTR" },
+      metric: {
+        duration: "Temps d'arrêt",
+        count: "Nombre d'arrêts",
+        mttr: "MTTR",
+      },
       metricTitle: {
         duration: "Temps d'arrêt journalier",
-        count: "Nb d'arrêts par jour",
+        count: "Nombre d'arrêts par jour",
         mttr: "MTTR journalier",
       },
       filters: { scope: "Scope", wholePlant: "Usine (toutes)" },

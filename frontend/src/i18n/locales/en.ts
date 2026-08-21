@@ -149,7 +149,7 @@ const en = {
       paretoCumul: "cumul. {{pct}} %",
       kpi: {
         downtime: "Downtime",
-        count: "Downtimes",
+        count: "Number of downtimes",
         mttr: "MTTR",
         mtbf: "MTBF",
         downtimeHint:
@@ -209,6 +209,7 @@ const en = {
       drill: {
         root: "Plant",
         close: "Close",
+        loading: "Loading details…",
         associatedProcess: "Usual process:",
         childrenTitle: "Downtime by location",
         locationsHint: "click a location to go down the hierarchy",
@@ -228,7 +229,11 @@ const en = {
       subtitle:
         "Daily tracking or two-episode comparison — metric, scope, process, shift and period.",
       mode: { follow: "Daily tracking", compare: "⇄ Compare two episodes" },
-      metric: { duration: "Downtime", count: "Downtime count", mttr: "MTTR" },
+      metric: {
+        duration: "Downtime",
+        count: "Number of downtimes",
+        mttr: "MTTR",
+      },
       metricTitle: {
         duration: "Daily downtime",
         count: "Downtimes per day",

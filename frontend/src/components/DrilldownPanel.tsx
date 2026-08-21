@@ -19,9 +19,42 @@ import { HBars } from "./HBars";
 import { KpiCards } from "./KpiCards";
 import { ParetoRows } from "./ParetoRows";
 
+/** Squelette sobre affiché tant que la tranche n'est pas arrivée : mêmes
+ * gabarits que le contenu final (KPIs + deux colonnes) pour éviter le saut de
+ * mise en page. */
+function DrilldownSkeleton({ label }: { label: string }) {
+  return (
+    <div aria-busy="true" aria-label={label}>
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-4">
+        {[0, 1, 2, 3].map((i) => (
+          <div
+            key={i}
+            className="h-20 animate-pulse rounded-xl border border-[#e8e8ec] bg-[#f3f4f6]"
+          />
+        ))}
+      </div>
+      <div className="mt-4 grid gap-5 lg:grid-cols-2">
+        {[0, 1].map((col) => (
+          <div key={col} className="space-y-2">
+            <div className="h-3 w-32 animate-pulse rounded bg-[#f3f4f6]" />
+            {[0, 1, 2, 3].map((row) => (
+              <div
+                key={row}
+                className="h-8 animate-pulse rounded-lg bg-[#f3f4f6]"
+              />
+            ))}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 interface DrilldownPanelProps {
   path: DrillStep[];
-  drilldown: DrilldownData;
+  /** `null` tant que la tranche n'est pas chargée : le squelette est rendu. */
+  drilldown: DrilldownData | null;
+  loading: boolean;
   drillProcess: string;
   drillShift: string;
   /** Fenêtres horaires réelles du tenant (`namespace.shifts`). */
@@ -40,6 +73,7 @@ interface DrilldownPanelProps {
 export function DrilldownPanel({
   path,
   drilldown,
+  loading,
   drillProcess,
   drillShift,
   shifts,
@@ -155,6 +189,39 @@ export function DrilldownPanel({
         </div>
       )}
 
+      {!loading && drilldown ? (
+        <DrilldownBody
+          drilldown={drilldown}
+          shifts={shifts}
+          isProcess={isProcess}
+          onPush={onPush}
+        />
+      ) : (
+        <DrilldownSkeleton label={t("dashboard.drill.loading")} />
+      )}
+    </section>
+  );
+}
+
+interface DrilldownBodyProps {
+  drilldown: DrilldownData;
+  shifts: ShiftWindow[];
+  isProcess: boolean;
+  onPush: (row: BreakdownRow) => void;
+}
+
+/** Corps du panneau : KPIs de la tranche, enfants cliquables et sections
+ * analytiques telles que le producteur les a fournies. */
+function DrilldownBody({
+  drilldown,
+  shifts,
+  isProcess,
+  onPush,
+}: DrilldownBodyProps) {
+  const { t } = useTranslation();
+
+  return (
+    <>
       <KpiCards kpis={drilldown.kpis} compact />
 
       {/* Enfants hiérarchiques */}
@@ -261,7 +328,7 @@ export function DrilldownPanel({
           </div>
         </div>
       )}
-    </section>
+    </>
   );
 }
 

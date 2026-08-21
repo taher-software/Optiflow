@@ -52,6 +52,7 @@ export function DashboardPage() {
   const drillProcess = useDashboardStore((s) => s.drillProcess);
   const drillShift = useDashboardStore((s) => s.drillShift);
   const loading = useDashboardStore((s) => s.loading);
+  const drillLoading = useDashboardStore((s) => s.drillLoading);
   const error = useDashboardStore((s) => s.error);
   const offline = useDashboardStore((s) => s.offline);
   const fetchDashboard = useDashboardStore((s) => s.fetchDashboard);
@@ -151,10 +152,11 @@ export function DashboardPage() {
             <KpiCards kpis={data.overall} />
 
             <div className="mt-5">
-              {drillPath.length > 0 && drilldown && (
+              {drillPath.length > 0 && (
                 <DrilldownPanel
                   path={drillPath}
                   drilldown={drilldown}
+                  loading={drillLoading}
                   drillProcess={drillProcess}
                   drillShift={drillShift}
                   shifts={data.namespace.shifts}

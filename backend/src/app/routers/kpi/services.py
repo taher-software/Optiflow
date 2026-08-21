@@ -36,6 +36,7 @@ does the rest of the work once a carry-over ticket is in the slice.
 
 import logging
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, time, timedelta
 from typing import Any, Callable, Optional
 
@@ -82,6 +83,56 @@ from src.app.routers.kpi.modelsOut import (
 )
 
 logger = logging.getLogger(__name__)
+
+# --------------------------------------------------------------------------
+# 0. Parallel-read helper.
+#
+# Every public entry point below issues several Firestore reads that are
+# mutually independent (e.g. `_fetch_tickets`'s 3 queries, `_location_hierarchy`'s
+# 3 collection scans, `_namespace_context`'s 2 document gets) but were
+# previously awaited one at a time, each paying its own network round-trip.
+# `FirestoreClient` is a blocking client and every endpoint in this router is
+# a sync `def` (FastAPI already runs those in its own threadpool), so the fix
+# is a plain `ThreadPoolExecutor`, not `asyncio`.
+#
+# A single MODULE-LEVEL pool (not one `ThreadPoolExecutor()` per call) is
+# used deliberately: creating and tearing down an executor per request means
+# spawning/joining a handful of OS threads on every single dashboard/
+# drilldown/daily call, which is wasteful and, under concurrent traffic,
+# unbounded (as many live executors as in-flight requests). A shared pool
+# reuses its worker threads across requests and gives a single place to
+# bound total concurrency. `max_workers=12` is sized for "a few requests at
+# once, each needing at most 3 concurrent reads" (this module's largest
+# fan-out is 3, in `_fetch_tickets`/`_location_hierarchy`) — enough to avoid
+# queuing under light-to-moderate concurrent load while still capping how
+# many Firestore reads this process can have in flight at any moment. If
+# request concurrency grows well past ~4 simultaneous KPI calls, later reads
+# queue for a free worker (they don't fail — `ThreadPoolExecutor.submit`
+# always has a queue), a graceful degradation to sequential-when-saturated,
+# not overload.
+_READ_POOL = ThreadPoolExecutor(max_workers=12, thread_name_prefix="kpi-read")
+
+
+def _run_parallel(callables: list[Callable[[], Any]]) -> list[Any]:
+    """Runs each zero-arg callable in `callables` on `_READ_POOL` and returns
+    their results in the SAME ORDER as `callables` was given — never in
+    whichever order the futures happen to complete — so callers can
+    destructure the returned list positionally exactly as they would a
+    sequence of direct calls.
+
+    Exception propagation: `Future.result()` re-raises whatever exception the
+    callable raised, in the calling thread, the first time it's called on
+    that future. So if e.g. a read helper is changed later to raise an
+    `HTTPException` on a malformed document, the first callable (in
+    `callables` order) whose future raised is what this function re-raises —
+    same as sequential code hitting that failure first. The remaining
+    futures still run to completion on the pool (they are not cancelled),
+    but their results/exceptions are simply discarded once this call has
+    already raised.
+    """
+    futures = [_READ_POOL.submit(fn) for fn in callables]
+    return [future.result() for future in futures]
+
 
 # Same literals `add_down_time` stores the issue under — kept in sync with
 # `src.app.routers.down_time.services.DOWN_TIME_COLLECTION` / `ISSUES_SUBCOLLECTION`
@@ -389,9 +440,19 @@ def _planned_seconds(
 
 
 def _location_hierarchy(client: FirestoreClient, namespace_id: str) -> dict[str, Any]:
-    uaps = client.find_documents(UAP_COLLECTION, {"namespace_id": namespace_id})
-    lines = client.find_documents(PRODUCTION_LINE_COLLECTION, {"namespace_id": namespace_id})
-    stations = client.find_documents(WORKSTATION_COLLECTION, {"namespace_id": namespace_id})
+    # 3 independent collection scans -- parallelized (see `_run_parallel`).
+    # Order is preserved regardless of which future finishes first.
+    uaps, lines, stations = _run_parallel(
+        [
+            lambda: client.find_documents(UAP_COLLECTION, {"namespace_id": namespace_id}),
+            lambda: client.find_documents(
+                PRODUCTION_LINE_COLLECTION, {"namespace_id": namespace_id}
+            ),
+            lambda: client.find_documents(
+                WORKSTATION_COLLECTION, {"namespace_id": namespace_id}
+            ),
+        ]
+    )
 
     lines_by_uap: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for line in lines:
@@ -936,37 +997,50 @@ def _fetch_tickets(
       `_ticket_downtime_seconds`'s clamp restricts each ticket's
       contribution to the queried window regardless of when it started.
     """
-    current = client.find_subdocuments(
-        DOWN_TIME_COLLECTION,
-        namespace_id,
-        ISSUES_SUBCOLLECTION,
-        params={"created_at": [(">=", period_start.isoformat()), ("<=", period_end.isoformat())]},
-    )
-    current_ids = {issue.get("id") for issue in current}
-
+    # The 3 queries below are mutually independent (each filters on a
+    # different field/purpose) -- parallelized (see `_run_parallel`). Order
+    # is preserved regardless of which future finishes first.
+    #
     # Each carry-over query filters on ONE field only: mixing an equality/`in`
     # on `status` with a range on a date field would require a Firestore
     # composite index. The remaining condition is applied in Python, on the
     # narrower of the two sets: (b) starts from the open tickets (always a
     # small set), (c) from the tickets resolved since `period_start`.
-    still_open = client.find_subdocuments(
-        DOWN_TIME_COLLECTION,
-        namespace_id,
-        ISSUES_SUBCOLLECTION,
-        params={"status": [("in", _OPEN_STATUSES)]},
+    current, still_open, resolved_in_range = _run_parallel(
+        [
+            lambda: client.find_subdocuments(
+                DOWN_TIME_COLLECTION,
+                namespace_id,
+                ISSUES_SUBCOLLECTION,
+                params={
+                    "created_at": [
+                        (">=", period_start.isoformat()),
+                        ("<=", period_end.isoformat()),
+                    ]
+                },
+            ),
+            lambda: client.find_subdocuments(
+                DOWN_TIME_COLLECTION,
+                namespace_id,
+                ISSUES_SUBCOLLECTION,
+                params={"status": [("in", _OPEN_STATUSES)]},
+            ),
+            lambda: client.find_subdocuments(
+                DOWN_TIME_COLLECTION,
+                namespace_id,
+                ISSUES_SUBCOLLECTION,
+                params={"resolved_at": [(">=", period_start.isoformat())]},
+            ),
+        ]
     )
+    current_ids = {issue.get("id") for issue in current}
+
     open_before = [
         issue
         for issue in still_open
         if (created := _parse_iso(issue.get("created_at"))) is not None and created < period_start
     ]
 
-    resolved_in_range = client.find_subdocuments(
-        DOWN_TIME_COLLECTION,
-        namespace_id,
-        ISSUES_SUBCOLLECTION,
-        params={"resolved_at": [(">=", period_start.isoformat())]},
-    )
     closed_carry_overs = [
         issue
         for issue in resolved_in_range
@@ -989,14 +1063,20 @@ def _namespace_context(
 ) -> tuple[dict[str, Any], Any, dict[str, Any]]:
     """`(namespace_doc, tz, settings_doc)` — settings defaults to `{}` (24h/day
     — see `_planned_seconds_per_day`)."""
-    namespace = client.get_document(NAMESPACE_COLLECTION, namespace_id) or {}
-    tz = namespace_timezone(namespace_id, namespace)
-    settings = (
-        client.get_subdocument(
-            NAMESPACE_SETTINGS_COLLECTION, namespace_id, SETTINGS_SUBCOLLECTION, namespace_id
-        )
-        or {}
+    # The namespace doc and the settings doc are independent reads (`tz` only
+    # depends on the namespace doc, not on settings) -- parallelized (see
+    # `_run_parallel`). Order is preserved regardless of which future
+    # finishes first.
+    namespace, settings = _run_parallel(
+        [
+            lambda: client.get_document(NAMESPACE_COLLECTION, namespace_id) or {},
+            lambda: client.get_subdocument(
+                NAMESPACE_SETTINGS_COLLECTION, namespace_id, SETTINGS_SUBCOLLECTION, namespace_id
+            )
+            or {},
+        ]
     )
+    tz = namespace_timezone(namespace_id, namespace)
     return namespace, tz, settings
 
 

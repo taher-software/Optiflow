@@ -34,14 +34,20 @@ interface DashboardState {
   drillProcess: string;
   drillShift: string;
   loading: boolean;
+  /** Chargement du seul panneau drill-down (distinct de `loading`, qui porte
+   * sur le dashboard). */
+  drillLoading: boolean;
   error: string | null;
   /** Vrai quand le dernier échec vient d'un serveur injoignable (et non d'une
    * erreur renvoyée par le backend) : la page affiche alors son propre message
    * traduit au lieu du texte brut de `error`. */
   offline: boolean;
-  /** (Re)charge le dashboard pour la période courante. MOCK : à remplacer par
-   * `GET /kpi/dashboard` (spec §5) — seul ce store change au branchement. */
+  /** (Re)charge le dashboard (`GET /kpi/dashboard`) pour la période courante.
+   * Ne touche jamais au drill-down. */
   fetchDashboard: () => Promise<void>;
+  /** (Re)charge le seul panneau drill-down (`GET /kpi/drilldown`) pour le
+   * chemin, les filtres et la période courants. */
+  fetchDrilldown: () => Promise<void>;
   setPeriod: (period: PeriodPreset) => void;
   setCustomRange: (from: string, to: string) => void;
   openDrill: (step: DrillStep) => void;
@@ -51,6 +57,12 @@ interface DashboardState {
   setDrillProcess: (process: string) => void;
   setDrillShift: (shift: string) => void;
 }
+
+/** Compteurs de requête : une réponse est ignorée si un appel plus récent est
+ * parti entre-temps (deux clics rapprochés ne doivent pas laisser la réponse
+ * la plus lente écraser l'affichage). */
+let dashboardRequestId = 0;
+let drilldownRequestId = 0;
 
 /** Possède les données du dashboard, la période et l'état du drill-down.
  * Règle contractuelle (spec §3) : le drill n'affiche jamais sa propre
@@ -65,18 +77,13 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
   drillProcess: "",
   drillShift: "",
   loading: false,
+  drillLoading: false,
   error: null,
   offline: false,
 
   fetchDashboard: async () => {
-    const {
-      period,
-      customFrom,
-      customTo,
-      drillPath,
-      drillProcess,
-      drillShift,
-    } = get();
+    const { period, customFrom, customTo } = get();
+    const requestId = ++dashboardRequestId;
     set({ loading: true, error: null, offline: false });
     const { from, to } = periodRange(period, customFrom, customTo);
 
@@ -84,6 +91,8 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
       `/kpi/dashboard?${new URLSearchParams({ from, to })}`,
       "GET",
     );
+    if (requestId !== dashboardRequestId) return; // réponse périmée
+
     if (!dashRes.ok) {
       set({
         error: dashRes.error ?? "error",
@@ -92,62 +101,86 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
       });
       return;
     }
+    set({ data: dashRes.data ?? null, loading: false });
+  },
 
-    let drilldown: DrilldownData | null = null;
-    if (drillPath.length) {
-      const params = new URLSearchParams({
-        path: drillPath.map((s) => `${s.kind}:${s.id}`).join(">"),
-        from,
-        to,
-      });
-      if (drillProcess) params.set("process", drillProcess);
-      if (drillShift) params.set("shift", drillShift);
-      const drillRes = await request<DrilldownData>(
-        `/kpi/drilldown?${params}`,
-        "GET",
-      );
-      if (drillRes.ok) drilldown = drillRes.data ?? null;
-    }
+  fetchDrilldown: async () => {
+    const {
+      period,
+      customFrom,
+      customTo,
+      drillPath,
+      drillProcess,
+      drillShift,
+    } = get();
+    if (!drillPath.length) return;
 
-    set({ data: dashRes.data ?? null, drilldown, loading: false });
+    const requestId = ++drilldownRequestId;
+    set({ drillLoading: true });
+    const { from, to } = periodRange(period, customFrom, customTo);
+    const params = new URLSearchParams({
+      path: drillPath.map((s) => `${s.kind}:${s.id}`).join(">"),
+      from,
+      to,
+    });
+    if (drillProcess) params.set("process", drillProcess);
+    if (drillShift) params.set("shift", drillShift);
+
+    const drillRes = await request<DrilldownData>(
+      `/kpi/drilldown?${params}`,
+      "GET",
+    );
+    if (requestId !== drilldownRequestId) return; // réponse périmée
+
+    set({
+      drilldown: drillRes.ok ? (drillRes.data ?? null) : null,
+      drillLoading: false,
+    });
   },
 
   setPeriod: (period) => {
     set({ period });
-    void get().fetchDashboard();
+    void Promise.all([get().fetchDashboard(), get().fetchDrilldown()]);
   },
 
   setCustomRange: (customFrom, customTo) => {
     set({ period: "custom", customFrom, customTo });
-    void get().fetchDashboard();
+    void Promise.all([get().fetchDashboard(), get().fetchDrilldown()]);
   },
 
   openDrill: (step) => {
     set({ drillPath: [step], drillProcess: "", drillShift: "" });
-    void get().fetchDashboard();
+    void get().fetchDrilldown();
   },
 
   pushDrill: (step) => {
     set({ drillPath: [...get().drillPath, step] });
-    void get().fetchDashboard();
+    void get().fetchDrilldown();
   },
 
   popTo: (index) => {
     set({ drillPath: get().drillPath.slice(0, index + 1) });
-    void get().fetchDashboard();
+    void get().fetchDrilldown();
   },
 
   closeDrill: () => {
-    set({ drillPath: [], drilldown: null, drillProcess: "", drillShift: "" });
+    drilldownRequestId += 1; // toute réponse en vol devient périmée
+    set({
+      drillPath: [],
+      drilldown: null,
+      drillProcess: "",
+      drillShift: "",
+      drillLoading: false,
+    });
   },
 
   setDrillProcess: (drillProcess) => {
     set({ drillProcess });
-    void get().fetchDashboard();
+    void get().fetchDrilldown();
   },
 
   setDrillShift: (drillShift) => {
     set({ drillShift });
-    void get().fetchDashboard();
+    void get().fetchDrilldown();
   },
 }));
