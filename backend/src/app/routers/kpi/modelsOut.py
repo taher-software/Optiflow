@@ -70,11 +70,33 @@ class Bar(BaseModel):
     value: int = Field(..., description="Value — seconds or a count, per the section.")
 
 
+class ShiftWindow(BaseModel):
+    """One configured shift's real clock window, from the namespace's own
+    settings — the source of truth for a shift label's displayed hours
+    (e.g. "Équipe 2 (14h-22h)"), never a hardcoded table (§3 of
+    `.claude/specs/kpi-dashboard.md`)."""
+
+    id: str = Field(..., description='Shift id, `"1"`/`"2"`/`"3"`.')
+    start_time: str = Field(..., description='Shift start, `"HH:MM"`, as stored.')
+    end_time: str = Field(..., description='Shift end, `"HH:MM"`, as stored (may wrap midnight).')
+
+
 class NamespaceMeta(BaseModel):
     """Tenant meta that drives the dashboard's conditional breakdowns."""
 
     name: str = Field(..., description="Namespace display name (`company_name`, or '').")
     shift_number: int = Field(..., description="Number of shifts the plant runs per day.")
+    shifts: list[ShiftWindow] = Field(
+        default_factory=list,
+        description=(
+            "The namespace's actually-configured shift windows, in order "
+            "1->2->3 (reuses `_configured_shifts` — same shift-number bound "
+            "and unparsable-window skip as the KPI computations). Empty when "
+            "the namespace has no settings, or none of its shifts have a "
+            "usable window. May have fewer entries than `shift_number` when "
+            "a configured shift's window is missing/corrupted."
+        ),
+    )
     uap_count: int = Field(..., description="Number of UAPs in the namespace.")
     line_count: int = Field(..., description="Number of production lines in the namespace.")
     station_count: int = Field(..., description="Number of workstations in the namespace.")

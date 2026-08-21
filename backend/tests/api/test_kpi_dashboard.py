@@ -675,6 +675,106 @@ class TestDailyDeep:
         assert count_points["2026-06-06"] == 0
 
 
+class TestNamespaceMetaShifts:
+    """`namespace.shifts` — the real shift clock windows the frontend must
+    display next to a shift label (e.g. "Équipe 2 (14h-22h)"), instead of a
+    hardcoded table. Reuses `_configured_shifts` internally (services.py) —
+    these tests only check the field is threaded through onto the payload
+    correctly, not the selection logic itself (covered by
+    `test_kpi_helpers.py`)."""
+
+    def test_three_shifts_all_configured_returns_ordered_windows(
+        self, client, seed_user, auth_headers, fake_db
+    ):
+        owner = _owner(seed_user)
+        _seed_settings(
+            fake_db,
+            shift_number=3,
+            shift_1={"start_time": "06:00", "end_time": "14:00"},
+            shift_2={"start_time": "14:00", "end_time": "22:00"},
+            shift_3={"start_time": "22:00", "end_time": "06:00"},
+        )
+
+        res = client.get("/kpi/dashboard", params=_period(), headers=auth_headers(owner))
+        assert res.status_code == 200, res.text
+        shifts = res.json()["data"]["namespace"]["shifts"]
+
+        assert shifts == [
+            {"id": "1", "start_time": "06:00", "end_time": "14:00"},
+            {"id": "2", "start_time": "14:00", "end_time": "22:00"},
+            {"id": "3", "start_time": "22:00", "end_time": "06:00"},
+        ]
+
+    def test_single_shift_with_no_configured_window_returns_empty_list(
+        self, client, seed_user, auth_headers, fake_db
+    ):
+        owner = _owner(seed_user)
+        _seed_settings(fake_db, shift_number=1)  # shift_1/2/3 all None.
+
+        res = client.get("/kpi/dashboard", params=_period(), headers=auth_headers(owner))
+        assert res.status_code == 200, res.text
+        data = res.json()["data"]
+
+        assert data["namespace"]["shift_number"] == 1
+        assert data["namespace"]["shifts"] == []
+
+    def test_namespace_with_no_settings_document_returns_empty_list(
+        self, client, seed_user, auth_headers
+    ):
+        # No `_seed_settings` call at all -> `_namespace_context` defaults to
+        # `{}`, matching the empty-namespace smoke test in `test_kpi.py`.
+        owner = _owner(seed_user)
+
+        res = client.get("/kpi/dashboard", params=_period(), headers=auth_headers(owner))
+        assert res.status_code == 200, res.text
+        data = res.json()["data"]
+
+        assert data["namespace"]["shifts"] == []
+
+    def test_corrupted_shift_window_is_dropped_but_shift_number_unaffected(
+        self, client, seed_user, auth_headers, fake_db
+    ):
+        """A `shift_number` of 3 with one unparsable window still reports 3
+        (`by_shift`/MTBF behavior, unaffected by this unit), but `shifts`
+        only carries the 2 usable windows — never a partial/garbage entry."""
+        owner = _owner(seed_user)
+        _seed_settings(
+            fake_db,
+            shift_number=3,
+            shift_1={"start_time": "06:00", "end_time": "14:00"},
+            shift_2={"start_time": "not-a-time", "end_time": "22:00"},
+            shift_3={"start_time": "22:00", "end_time": "06:00"},
+        )
+
+        res = client.get("/kpi/dashboard", params=_period(), headers=auth_headers(owner))
+        assert res.status_code == 200, res.text
+        data = res.json()["data"]
+
+        assert data["namespace"]["shift_number"] == 3
+        assert data["namespace"]["shifts"] == [
+            {"id": "1", "start_time": "06:00", "end_time": "14:00"},
+            {"id": "3", "start_time": "22:00", "end_time": "06:00"},
+        ]
+
+    def test_midnight_wrapping_window_is_returned_as_stored(
+        self, client, seed_user, auth_headers, fake_db
+    ):
+        owner = _owner(seed_user)
+        _seed_settings(
+            fake_db,
+            shift_number=1,
+            shift_1={"start_time": "22:00", "end_time": "06:00"},
+        )
+
+        res = client.get("/kpi/dashboard", params=_period(), headers=auth_headers(owner))
+        assert res.status_code == 200, res.text
+        data = res.json()["data"]
+
+        assert data["namespace"]["shifts"] == [
+            {"id": "1", "start_time": "22:00", "end_time": "06:00"}
+        ]
+
+
 class TestOthersTypeSlug:
     def test_others_type_appears_in_by_type_and_downtime_by_type(
         self, client, seed_user, auth_headers, fake_db, freeze_kpi_clock

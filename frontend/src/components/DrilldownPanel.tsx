@@ -10,6 +10,7 @@ import {
   type BreakdownRow,
   type DrilldownData,
   type DrillStep,
+  type ShiftWindow,
 } from "../constants/dashboard";
 import { formatDuration } from "../utils/dashboardFormat";
 import { dimensionLabel } from "../utils/dashboardLabels";
@@ -23,6 +24,8 @@ interface DrilldownPanelProps {
   drilldown: DrilldownData;
   drillProcess: string;
   drillShift: string;
+  /** Fenêtres horaires réelles du tenant (`namespace.shifts`). */
+  shifts: ShiftWindow[];
   onPush: (row: BreakdownRow) => void;
   onPopTo: (index: number) => void;
   onClose: () => void;
@@ -39,6 +42,7 @@ export function DrilldownPanel({
   drilldown,
   drillProcess,
   drillShift,
+  shifts,
   onPush,
   onPopTo,
   onClose,
@@ -75,11 +79,11 @@ export function DrilldownPanel({
                 onClick={() => onPopTo(i)}
                 className="rounded px-1 text-[#4b5563] hover:text-[#0d9488]"
               >
-                {dimensionLabel(t, step.kind, step.id, step.label)}
+                {dimensionLabel(t, step.kind, step.id, step.label, shifts)}
               </button>
             ) : (
               <span className="px-1 text-[#16181d]">
-                {dimensionLabel(t, step.kind, step.id, step.label)}
+                {dimensionLabel(t, step.kind, step.id, step.label, shifts)}
               </span>
             )}
           </span>
@@ -93,7 +97,7 @@ export function DrilldownPanel({
             {t(`dashboard.dimension.${sel.kind}`)}
           </p>
           <h2 className="mt-0.5 text-lg font-bold text-[#16181d]">
-            {dimensionLabel(t, sel.kind, sel.id, sel.label)}
+            {dimensionLabel(t, sel.kind, sel.id, sel.label, shifts)}
           </h2>
           {sel.kind === "type" && TYPE_PROCESS[sel.id] && (
             <span className="mt-1.5 inline-flex items-center gap-1.5 rounded-lg bg-[#f3f4f6] px-2.5 py-1 text-[12px] text-[#4b5563]">
@@ -165,7 +169,11 @@ export function DrilldownPanel({
             )}
           </h4>
           <div className="grid gap-x-3 lg:grid-cols-2">
-            <DowntimeRows rows={drilldown.children} onSelect={onPush} />
+            <DowntimeRows
+              rows={drilldown.children}
+              shifts={shifts}
+              onSelect={onPush}
+            />
           </div>
         </div>
       )}

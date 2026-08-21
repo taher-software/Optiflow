@@ -157,6 +157,7 @@ export function DashboardPage() {
                   drilldown={drilldown}
                   drillProcess={drillProcess}
                   drillShift={drillShift}
+                  shifts={data.namespace.shifts}
                   onPush={push}
                   onPopTo={popTo}
                   onClose={closeDrill}
@@ -175,6 +176,7 @@ export function DashboardPage() {
                   <DowntimeRows
                     rows={data.by_shift}
                     activeId={activeId("shift")}
+                    shifts={data.namespace.shifts}
                     onSelect={open}
                   />
                 </Card>

@@ -51,6 +51,8 @@ Types miroir : `frontend/src/constants/dashboard.ts`.
 
 - `GET /kpi/dashboard?from&to` → `ApiResponse[DashboardData]` :
   `{ namespace: {name (= company_name du doc namespace), shift_number (settings),
+  shifts: [{id: "1"|"2"|"3", start_time: "HH:MM", end_time: "HH:MM"}] (fenêtres
+  réelles des settings — révision 2 ; liste vide si aucune n'est configurée),
   uap_count, line_count, station_count}, overall: Kpis,
   by_shift: BreakdownRow[], by_location: BreakdownRow[] (UAP si >1, sinon
   lignes si >1, sinon postes), pareto_by_process: [{id, share, cumulative}],
@@ -65,7 +67,10 @@ Types miroir : `frontend/src/constants/dashboard.ts`.
 - `GET /kpi/daily?metric&scope_kind&scope_id&process&shift&from&to` →
   `ApiResponse[{points: [{date, value}]}]` — bucketing par jour dans la tz du
   namespace. La comparaison = 2 appels côté client.
-- `Kpis = { downtime_seconds, count, mttr_seconds, mtbf_seconds, availability }`
+- `Kpis = { downtime_seconds, count, mttr_seconds, mtbf_seconds }`
+  (disponibilité supprimée en révision 2, §5bis.3)
+- Les horaires affichés à côté d'un libellé d'équipe (« Équipe 2 (14h–22h) »)
+  viennent de `namespace.shifts`, **jamais** d'une table codée en dur.
 - Scope = rôles de management (owner/admin/manager/production supervisor) ;
   tenant-scoped au namespace du caller.
 - Options de scope frontend : réutiliser `/uaps`, `/production-lines`,

@@ -1,4 +1,28 @@
-import type { DailyPoint, StatsMetric } from "../constants/dashboard";
+import type {
+  DailyPoint,
+  ShiftWindow,
+  StatsMetric,
+} from "../constants/dashboard";
+
+/** Heure « HH:MM » du backend → libellé lisible : "14:00" → "14h",
+ * "06:30" → "06h30". `null` si l'entrée n'est pas une heure valide. Pure. */
+export function formatClockTime(time: string): string | null {
+  const match = /^(\d{2}):(\d{2})$/.exec(time);
+  if (!match) return null;
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  if (hours > 23 || minutes > 59) return null;
+  return minutes === 0 ? `${match[1]}h` : `${match[1]}h${match[2]}`;
+}
+
+/** Fenêtre d'équipe → plage lisible : "06h–14h", "22h30–06h30" (tiret
+ * demi-cadratin). `null` dès qu'une borne est illisible. Pure. */
+export function formatShiftWindow(shift: ShiftWindow): string | null {
+  const start = formatClockTime(shift.start_time);
+  const end = formatClockTime(shift.end_time);
+  if (start === null || end === null) return null;
+  return `${start}–${end}`;
+}
 
 /** Durée humaine : "45 min", "2 h 05", "1 j 3 h". Pure. */
 export function formatDuration(seconds: number): string {

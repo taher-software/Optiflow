@@ -52,10 +52,21 @@ export interface Bar {
   value: number;
 }
 
+/** Fenêtre horaire réelle d'une équipe, telle que saisie dans les settings du
+ * plant (miroir exact du backend : heures locales « HH:MM »). */
+export interface ShiftWindow {
+  id: string;
+  start_time: string;
+  end_time: string;
+}
+
 /** Méta tenant qui pilote les décorticages conditionnels. */
 export interface NamespaceMeta {
   name: string;
   shift_number: number;
+  /** Fenêtres des équipes, ordonnées 1→2→3. Liste vide quand aucune n'est
+   * configurée (namespace sans settings, ou fenêtres illisibles). */
+  shifts: ShiftWindow[];
   uap_count: number;
   line_count: number;
   station_count: number;
@@ -179,9 +190,3 @@ export const TYPE_PROCESS: Record<string, string> = {
 };
 
 export const SHIFT_IDS = ["1", "2", "3"] as const;
-/** Fenêtres horaires d'affichage des équipes (mock — viendra des settings). */
-export const SHIFT_HOURS: Record<string, string> = {
-  "1": "06h–14h",
-  "2": "14h–22h",
-  "3": "22h–06h",
-};

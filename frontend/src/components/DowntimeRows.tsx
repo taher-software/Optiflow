@@ -1,6 +1,10 @@
 import { useTranslation } from "react-i18next";
 
-import { RAMP_DOWNTIME, type BreakdownRow } from "../constants/dashboard";
+import {
+  RAMP_DOWNTIME,
+  type BreakdownRow,
+  type ShiftWindow,
+} from "../constants/dashboard";
 import { formatDuration, shade } from "../utils/dashboardFormat";
 import { dimensionLabel } from "../utils/dashboardLabels";
 
@@ -8,12 +12,19 @@ interface DowntimeRowsProps {
   rows: BreakdownRow[];
   /** id de la rangée active (surlignée) le cas échéant. */
   activeId?: string;
+  /** Fenêtres horaires réelles du tenant, pour les rangées « équipe ». */
+  shifts?: ShiftWindow[];
   onSelect: (row: BreakdownRow) => void;
 }
 
 /** Rangées « temps d'arrêt » cliquables (style maquette) :
  * libellé + méta | barre rouge (intensité ∝ volume) | valeur | ›  */
-export function DowntimeRows({ rows, activeId, onSelect }: DowntimeRowsProps) {
+export function DowntimeRows({
+  rows,
+  activeId,
+  shifts,
+  onSelect,
+}: DowntimeRowsProps) {
   const { t } = useTranslation();
   if (rows.length === 0) return null;
   const max = Math.max(...rows.map((r) => r.kpis.downtime_seconds), 1);
@@ -36,7 +47,7 @@ export function DowntimeRows({ rows, activeId, onSelect }: DowntimeRowsProps) {
           >
             <span className="min-w-0">
               <span className="block truncate text-[13.5px] font-semibold text-[#16181d]">
-                {dimensionLabel(t, row.kind, row.id, row.label)}
+                {dimensionLabel(t, row.kind, row.id, row.label, shifts)}
               </span>
               <span className="block text-[11px] tabular-nums text-[#9ca3af]">
                 {t("dashboard.rowMeta", {

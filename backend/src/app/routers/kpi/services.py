@@ -78,6 +78,7 @@ from src.app.routers.kpi.modelsOut import (
     Kpis,
     NamespaceMeta,
     ParetoRow,
+    ShiftWindow,
 )
 
 logger = logging.getLogger(__name__)
@@ -1027,6 +1028,14 @@ def get_dashboard(query: DashboardQueryIn, namespace_id: str) -> DashboardData:
         namespace=NamespaceMeta(
             name=namespace.get("company_name") or "",
             shift_number=settings.get("shift_number", 1),
+            shifts=[
+                ShiftWindow(
+                    id=sid,
+                    start_time=shift.get("start_time", ""),
+                    end_time=shift.get("end_time", ""),
+                )
+                for sid, shift in _configured_shifts(settings)
+            ],
             uap_count=uap_count,
             line_count=line_count,
             station_count=station_count,
