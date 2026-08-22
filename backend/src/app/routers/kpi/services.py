@@ -1184,11 +1184,19 @@ def get_drilldown(query: DrilldownQueryIn, namespace_id: str) -> DrilldownData:
         current = [t for t in current if str(t.get("shift")) == query.shift]
         carry_overs = [t for t in carry_overs if str(t.get("shift")) == query.shift]
         dims_fixed.add("shift")
-    # Review fix W3: a `type` step no longer fixes `process` — since §5bis.7
-    # the process is read off each ticket, not inferred from its type, so a
-    # `type` slice can (and structurally does, for `setup_changeover`) span
-    # several processes. `pareto_by_process`/`repair_by_process` stay
-    # available on a type drill-down instead of being suppressed.
+    if type_in_path:
+        # Client decision (revises review fix W3): a downtime TYPE is now
+        # analyzed by WHO intervenes on it, not by process — a type slice
+        # structurally spans several processes (§5bis.7 reads process off
+        # each ticket, never infers it from the type), which is exactly why
+        # a per-process breakdown is not a meaningful lens for a type: the
+        # client wants `mttr_by_agent`/`count_by_agent` instead. Fixing
+        # `process` here is what suppresses `pareto_by_process` /
+        # `repair_by_process` below (`"process" not in dims_fixed`); a plain
+        # `process` query param (no `type` step) keeps its current, separate
+        # behavior untouched. `children` are unaffected — a type still
+        # decorticates by places, never by types.
+        dims_fixed.add("process")
 
     all_tickets = current + carry_overs
 
@@ -1287,10 +1295,13 @@ def get_drilldown(query: DrilldownQueryIn, namespace_id: str) -> DrilldownData:
             all_tickets, period_start, period_end, now, weight_of
         )
 
-    # Fix #13: a `type` step implies its process too, so the agent sections
-    # still make sense for it even though there's no single "effective
-    # process" value to compute for OTHERS/Setup-Changeover (the type's own
-    # ticket set already carries whatever process each ticket belongs to).
+    # Fix #13 / client decision above: a `type` step counts as "process
+    # effectively fixed" too (it now fixes `process` in `dims_fixed`), so the
+    # by-agent sections are computed for a type slice even though there's no
+    # single "effective process" value to name for OTHERS/Setup-Changeover
+    # (the type's own ticket set already carries whatever process each
+    # ticket belongs to, and `_by_agent_bars` doesn't need one — it groups by
+    # `resolved_by`, not by process).
     process_effectively_fixed = bool(query.process or process_in_path or type_in_path)
     mttr_by_agent = count_by_agent = None
     if process_effectively_fixed:

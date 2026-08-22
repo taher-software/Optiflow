@@ -218,7 +218,7 @@ const fr = {
         noLinesHint: "cette UAP n'a pas de lignes — postes directement",
         stationsHint: "postes de cette ligne",
         mttrByAgent: "MTTR par intervenant",
-        countByAgent: "Nb d'arrêts par intervenant",
+        countByAgent: "Nombre d'arrêts par intervenant",
         downtimeByShift: "Temps d'arrêt par équipe",
         downtimeByType: "Temps d'arrêt par type",
       },

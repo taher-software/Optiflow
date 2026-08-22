@@ -5,10 +5,16 @@ pydantic-settings>=2.6
 email-validator>=2.2
 google-cloud-firestore>=2.19
 google-cloud-tasks>=2.16
+# Imported lazily by `src.app.gcp.get_pubsub_publisher` (and only there), so a
+# missing SDK surfaces at the first publish in production, never at boot and
+# never in the test suite — keep it declared.
+google-cloud-pubsub>=2.23
+# Required by `src.app.gcp.gcs`, which currently has no caller in the codebase.
+google-cloud-storage>=2.18
 resend>=2.4
 bcrypt>=4.1
 itsdangerous>=2.2
-backoff
+backoff>=2.2
 requests>=2.32
 timezonefinder>=8.2
 geonamescache>=3.0

@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 
 import {
@@ -88,7 +89,6 @@ export function DrilldownPanel({
   const inPath = (kind: string) => path.some((s) => s.kind === kind);
   const showProcessFilter = !inPath("process") && !inPath("type");
   const showShiftFilter = !inPath("shift");
-  const isProcess = sel.kind === "process";
 
   return (
     <section className="mb-5 rounded-2xl border border-[#0d9488]/40 bg-white p-5 shadow-sm">
@@ -190,12 +190,7 @@ export function DrilldownPanel({
       )}
 
       {!loading && drilldown ? (
-        <DrilldownBody
-          drilldown={drilldown}
-          shifts={shifts}
-          isProcess={isProcess}
-          onPush={onPush}
-        />
+        <DrilldownBody drilldown={drilldown} shifts={shifts} onPush={onPush} />
       ) : (
         <DrilldownSkeleton label={t("dashboard.drill.loading")} />
       )}
@@ -206,18 +201,29 @@ export function DrilldownPanel({
 interface DrilldownBodyProps {
   drilldown: DrilldownData;
   shifts: ShiftWindow[];
-  isProcess: boolean;
   onPush: (row: BreakdownRow) => void;
+}
+
+/** Une section analytique : titre + graphique, rendue comme une cellule de la
+ * grille à deux colonnes. */
+function DrillSection({
+  title,
+  children,
+}: {
+  title: string;
+  children: ReactNode;
+}) {
+  return (
+    <div>
+      <h4 className="mb-2 text-[12px] font-bold text-[#4b5563]">{title}</h4>
+      {children}
+    </div>
+  );
 }
 
 /** Corps du panneau : KPIs de la tranche, enfants cliquables et sections
  * analytiques telles que le producteur les a fournies. */
-function DrilldownBody({
-  drilldown,
-  shifts,
-  isProcess,
-  onPush,
-}: DrilldownBodyProps) {
+function DrilldownBody({ drilldown, shifts, onPush }: DrilldownBodyProps) {
   const { t } = useTranslation();
 
   return (
@@ -245,89 +251,65 @@ function DrilldownBody({
         </div>
       )}
 
-      {/* Sections analytiques */}
-      {isProcess ? (
-        <div className="mt-4 grid gap-5 lg:grid-cols-2">
-          {drilldown.mttr_by_agent && (
-            <div>
-              <h4 className="mb-2 text-[12px] font-bold text-[#4b5563]">
-                {t("dashboard.drill.mttrByAgent")}
-              </h4>
-              <HBars
-                bars={drilldown.mttr_by_agent}
-                ramp={RAMP_REPAIR}
-                format={formatDuration}
-              />
-            </div>
-          )}
-          {drilldown.count_by_agent && (
-            <div>
-              <h4 className="mb-2 text-[12px] font-bold text-[#4b5563]">
-                {t("dashboard.drill.countByAgent")}
-              </h4>
-              <HBars
-                bars={drilldown.count_by_agent}
-                ramp={RAMP_COUNT[1]}
-                format={String}
-              />
-            </div>
-          )}
-        </div>
-      ) : (
-        <div className="mt-4 grid gap-5 lg:grid-cols-2">
-          <div>
-            {drilldown.pareto_by_process && (
-              <>
-                <h4 className="mb-2 text-[12px] font-bold text-[#4b5563]">
-                  {t("dashboard.cards.pareto")}
-                </h4>
-                <ParetoRows rows={drilldown.pareto_by_process} />
-              </>
-            )}
-            {drilldown.downtime_by_shift && (
-              <>
-                <h4 className="mb-2 mt-4 text-[12px] font-bold text-[#4b5563]">
-                  {t("dashboard.drill.downtimeByShift")}
-                </h4>
-                <HBars
-                  bars={drilldown.downtime_by_shift}
-                  ramp={RAMP_DOWNTIME}
-                  format={formatDuration}
-                  labelOf={(b) => t("dashboard.shiftN", { n: b.id })}
-                />
-              </>
-            )}
-          </div>
-          <div>
-            {drilldown.repair_by_process && (
-              <>
-                <h4 className="mb-2 text-[12px] font-bold text-[#4b5563]">
-                  {t("dashboard.cards.repair")}
-                </h4>
-                <HBars
-                  bars={drilldown.repair_by_process}
-                  ramp={RAMP_REPAIR}
-                  format={formatDuration}
-                  labelOf={(b) => t(`dashboard.process.${b.id}`)}
-                />
-              </>
-            )}
-            {drilldown.downtime_by_type && (
-              <>
-                <h4 className="mb-2 mt-4 text-[12px] font-bold text-[#4b5563]">
-                  {t("dashboard.drill.downtimeByType")}
-                </h4>
-                <HBars
-                  bars={drilldown.downtime_by_type}
-                  ramp={RAMP_DOWNTIME}
-                  format={formatDuration}
-                  labelOf={(b) => t(`dashboard.types.${b.id}`)}
-                />
-              </>
-            )}
-          </div>
-        </div>
-      )}
+      {/* Sections analytiques — une cellule par donnée effectivement fournie
+       * par le producteur, aucune règle sur la dimension sélectionnée. La
+       * grille place les cellules présentes de gauche à droite : deux
+       * sections remplissent une ligne, quatre en remplissent deux. */}
+      <div className="mt-4 grid gap-5 lg:grid-cols-2">
+        {drilldown.pareto_by_process && (
+          <DrillSection title={t("dashboard.cards.pareto")}>
+            <ParetoRows rows={drilldown.pareto_by_process} />
+          </DrillSection>
+        )}
+        {drilldown.repair_by_process && (
+          <DrillSection title={t("dashboard.cards.repair")}>
+            <HBars
+              bars={drilldown.repair_by_process}
+              ramp={RAMP_REPAIR}
+              format={formatDuration}
+              labelOf={(b) => t(`dashboard.process.${b.id}`)}
+            />
+          </DrillSection>
+        )}
+        {drilldown.mttr_by_agent && (
+          <DrillSection title={t("dashboard.drill.mttrByAgent")}>
+            <HBars
+              bars={drilldown.mttr_by_agent}
+              ramp={RAMP_REPAIR}
+              format={formatDuration}
+            />
+          </DrillSection>
+        )}
+        {drilldown.count_by_agent && (
+          <DrillSection title={t("dashboard.drill.countByAgent")}>
+            <HBars
+              bars={drilldown.count_by_agent}
+              ramp={RAMP_COUNT[1]}
+              format={String}
+            />
+          </DrillSection>
+        )}
+        {drilldown.downtime_by_shift && (
+          <DrillSection title={t("dashboard.drill.downtimeByShift")}>
+            <HBars
+              bars={drilldown.downtime_by_shift}
+              ramp={RAMP_DOWNTIME}
+              format={formatDuration}
+              labelOf={(b) => t("dashboard.shiftN", { n: b.id })}
+            />
+          </DrillSection>
+        )}
+        {drilldown.downtime_by_type && (
+          <DrillSection title={t("dashboard.drill.downtimeByType")}>
+            <HBars
+              bars={drilldown.downtime_by_type}
+              ramp={RAMP_DOWNTIME}
+              format={formatDuration}
+              labelOf={(b) => t(`dashboard.types.${b.id}`)}
+            />
+          </DrillSection>
+        )}
+      </div>
     </>
   );
 }

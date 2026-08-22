@@ -693,14 +693,23 @@ class TestWeightFollowsStoredScope:
 # --------------------------------------------------------------------------
 
 
-class TestTypeDrilldownProcessNoLongerImplied:
-    def test_type_spanning_two_processes_still_returns_pareto_and_repair_by_process(
+class TestTypeDrilldownIsByAgentNotByProcess:
+    """Client decision (revises review fix W3): a downtime TYPE is analyzed
+    by WHO intervenes on it, not by process — even though a type can
+    structurally span several processes (revision 2 reads `process` off the
+    ticket, not the type), a `type` drill-down suppresses
+    `pareto_by_process`/`repair_by_process` and returns `mttr_by_agent`/
+    `count_by_agent` instead, exactly as a `process` drill-down does."""
+
+    def test_type_spanning_two_processes_suppresses_pareto_and_repair_by_process(
         self, client, seed_user, auth_headers, fake_db
     ):
         owner = _owner(seed_user)
         _seed_settings(fake_db)
         # Two BREAKDOWN tickets whose own stored `process` disagree (allowed
-        # since revision 2 reads `process` off the ticket, not the type).
+        # since revision 2 reads `process` off the ticket, not the type) —
+        # this scenario stays relevant here precisely because it shows the
+        # process-spanning tickets still roll up cleanly by agent instead.
         _seed_issue(
             fake_db,
             down_time_type=DownTimeType.BREAKDOWN.value,
@@ -725,15 +734,72 @@ class TestTypeDrilldownProcessNoLongerImplied:
         )
         assert res.status_code == 200, res.text
         data = res.json()["data"]
-        assert "pareto_by_process" in data
-        assert "repair_by_process" in data
-        pareto_ids = {row["id"] for row in data["pareto_by_process"]}
-        assert pareto_ids == {Process.MAINTENANCE.value, Process.PRODUCTION.value}
-        repair_ids = {bar["id"] for bar in data["repair_by_process"]}
-        assert repair_ids == {Process.MAINTENANCE.value, Process.PRODUCTION.value}
+        assert "pareto_by_process" not in data
+        assert "repair_by_process" not in data
         # `downtime_by_type` stays suppressed — `type` is still the fixed
         # dimension of the path itself.
         assert "downtime_by_type" not in data
+
+    def test_type_drilldown_returns_mttr_and_count_by_agent(
+        self, client, seed_user, auth_headers, fake_db
+    ):
+        owner = _owner(seed_user)
+        _seed_settings(fake_db)
+        seed_user(
+            id="agent-1",
+            namespace_id=NS,
+            role=Role.MAINTENANCE_AGENT.value,
+            first_name="Jane",
+            last_name="Doe",
+        )
+        seed_user(
+            id="agent-2",
+            namespace_id=NS,
+            role=Role.MAINTENANCE_AGENT.value,
+            first_name="John",
+            last_name="Roe",
+        )
+        # Two BREAKDOWN tickets, each resolved by a different agent — process
+        # deliberately differs too, to show attribution is by `resolved_by`,
+        # never by process.
+        _seed_issue(
+            fake_db,
+            down_time_type=DownTimeType.BREAKDOWN.value,
+            process=Process.MAINTENANCE.value,
+            status=DownTimeStatus.CLOSED.value,
+            created_at=_utc(7),
+            resolved_at=_utc(8),
+            resolved_by="agent-1",
+        )
+        _seed_issue(
+            fake_db,
+            down_time_type=DownTimeType.BREAKDOWN.value,
+            process=Process.PRODUCTION.value,
+            status=DownTimeStatus.CLOSED.value,
+            created_at=_utc(9),
+            resolved_at=_utc(11),
+            resolved_by="agent-2",
+        )
+
+        res = client.get(
+            "/kpi/drilldown",
+            params={**_period(), "path": "type:break_down"},
+            headers=auth_headers(owner),
+        )
+        assert res.status_code == 200, res.text
+        data = res.json()["data"]
+        assert data["mttr_by_agent"] is not None
+        assert data["count_by_agent"] is not None
+
+        mttr_by_id = {row["id"]: row for row in data["mttr_by_agent"]}
+        assert mttr_by_id["agent-1"]["label"] == "Jane Doe"
+        assert mttr_by_id["agent-1"]["value"] == 3600
+        assert mttr_by_id["agent-2"]["label"] == "John Roe"
+        assert mttr_by_id["agent-2"]["value"] == 7200
+
+        count_by_id = {row["id"]: row for row in data["count_by_agent"]}
+        assert count_by_id["agent-1"]["value"] == 1
+        assert count_by_id["agent-2"]["value"] == 1
 
 
 # --------------------------------------------------------------------------

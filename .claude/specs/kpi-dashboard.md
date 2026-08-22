@@ -62,8 +62,14 @@ Types miroir : `frontend/src/constants/dashboard.ts`.
   suivant ; UAP sans lignes → postes), children_hint_key, et SEULEMENT les
   sections dont la dimension n'est ni dans le path ni fixée par filtre :
   pareto_by_process, repair_by_process, downtime_by_shift, downtime_by_type ;
-  pour un processus : mttr_by_agent, count_by_agent }`
-  Un type dans le path fixe aussi le processus (pas de pareto/repair).
+  pour un processus (ou un type, qui fixe aussi le processus — voir plus bas) :
+  mttr_by_agent, count_by_agent }`
+  Un type dans le path fixe aussi le processus : pas de pareto_by_process ni
+  repair_by_process pour un type (un type d'arrêt s'analyse par qui intervient
+  dessus, pas par processus — même si un type peut structurellement recouper
+  plusieurs processus, §5bis.7), mais mttr_by_agent/count_by_agent oui,
+  exactement comme pour une tranche processus. Les `children` d'une tranche
+  type restent inchangés (décorticage par endroits, jamais par types).
 - `GET /kpi/daily?metric&scope_kind&scope_id&process&shift&from&to` →
   `ApiResponse[{points: [{date, value}]}]` — bucketing par jour dans la tz du
   namespace. La comparaison = 2 appels côté client.

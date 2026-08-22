@@ -1,0 +1,12 @@
+# Development / test dependencies.
+#   pip install -r requirements-dev.txt
+# Installs the runtime dependencies too, so one command sets up a working
+# environment able to run both the app and the test suite.
+-r requirements.txt
+
+pytest>=8.3
+pytest-mock>=3.14
+factory-boy>=3.3
+# Required by `fastapi.testclient.TestClient` (used in tests/conftest.py);
+# FastAPI does not pull it in on its own.
+httpx>=0.27

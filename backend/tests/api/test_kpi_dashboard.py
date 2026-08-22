@@ -385,14 +385,15 @@ class TestDrilldownDeep:
         assert data["kpis"]["count"] == 1
         assert data["kpis"]["count"] != overall_count
 
-    def test_type_in_path_suppresses_only_type_section(
+    def test_type_in_path_suppresses_process_sections_and_type_section(
         self, client, seed_user, auth_headers, seeded_scenario, freeze_kpi_clock
     ):
-        """Review fix W3: since §5bis.7 the process comes from the ticket,
-        not the type, so a `type` step no longer fixes `process` —
-        `pareto_by_process`/`repair_by_process` stay available (only
-        `downtime_by_type` is suppressed, since `type` is the fixed
-        dimension itself)."""
+        """Client decision (revises review fix W3): a downtime TYPE is
+        analyzed by WHO intervenes on it, not by process, so a `type` step
+        fixes `process` again — `pareto_by_process`/`repair_by_process` are
+        suppressed for a type slice (along with `downtime_by_type`, since
+        `type` is the fixed dimension itself), while the by-agent sections
+        (fix #13) are what a type drill-down surfaces instead."""
         owner = _owner(seed_user)
 
         res = client.get(
@@ -402,12 +403,12 @@ class TestDrilldownDeep:
         )
         assert res.status_code == 200, res.text
         data = res.json()["data"]
-        assert "pareto_by_process" in data
-        assert "repair_by_process" in data
+        assert "pareto_by_process" not in data
+        assert "repair_by_process" not in data
         assert "downtime_by_type" not in data
         assert data["kpis"]["count"] == 2
-        # Fix #13: a `type` step still surfaces the agent sections (a
-        # selected process, direct or via type, returns them).
+        # A `type` step still surfaces the agent sections (a selected
+        # process, direct or via type, returns them).
         assert data["mttr_by_agent"] is not None
         assert data["count_by_agent"] is not None
 

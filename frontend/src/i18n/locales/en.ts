@@ -217,7 +217,7 @@ const en = {
         noLinesHint: "this area has no lines — stations directly",
         stationsHint: "stations of this line",
         mttrByAgent: "MTTR by responder",
-        countByAgent: "Downtimes by responder",
+        countByAgent: "Number of downtimes by responder",
         downtimeByShift: "Downtime by shift",
         downtimeByType: "Downtime by type",
       },
