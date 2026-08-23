@@ -1514,21 +1514,33 @@ def _filter_by_scope(
 def _daily_metric_value(
     metric: str,
     day_tickets: list[dict[str, Any]],
-    period_start: datetime,
-    period_end: datetime,
+    day_start: datetime,
+    day_end: datetime,
     now: datetime,
     weight_of: Optional[Callable[[dict[str, Any]], int]] = None,
 ) -> float:
+    """`metric`'s value for a single day.
+
+    `count`/`mttr`: `day_tickets` is that day's `created_at`-bucketed,
+    current-range-only tickets (unchanged) and `day_start`/`day_end` are
+    unused.
+
+    `duration`: `day_tickets` is instead the SAME full set for every day of
+    the period (`current + carry_overs`, no per-day bucketing) — each
+    ticket's downtime is clamped to `[day_start, day_end]` by
+    `_ticket_downtime_seconds`, which naturally floors a ticket that doesn't
+    touch this day to 0, so a multi-day ticket contributes its own slice to
+    every day it overlaps instead of a single lump sum on its creation day.
+    Weighted per workstation affected (§5bis.1bis), same as every other
+    downtime aggregation in this module.
+    """
     if metric == "count":
         return float(len(day_tickets))
     if metric == "mttr":
         return _mttr_seconds(day_tickets)
-    # "duration": each ticket's full period-clamped downtime, attributed
-    # wholly to its creation day (not re-clamped to the single day), weighted
-    # per workstation affected (§5bis.1bis).
     weight_fn = weight_of if weight_of is not None else _flat_weight
     return sum(
-        _ticket_downtime_seconds(issue, period_start, period_end, now) * weight_fn(issue)
+        _ticket_downtime_seconds(issue, day_start, day_end, now) * weight_fn(issue)
         for issue in day_tickets
     )
 
@@ -1568,10 +1580,7 @@ def get_daily(query: DailyQueryIn, namespace_id: str) -> DailyPointsOut:
         carry_overs = [t for t in carry_overs if str(t.get("shift")) == query.shift]
 
     # `count`/`mttr` bucket only current-range tickets, by their own
-    # `created_at` day (fix #1). `duration` also folds in carry-over
-    # tickets, but rather than splitting a multi-day carry-over's clamped
-    # downtime across every day it overlaps (invasive), it's attributed
-    # wholly to the window's FIRST day — documented simplification (fix #1).
+    # `created_at` day (fix #1) — unchanged.
     buckets: dict[date, list[dict[str, Any]]] = defaultdict(list)
     for issue in current:
         created_at = _parse_iso(issue.get("created_at"))
@@ -1579,14 +1588,27 @@ def get_daily(query: DailyQueryIn, namespace_id: str) -> DailyPointsOut:
             continue
         buckets[created_at.astimezone(tz).date()].append(issue)
 
+    # `duration` instead considers the SAME ticket set (current + carry_overs)
+    # for every day of the period — no bucketing by creation day, no special
+    # -casing of the first day — and lets `_ticket_downtime_seconds`'s own
+    # clamp restrict each ticket's contribution to that one day
+    # (`_daily_metric_value`'s docstring). This is what turns a multi-day
+    # downtime into a plateau across the days it actually spans instead of a
+    # single spike on its creation day, and stops a carry-over ticket from
+    # dumping its whole clamped duration onto the window's first day.
+    duration_tickets = current + carry_overs
+
     points: list[DailyPoint] = []
     day = query.date_from
     while day <= query.date_to:
-        day_tickets = buckets.get(day, [])
-        if query.metric == "duration" and day == query.date_from:
-            day_tickets = day_tickets + carry_overs
+        if query.metric == "duration":
+            day_start, day_end = _period_bounds(day, day, tz)
+            day_tickets = duration_tickets
+        else:
+            day_start, day_end = period_start, period_end
+            day_tickets = buckets.get(day, [])
         value = _daily_metric_value(
-            query.metric, day_tickets, period_start, period_end, now, weight_of
+            query.metric, day_tickets, day_start, day_end, now, weight_of
         )
         points.append(DailyPoint(date=day.isoformat(), value=int(round(value))))
         day += timedelta(days=1)

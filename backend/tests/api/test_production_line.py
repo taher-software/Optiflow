@@ -114,6 +114,165 @@ class TestCreateProductionLine:
         assert response.status_code == 403
 
 
+class TestProductionLineNameUniqueness:
+    """Name uniqueness is enforced per namespace, per resource type, on both
+    create and update. Comparison is on the name stripped and lowercased."""
+
+    def test_create_production_line_duplicate_name_returns_409(
+        self, client, seed_user, seed_uap, auth_headers
+    ):
+        owner = seed_user(role=Role.OWNER.value)
+        uap = seed_uap(namespace_id=owner["namespace_id"])
+        client.post(
+            PRODUCTION_LINES_URL,
+            json=ProductionLinePayloadFactory(name="Line 1", uap_id=uap["id"]),
+            headers=auth_headers(owner),
+        )
+
+        response = client.post(
+            PRODUCTION_LINES_URL,
+            json=ProductionLinePayloadFactory(name="Line 1", uap_id=uap["id"]),
+            headers=auth_headers(owner),
+        )
+
+        assert response.status_code == 409
+
+    def test_create_production_line_duplicate_name_different_case_returns_409(
+        self, client, seed_user, seed_uap, auth_headers
+    ):
+        owner = seed_user(role=Role.OWNER.value)
+        uap = seed_uap(namespace_id=owner["namespace_id"])
+        client.post(
+            PRODUCTION_LINES_URL,
+            json=ProductionLinePayloadFactory(name="Line 1", uap_id=uap["id"]),
+            headers=auth_headers(owner),
+        )
+
+        response = client.post(
+            PRODUCTION_LINES_URL,
+            json=ProductionLinePayloadFactory(name="line 1", uap_id=uap["id"]),
+            headers=auth_headers(owner),
+        )
+
+        assert response.status_code == 409
+
+    def test_create_production_line_duplicate_name_with_surrounding_spaces_returns_409(
+        self, client, seed_user, seed_uap, auth_headers
+    ):
+        owner = seed_user(role=Role.OWNER.value)
+        uap = seed_uap(namespace_id=owner["namespace_id"])
+        client.post(
+            PRODUCTION_LINES_URL,
+            json=ProductionLinePayloadFactory(name="Line 1", uap_id=uap["id"]),
+            headers=auth_headers(owner),
+        )
+
+        response = client.post(
+            PRODUCTION_LINES_URL,
+            json=ProductionLinePayloadFactory(name="  Line 1  ", uap_id=uap["id"]),
+            headers=auth_headers(owner),
+        )
+
+        assert response.status_code == 409
+
+    def test_create_production_line_free_name_returns_201(
+        self, client, seed_user, seed_uap, auth_headers
+    ):
+        owner = seed_user(role=Role.OWNER.value)
+        uap = seed_uap(namespace_id=owner["namespace_id"])
+        client.post(
+            PRODUCTION_LINES_URL,
+            json=ProductionLinePayloadFactory(name="Line 1", uap_id=uap["id"]),
+            headers=auth_headers(owner),
+        )
+
+        response = client.post(
+            PRODUCTION_LINES_URL,
+            json=ProductionLinePayloadFactory(name="Line 2", uap_id=uap["id"]),
+            headers=auth_headers(owner),
+        )
+
+        assert response.status_code == 201
+
+    def test_update_production_line_name_taken_by_another_line_returns_409(
+        self, client, seed_user, seed_uap, auth_headers
+    ):
+        owner = seed_user(role=Role.OWNER.value)
+        uap = seed_uap(namespace_id=owner["namespace_id"])
+        client.post(
+            PRODUCTION_LINES_URL,
+            json=ProductionLinePayloadFactory(name="Line 1", uap_id=uap["id"]),
+            headers=auth_headers(owner),
+        )
+        other = client.post(
+            PRODUCTION_LINES_URL,
+            json=ProductionLinePayloadFactory(name="Line 2", uap_id=uap["id"]),
+            headers=auth_headers(owner),
+        ).json()["data"]
+
+        response = client.put(
+            f"{PRODUCTION_LINES_URL}/{other['id']}",
+            json={"name": "Line 1"},
+            headers=auth_headers(owner),
+        )
+
+        assert response.status_code == 409
+
+    def test_update_production_line_keeping_own_name_different_case_returns_200(
+        self, client, seed_user, seed_uap, auth_headers
+    ):
+        owner = seed_user(role=Role.OWNER.value)
+        uap = seed_uap(namespace_id=owner["namespace_id"])
+        created = client.post(
+            PRODUCTION_LINES_URL,
+            json=ProductionLinePayloadFactory(name="Line 1", uap_id=uap["id"]),
+            headers=auth_headers(owner),
+        ).json()["data"]
+
+        response = client.put(
+            f"{PRODUCTION_LINES_URL}/{created['id']}",
+            json={"name": "line 1"},
+            headers=auth_headers(owner),
+        )
+
+        assert response.status_code == 200
+        assert response.json()["data"]["name"] == "line 1"
+
+    def test_create_production_line_same_name_in_another_namespace_returns_201(
+        self, client, seed_user, seed_uap, auth_headers
+    ):
+        owner = seed_user(role=Role.OWNER.value)
+        other_owner = seed_user(role=Role.OWNER.value)
+        uap = seed_uap(namespace_id=owner["namespace_id"])
+        other_uap = seed_uap(namespace_id=other_owner["namespace_id"])
+        client.post(
+            PRODUCTION_LINES_URL,
+            json=ProductionLinePayloadFactory(name="Line 1", uap_id=uap["id"]),
+            headers=auth_headers(owner),
+        )
+
+        response = client.post(
+            PRODUCTION_LINES_URL,
+            json=ProductionLinePayloadFactory(name="Line 1", uap_id=other_uap["id"]),
+            headers=auth_headers(other_owner),
+        )
+
+        assert response.status_code == 201
+
+    def test_create_production_line_blank_name_returns_422(
+        self, client, seed_user, seed_uap, auth_headers
+    ):
+        owner = seed_user(role=Role.OWNER.value)
+        uap = seed_uap(namespace_id=owner["namespace_id"])
+        payload = ProductionLinePayloadFactory(name="   ", uap_id=uap["id"])
+
+        response = client.post(
+            PRODUCTION_LINES_URL, json=payload, headers=auth_headers(owner)
+        )
+
+        assert response.status_code == 422
+
+
 class TestListProductionLines:
     """GET /production-lines"""
 

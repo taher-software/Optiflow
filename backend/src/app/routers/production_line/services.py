@@ -4,6 +4,7 @@ from typing import Any
 from fastapi import HTTPException, status
 
 from src.app.core.firestore import PRODUCTION_LINE_COLLECTION, UAP_COLLECTION
+from src.app.core.naming import assert_name_unique
 from src.app.gcp import get_firestore_client
 from src.app.gcp.firestore import FirestoreClient
 
@@ -47,6 +48,13 @@ def create_production_line(
 ) -> ProductionLineOut:
     client = get_firestore_client()
     _validate_uap_id(client, namespace_id, payload.uap_id)
+    assert_name_unique(
+        client,
+        PRODUCTION_LINE_COLLECTION,
+        namespace_id,
+        payload.name,
+        resource_label="production line",
+    )
 
     line_id = str(uuid.uuid4())
     doc: dict[str, Any] = {
@@ -91,6 +99,15 @@ def update_production_line(
 
     if payload.uap_id is not None:
         _validate_uap_id(client, namespace_id, payload.uap_id)
+    if payload.name is not None:
+        assert_name_unique(
+            client,
+            PRODUCTION_LINE_COLLECTION,
+            namespace_id,
+            payload.name,
+            exclude_id=line_id,
+            resource_label="production line",
+        )
 
     updates: dict[str, Any] = {}
     if payload.name is not None:

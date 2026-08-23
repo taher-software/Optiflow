@@ -116,7 +116,7 @@ from ._common import (
     schedule_escalation_cycle,
 )
 from .exceptions import FunctionalJobError, SystemJobError
-from src.app.routers.kpi.services import parse_hhmm as _parse_hhmm
+from src.app.core.shift_time import parse_hhmm as _parse_hhmm
 
 logger = logging.getLogger(__name__)
 

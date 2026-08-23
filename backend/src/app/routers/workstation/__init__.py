@@ -26,15 +26,23 @@ _workstation_read_scope = require_roles(
     status_code=status.HTTP_201_CREATED,
     summary="Create a new workstation",
     description=(
-        "Creates a workstation in the caller's namespace. `production_line_id` "
-        "is optional: omit it (or send `null`) for an independent workstation "
-        "not attached to any production line; if provided it must reference "
-        "an existing production line in the same namespace. `type` must be "
-        "one of the `WorkstationType` values. Restricted to owner/admin/"
-        "production supervisor."
+        "Creates a workstation in the caller's namespace. `name` must be "
+        "unique within the namespace (comparison ignores leading/trailing "
+        "whitespace and case). `production_line_id` is optional: omit it (or "
+        "send `null`) for an independent workstation not attached to any "
+        "production line; if provided it must reference an existing "
+        "production line in the same namespace. `type` must be one of the "
+        "`WorkstationType` values. Restricted to owner/admin/production "
+        "supervisor."
     ),
     responses={
         403: {"description": "Caller lacks the required role."},
+        409: {
+            "description": (
+                "A workstation with this name already exists in the caller's "
+                "namespace."
+            )
+        },
         422: {
             "description": (
                 "`production_line_id` does not reference an existing "
@@ -88,16 +96,26 @@ async def get_workstation(
     response_model=ApiResponse[WorkstationOut],
     summary="Update a workstation",
     description=(
-        "Partially updates a workstation in the caller's namespace. A field "
-        "omitted from the request body is left untouched. `production_line_id` "
-        "uses tri-state semantics: omit it to leave the current attachment "
-        "unchanged, provide a valid id to attach/re-attach the workstation to "
-        "that production line, or explicitly provide `null` to detach it "
-        "(making it independent). Restricted to owner/admin/production "
-        "supervisor."
+        "Partially updates a workstation in the caller's namespace. If "
+        "`name` is provided it must be unique within the namespace "
+        "(comparison ignores leading/trailing whitespace and case; the "
+        "workstation being updated is excluded from the comparison, so "
+        "keeping the same name, even with a different case, never "
+        "conflicts). A field omitted from the request body is left "
+        "untouched. `production_line_id` uses tri-state semantics: omit it "
+        "to leave the current attachment unchanged, provide a valid id to "
+        "attach/re-attach the workstation to that production line, or "
+        "explicitly provide `null` to detach it (making it independent). "
+        "Restricted to owner/admin/production supervisor."
     ),
     responses={
         404: {"description": "Workstation not found in the caller's namespace."},
+        409: {
+            "description": (
+                "A workstation with this name already exists in the caller's "
+                "namespace."
+            )
+        },
         422: {
             "description": (
                 "`production_line_id` does not reference an existing "

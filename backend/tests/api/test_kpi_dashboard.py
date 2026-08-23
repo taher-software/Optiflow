@@ -632,12 +632,14 @@ class TestDailyDeep:
         points = res.json()["data"]["points"]
         assert points == [{"date": "2026-04-01", "value": 1}]
 
-    def test_carry_over_ticket_duration_attributed_to_first_day(
-        self, client, seed_user, auth_headers, fake_db, seed_namespace
+    def test_carry_over_ticket_duration_spreads_over_every_day_it_touches(
+        self, client, seed_user, auth_headers, fake_db, seed_namespace, monkeypatch
     ):
-        """Fix #1 — `duration` folds in carry-over tickets too, attributed
-        wholly to the window's first day (documented simplification vs. a
-        per-day split); `count` does not (current-range only)."""
+        """A still-open carry-over ticket (created before the queried window)
+        now contributes its own in-window slice to EVERY day of the period —
+        not just the first day (the fixed defect this Work Unit corrects).
+        `count` still excludes carry-overs entirely (current-range only,
+        unchanged)."""
         ns = "ns-kpi-daily-carryover"
         seed_namespace(id=ns, timezone="UTC", company_name="Carryover Plant")
         owner = _owner(seed_user, namespace_id=ns)
@@ -647,6 +649,16 @@ class TestDailyDeep:
             status=DownTimeStatus.PENDING.value,
             created_at="2026-06-01T08:00:00+00:00",
         )
+        # `now` well after the queried window so the open ticket's clamp
+        # never truncates a day within it.
+        fixed = datetime(2026, 6, 10, 0, 0, 0)
+
+        class _FixedDatetime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return fixed.replace(tzinfo=tz) if tz else fixed
+
+        monkeypatch.setattr(kpi_services_module, "datetime", _FixedDatetime)
 
         res = client.get(
             "/kpi/daily",
@@ -660,8 +672,10 @@ class TestDailyDeep:
         )
         assert res.status_code == 200, res.text
         points = {p["date"]: p["value"] for p in res.json()["data"]["points"]}
-        assert points["2026-06-05"] > 0
-        assert points["2026-06-06"] == 0
+        # Ticket already ongoing at the start of both queried days -> each
+        # gets a full 24h, not a first-day-only lump sum.
+        assert points["2026-06-05"] == 86400
+        assert points["2026-06-06"] == 86400
 
         count_res = client.get(
             "/kpi/daily",
@@ -676,6 +690,305 @@ class TestDailyDeep:
         count_points = {p["date"]: p["value"] for p in count_res.json()["data"]["points"]}
         assert count_points["2026-06-05"] == 0
         assert count_points["2026-06-06"] == 0
+
+    def test_single_day_ticket_duration_is_unchanged(
+        self, client, seed_user, auth_headers, fake_db, seed_namespace
+    ):
+        """Non-regression: a ticket that both starts and ends within a
+        single day still reports its plain duration on that one day."""
+        ns = "ns-kpi-daily-single-day"
+        seed_namespace(id=ns, timezone="UTC", company_name="Single Day Plant")
+        owner = _owner(seed_user, namespace_id=ns)
+        _seed_issue(
+            fake_db,
+            namespace_id=ns,
+            status=DownTimeStatus.CLOSED.value,
+            created_at="2026-07-01T08:00:00+00:00",
+            resolved_at="2026-07-01T10:00:00+00:00",
+        )
+
+        res = client.get(
+            "/kpi/daily",
+            params={
+                "metric": "duration",
+                "scope_kind": "plant",
+                "from": "2026-07-01",
+                "to": "2026-07-02",
+            },
+            headers=auth_headers(owner),
+        )
+        assert res.status_code == 200, res.text
+        points = {p["date"]: p["value"] for p in res.json()["data"]["points"]}
+        assert points["2026-07-01"] == 7200
+        assert points["2026-07-02"] == 0
+
+    def test_multi_day_ticket_produces_a_plateau_not_a_spike(
+        self, client, seed_user, auth_headers, fake_db, seed_namespace
+    ):
+        """A ticket spanning 3 full calendar days, entirely inside the
+        queried period, is reported as 3 equal 24h daily values (a plateau)
+        instead of one spike on its creation day."""
+        ns = "ns-kpi-daily-plateau"
+        seed_namespace(id=ns, timezone="UTC", company_name="Plateau Plant")
+        owner = _owner(seed_user, namespace_id=ns)
+        _seed_issue(
+            fake_db,
+            namespace_id=ns,
+            status=DownTimeStatus.CLOSED.value,
+            created_at="2026-07-01T00:00:00+00:00",
+            resolved_at="2026-07-04T00:00:00+00:00",
+        )
+
+        res = client.get(
+            "/kpi/daily",
+            params={
+                "metric": "duration",
+                "scope_kind": "plant",
+                "from": "2026-07-01",
+                "to": "2026-07-03",
+            },
+            headers=auth_headers(owner),
+        )
+        assert res.status_code == 200, res.text
+        points = res.json()["data"]["points"]
+        assert [p["value"] for p in points] == [86400, 86400, 86400]
+
+    def test_carry_over_ticket_closed_mid_period_stops_contributing_after_close(
+        self, client, seed_user, auth_headers, fake_db, seed_namespace
+    ):
+        """A carry-over ticket closed in the middle of the period contributes
+        its correct partial share up to (and including part of) its closing
+        day, then 0 on every day after."""
+        ns = "ns-kpi-daily-carryover-closed"
+        seed_namespace(id=ns, timezone="UTC", company_name="Carryover Closed Plant")
+        owner = _owner(seed_user, namespace_id=ns)
+        _seed_issue(
+            fake_db,
+            namespace_id=ns,
+            status=DownTimeStatus.CLOSED.value,
+            created_at="2026-08-01T00:00:00+00:00",
+            resolved_at="2026-08-11T12:00:00+00:00",
+        )
+
+        res = client.get(
+            "/kpi/daily",
+            params={
+                "metric": "duration",
+                "scope_kind": "plant",
+                "from": "2026-08-10",
+                "to": "2026-08-12",
+            },
+            headers=auth_headers(owner),
+        )
+        assert res.status_code == 200, res.text
+        points = {p["date"]: p["value"] for p in res.json()["data"]["points"]}
+        assert points["2026-08-10"] == 86400
+        assert points["2026-08-11"] == 12 * 3600
+        assert points["2026-08-12"] == 0
+
+    def test_open_ticket_last_day_is_bounded_to_now(
+        self, client, seed_user, auth_headers, fake_db, seed_namespace, monkeypatch
+    ):
+        """A ticket opened within the period and still open, with `now`
+        falling in the middle of the last queried day: earlier days count in
+        full, the last day is clamped at `now`."""
+        ns = "ns-kpi-daily-now-clamp"
+        seed_namespace(id=ns, timezone="UTC", company_name="Now Clamp Plant")
+        owner = _owner(seed_user, namespace_id=ns)
+        _seed_issue(
+            fake_db,
+            namespace_id=ns,
+            status=DownTimeStatus.PENDING.value,
+            created_at="2026-09-01T08:00:00+00:00",
+        )
+        fixed = datetime(2026, 9, 3, 12, 0, 0)
+
+        class _FixedDatetime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return fixed.replace(tzinfo=tz) if tz else fixed
+
+        monkeypatch.setattr(kpi_services_module, "datetime", _FixedDatetime)
+
+        res = client.get(
+            "/kpi/daily",
+            params={
+                "metric": "duration",
+                "scope_kind": "plant",
+                "from": "2026-09-01",
+                "to": "2026-09-03",
+            },
+            headers=auth_headers(owner),
+        )
+        assert res.status_code == 200, res.text
+        points = {p["date"]: p["value"] for p in res.json()["data"]["points"]}
+        assert points["2026-09-01"] == 16 * 3600  # 08:00 -> day end.
+        assert points["2026-09-02"] == 86400
+        assert points["2026-09-03"] == 12 * 3600  # day start -> now (noon).
+
+    def test_daily_duration_weighted_by_line_station_count(
+        self,
+        client,
+        seed_user,
+        auth_headers,
+        fake_db,
+        seed_namespace,
+        seed_uap,
+        seed_production_line,
+        seed_workstation,
+        monkeypatch,
+    ):
+        """§5bis.1bis weighting still applies to the corrected per-day sum: a
+        ticket declared at line level multiplies every daily value by the
+        line's workstation count. Ticket is CLOSED with a fixed
+        `resolved_at`, so the frozen clock below (well after this ticket's
+        own dates) only exists to make the test independent of wall-clock
+        time — it does not affect the assertion."""
+        ns = "ns-kpi-daily-weighted"
+        seed_namespace(id=ns, timezone="UTC", company_name="Weighted Daily Plant")
+        owner = _owner(seed_user, namespace_id=ns)
+        uap = seed_uap(namespace_id=ns)
+        line = seed_production_line(namespace_id=ns, uap_id=uap["id"])
+        for _ in range(4):
+            seed_workstation(namespace_id=ns, production_line_id=line["id"])
+        _seed_issue(
+            fake_db,
+            namespace_id=ns,
+            down_time_scope="production line",
+            production_line_id=line["id"],
+            status=DownTimeStatus.CLOSED.value,
+            created_at="2026-10-01T00:00:00+00:00",
+            resolved_at="2026-10-03T00:00:00+00:00",
+        )
+        fixed = datetime(2026, 10, 10, 0, 0, 0)
+
+        class _FixedDatetime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return fixed.replace(tzinfo=tz) if tz else fixed
+
+        monkeypatch.setattr(kpi_services_module, "datetime", _FixedDatetime)
+
+        res = client.get(
+            "/kpi/daily",
+            params={
+                "metric": "duration",
+                "scope_kind": "plant",
+                "from": "2026-10-01",
+                "to": "2026-10-02",
+            },
+            headers=auth_headers(owner),
+        )
+        assert res.status_code == 200, res.text
+        points = res.json()["data"]["points"]
+        assert [p["value"] for p in points] == [4 * 86400, 4 * 86400]
+
+    def test_daily_duration_sum_matches_dashboard_downtime_seconds(
+        self, client, seed_user, auth_headers, fake_db, seed_namespace, monkeypatch
+    ):
+        """The corrected property: summing the `duration` daily series over a
+        period equals `/kpi/dashboard`'s `downtime_seconds` for that same
+        period/scope (within day-rounding tolerance)."""
+        ns = "ns-kpi-daily-consistency"
+        seed_namespace(id=ns, timezone="UTC", company_name="Consistency Plant")
+        owner = _owner(seed_user, namespace_id=ns)
+        fixed = datetime(2026, 11, 10, 0, 0, 0)
+
+        class _FixedDatetime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return fixed.replace(tzinfo=tz) if tz else fixed
+
+        monkeypatch.setattr(kpi_services_module, "datetime", _FixedDatetime)
+        # Fully in-range multi-day ticket.
+        _seed_issue(
+            fake_db,
+            namespace_id=ns,
+            status=DownTimeStatus.CLOSED.value,
+            created_at="2026-11-02T00:00:00+00:00",
+            resolved_at="2026-11-04T00:00:00+00:00",
+        )
+        # Carry-over ticket, created before the period, closed inside it.
+        _seed_issue(
+            fake_db,
+            namespace_id=ns,
+            status=DownTimeStatus.CLOSED.value,
+            created_at="2026-10-30T00:00:00+00:00",
+            resolved_at="2026-11-03T06:00:00+00:00",
+        )
+        # A same-day ticket.
+        _seed_issue(
+            fake_db,
+            namespace_id=ns,
+            status=DownTimeStatus.CLOSED.value,
+            created_at="2026-11-05T09:00:00+00:00",
+            resolved_at="2026-11-05T11:00:00+00:00",
+        )
+
+        period = {"from": "2026-11-01", "to": "2026-11-05"}
+        daily_res = client.get(
+            "/kpi/daily",
+            params={"metric": "duration", "scope_kind": "plant", **period},
+            headers=auth_headers(owner),
+        )
+        assert daily_res.status_code == 200, daily_res.text
+        daily_total = sum(p["value"] for p in daily_res.json()["data"]["points"])
+
+        dashboard_res = client.get("/kpi/dashboard", params=period, headers=auth_headers(owner))
+        assert dashboard_res.status_code == 200, dashboard_res.text
+        dashboard_total = dashboard_res.json()["data"]["overall"]["downtime_seconds"]
+
+        # Each of the 5 days rounds independently, so allow a small
+        # rounding-only tolerance rather than requiring exact equality.
+        assert abs(daily_total - dashboard_total) <= 5
+
+    def test_count_and_mttr_still_bucket_only_by_creation_day(
+        self, client, seed_user, auth_headers, fake_db, seed_namespace
+    ):
+        """Explicit non-regression: even for a multi-day ticket, `count`/
+        `mttr` keep bucketing by `created_at`'s own day only — no spreading,
+        no carry-overs."""
+        ns = "ns-kpi-daily-count-mttr-regression"
+        seed_namespace(id=ns, timezone="UTC", company_name="Count Mttr Plant")
+        owner = _owner(seed_user, namespace_id=ns)
+        _seed_issue(
+            fake_db,
+            namespace_id=ns,
+            status=DownTimeStatus.CLOSED.value,
+            created_at="2026-12-01T00:00:00+00:00",
+            resolved_at="2026-12-04T00:00:00+00:00",
+        )
+
+        count_res = client.get(
+            "/kpi/daily",
+            params={
+                "metric": "count",
+                "scope_kind": "plant",
+                "from": "2026-12-01",
+                "to": "2026-12-03",
+            },
+            headers=auth_headers(owner),
+        )
+        mttr_res = client.get(
+            "/kpi/daily",
+            params={
+                "metric": "mttr",
+                "scope_kind": "plant",
+                "from": "2026-12-01",
+                "to": "2026-12-03",
+            },
+            headers=auth_headers(owner),
+        )
+        assert count_res.status_code == 200, count_res.text
+        assert mttr_res.status_code == 200, mttr_res.text
+        count_points = {p["date"]: p["value"] for p in count_res.json()["data"]["points"]}
+        mttr_points = {p["date"]: p["value"] for p in mttr_res.json()["data"]["points"]}
+        assert count_points == {"2026-12-01": 1, "2026-12-02": 0, "2026-12-03": 0}
+        assert mttr_points == {
+            "2026-12-01": 3 * 86400,
+            "2026-12-02": 0,
+            "2026-12-03": 0,
+        }
 
 
 class TestNamespaceMetaShifts:

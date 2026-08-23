@@ -7,6 +7,7 @@ from src.app.core.firestore import (
     PRODUCTION_LINE_COLLECTION,
     WORKSTATION_COLLECTION,
 )
+from src.app.core.naming import assert_name_unique
 from src.app.gcp import get_firestore_client
 from src.app.gcp.firestore import FirestoreClient
 
@@ -52,6 +53,13 @@ def create_workstation(payload: CreateWorkstationIn, namespace_id: str) -> Works
 
     if payload.production_line_id is not None:
         _validate_production_line_id(client, namespace_id, payload.production_line_id)
+    assert_name_unique(
+        client,
+        WORKSTATION_COLLECTION,
+        namespace_id,
+        payload.name,
+        resource_label="workstation",
+    )
 
     station_id = str(uuid.uuid4())
     doc: dict[str, Any] = {
@@ -99,6 +107,14 @@ def update_workstation(
     updates: dict[str, Any] = {}
 
     if "name" in fields_set and payload.name is not None:
+        assert_name_unique(
+            client,
+            WORKSTATION_COLLECTION,
+            namespace_id,
+            payload.name,
+            exclude_id=station_id,
+            resource_label="workstation",
+        )
         updates["name"] = payload.name
     if "description" in fields_set and payload.description is not None:
         updates["description"] = payload.description

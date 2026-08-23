@@ -144,6 +144,130 @@ class TestCreateUap:
         assert response.status_code == 422
 
 
+class TestUapNameUniqueness:
+    """Name uniqueness is enforced per namespace, per resource type, on both
+    create and update. Comparison is on the name stripped and lowercased."""
+
+    def test_create_uap_duplicate_name_returns_409(
+        self, client, seed_user, auth_headers
+    ):
+        owner = seed_user(role=Role.OWNER.value)
+        client.post(
+            UAPS_URL, json=UapPayloadFactory(name="Assembly"), headers=auth_headers(owner)
+        )
+
+        response = client.post(
+            UAPS_URL, json=UapPayloadFactory(name="Assembly"), headers=auth_headers(owner)
+        )
+
+        assert response.status_code == 409
+
+    def test_create_uap_duplicate_name_different_case_returns_409(
+        self, client, seed_user, auth_headers
+    ):
+        owner = seed_user(role=Role.OWNER.value)
+        client.post(
+            UAPS_URL, json=UapPayloadFactory(name="Assembly"), headers=auth_headers(owner)
+        )
+
+        response = client.post(
+            UAPS_URL, json=UapPayloadFactory(name="assembly"), headers=auth_headers(owner)
+        )
+
+        assert response.status_code == 409
+
+    def test_create_uap_duplicate_name_with_surrounding_spaces_returns_409(
+        self, client, seed_user, auth_headers
+    ):
+        owner = seed_user(role=Role.OWNER.value)
+        client.post(
+            UAPS_URL, json=UapPayloadFactory(name="Assembly"), headers=auth_headers(owner)
+        )
+
+        response = client.post(
+            UAPS_URL,
+            json=UapPayloadFactory(name="  Assembly  "),
+            headers=auth_headers(owner),
+        )
+
+        assert response.status_code == 409
+
+    def test_create_uap_free_name_returns_201(self, client, seed_user, auth_headers):
+        owner = seed_user(role=Role.OWNER.value)
+        client.post(
+            UAPS_URL, json=UapPayloadFactory(name="Assembly"), headers=auth_headers(owner)
+        )
+
+        response = client.post(
+            UAPS_URL, json=UapPayloadFactory(name="Packaging"), headers=auth_headers(owner)
+        )
+
+        assert response.status_code == 201
+
+    def test_update_uap_name_taken_by_another_uap_returns_409(
+        self, client, seed_user, auth_headers
+    ):
+        owner = seed_user(role=Role.OWNER.value)
+        client.post(
+            UAPS_URL, json=UapPayloadFactory(name="Assembly"), headers=auth_headers(owner)
+        )
+        other = client.post(
+            UAPS_URL, json=UapPayloadFactory(name="Packaging"), headers=auth_headers(owner)
+        ).json()["data"]
+
+        response = client.put(
+            f"{UAPS_URL}/{other['id']}",
+            json={"name": "Assembly"},
+            headers=auth_headers(owner),
+        )
+
+        assert response.status_code == 409
+
+    def test_update_uap_keeping_own_name_different_case_returns_200(
+        self, client, seed_user, auth_headers
+    ):
+        owner = seed_user(role=Role.OWNER.value)
+        created = client.post(
+            UAPS_URL, json=UapPayloadFactory(name="Assembly"), headers=auth_headers(owner)
+        ).json()["data"]
+
+        response = client.put(
+            f"{UAPS_URL}/{created['id']}",
+            json={"name": "assembly"},
+            headers=auth_headers(owner),
+        )
+
+        assert response.status_code == 200
+        assert response.json()["data"]["name"] == "assembly"
+
+    def test_create_uap_same_name_in_another_namespace_returns_201(
+        self, client, seed_user, auth_headers
+    ):
+        owner = seed_user(role=Role.OWNER.value)
+        other_owner = seed_user(role=Role.OWNER.value)
+        client.post(
+            UAPS_URL, json=UapPayloadFactory(name="Assembly"), headers=auth_headers(owner)
+        )
+
+        response = client.post(
+            UAPS_URL,
+            json=UapPayloadFactory(name="Assembly"),
+            headers=auth_headers(other_owner),
+        )
+
+        assert response.status_code == 201
+
+    def test_create_uap_blank_name_returns_422(self, client, seed_user, auth_headers):
+        owner = seed_user(role=Role.OWNER.value)
+        payload = UapPayloadFactory(name="   ")
+
+        response = client.post(
+            UAPS_URL, json=payload, headers=auth_headers(owner)
+        )
+
+        assert response.status_code == 422
+
+
 class TestListUaps:
     """GET /uaps"""
 

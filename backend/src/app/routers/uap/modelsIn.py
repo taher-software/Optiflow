@@ -1,13 +1,22 @@
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+from src.app.core.naming import reject_blank_name
 
 
 class CreateUapIn(BaseModel):
     """Payload to create a new UAP (Unite Autonome de Production / production
     area) within the caller's namespace."""
 
-    name: str = Field(..., min_length=1, description="UAP name.")
+    name: str = Field(
+        ...,
+        min_length=1,
+        description=(
+            "UAP name. Must be unique within the namespace once stripped and "
+            "lowercased; must not be blank after stripping."
+        ),
+    )
     description: str = Field(default="", description="UAP description.")
     maintenance_agent_ids: list[str] = Field(
         default_factory=list,
@@ -42,6 +51,11 @@ class CreateUapIn(BaseModel):
         description="Ids of users with the 'production supervisor' role assigned to this UAP.",
     )
 
+    @field_validator("name")
+    @classmethod
+    def _reject_blank_name(cls, value: str) -> str:
+        return reject_blank_name(value)
+
 
 class UpdateUapIn(BaseModel):
     """Payload to update an existing UAP. All fields optional. A `None` list
@@ -57,3 +71,10 @@ class UpdateUapIn(BaseModel):
     maintenance_supervisor_ids: Optional[list[str]] = Field(default=None)
     quality_supervisor_ids: Optional[list[str]] = Field(default=None)
     production_supervisor_ids: Optional[list[str]] = Field(default=None)
+
+    @field_validator("name")
+    @classmethod
+    def _reject_blank_name(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return value
+        return reject_blank_name(value)

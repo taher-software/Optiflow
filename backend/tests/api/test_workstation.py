@@ -151,6 +151,156 @@ class TestCreateWorkstation:
         assert response.status_code == 403
 
 
+class TestWorkstationNameUniqueness:
+    """Name uniqueness is enforced per namespace, per resource type, on both
+    create and update. Comparison is on the name stripped and lowercased."""
+
+    def test_create_workstation_duplicate_name_returns_409(
+        self, client, seed_user, auth_headers
+    ):
+        owner = seed_user(role=Role.OWNER.value)
+        client.post(
+            WORKSTATIONS_URL,
+            json=WorkstationPayloadFactory(name="Press 1"),
+            headers=auth_headers(owner),
+        )
+
+        response = client.post(
+            WORKSTATIONS_URL,
+            json=WorkstationPayloadFactory(name="Press 1"),
+            headers=auth_headers(owner),
+        )
+
+        assert response.status_code == 409
+
+    def test_create_workstation_duplicate_name_different_case_returns_409(
+        self, client, seed_user, auth_headers
+    ):
+        owner = seed_user(role=Role.OWNER.value)
+        client.post(
+            WORKSTATIONS_URL,
+            json=WorkstationPayloadFactory(name="Press 1"),
+            headers=auth_headers(owner),
+        )
+
+        response = client.post(
+            WORKSTATIONS_URL,
+            json=WorkstationPayloadFactory(name="press 1"),
+            headers=auth_headers(owner),
+        )
+
+        assert response.status_code == 409
+
+    def test_create_workstation_duplicate_name_with_surrounding_spaces_returns_409(
+        self, client, seed_user, auth_headers
+    ):
+        owner = seed_user(role=Role.OWNER.value)
+        client.post(
+            WORKSTATIONS_URL,
+            json=WorkstationPayloadFactory(name="Press 1"),
+            headers=auth_headers(owner),
+        )
+
+        response = client.post(
+            WORKSTATIONS_URL,
+            json=WorkstationPayloadFactory(name="  Press 1  "),
+            headers=auth_headers(owner),
+        )
+
+        assert response.status_code == 409
+
+    def test_create_workstation_free_name_returns_201(
+        self, client, seed_user, auth_headers
+    ):
+        owner = seed_user(role=Role.OWNER.value)
+        client.post(
+            WORKSTATIONS_URL,
+            json=WorkstationPayloadFactory(name="Press 1"),
+            headers=auth_headers(owner),
+        )
+
+        response = client.post(
+            WORKSTATIONS_URL,
+            json=WorkstationPayloadFactory(name="Press 2"),
+            headers=auth_headers(owner),
+        )
+
+        assert response.status_code == 201
+
+    def test_update_workstation_name_taken_by_another_workstation_returns_409(
+        self, client, seed_user, auth_headers
+    ):
+        owner = seed_user(role=Role.OWNER.value)
+        client.post(
+            WORKSTATIONS_URL,
+            json=WorkstationPayloadFactory(name="Press 1"),
+            headers=auth_headers(owner),
+        )
+        other = client.post(
+            WORKSTATIONS_URL,
+            json=WorkstationPayloadFactory(name="Press 2"),
+            headers=auth_headers(owner),
+        ).json()["data"]
+
+        response = client.put(
+            f"{WORKSTATIONS_URL}/{other['id']}",
+            json={"name": "Press 1"},
+            headers=auth_headers(owner),
+        )
+
+        assert response.status_code == 409
+
+    def test_update_workstation_keeping_own_name_different_case_returns_200(
+        self, client, seed_user, auth_headers
+    ):
+        owner = seed_user(role=Role.OWNER.value)
+        created = client.post(
+            WORKSTATIONS_URL,
+            json=WorkstationPayloadFactory(name="Press 1"),
+            headers=auth_headers(owner),
+        ).json()["data"]
+
+        response = client.put(
+            f"{WORKSTATIONS_URL}/{created['id']}",
+            json={"name": "press 1"},
+            headers=auth_headers(owner),
+        )
+
+        assert response.status_code == 200
+        assert response.json()["data"]["name"] == "press 1"
+
+    def test_create_workstation_same_name_in_another_namespace_returns_201(
+        self, client, seed_user, auth_headers
+    ):
+        owner = seed_user(role=Role.OWNER.value)
+        other_owner = seed_user(role=Role.OWNER.value)
+        client.post(
+            WORKSTATIONS_URL,
+            json=WorkstationPayloadFactory(name="Press 1"),
+            headers=auth_headers(owner),
+        )
+
+        response = client.post(
+            WORKSTATIONS_URL,
+            json=WorkstationPayloadFactory(name="Press 1"),
+            headers=auth_headers(other_owner),
+        )
+
+        assert response.status_code == 201
+
+    def test_create_workstation_blank_name_returns_422(
+        self, client, seed_user, auth_headers
+    ):
+        owner = seed_user(role=Role.OWNER.value)
+        payload = WorkstationPayloadFactory(name="   ")
+
+        response = client.post(
+            WORKSTATIONS_URL, json=payload, headers=auth_headers(owner)
+        )
+
+        assert response.status_code == 422
+
+
 class TestListWorkstations:
     """GET /workstations"""
 

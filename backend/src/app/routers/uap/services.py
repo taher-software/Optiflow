@@ -4,6 +4,7 @@ from typing import Any
 from fastapi import HTTPException, status
 
 from src.app.core.firestore import UAP_COLLECTION, USERS_COLLECTION
+from src.app.core.naming import assert_name_unique
 from src.app.gcp import get_firestore_client
 from src.app.gcp.firestore import FirestoreClient
 from src.app.globals.enum import Role
@@ -110,6 +111,10 @@ def _validate_id_lists(
 def create_uap(payload: CreateUapIn, namespace_id: str) -> UapOut:
     client = get_firestore_client()
 
+    assert_name_unique(
+        client, UAP_COLLECTION, namespace_id, payload.name, resource_label="UAP"
+    )
+
     id_lists = {
         field: getattr(payload, field) for field in _LIST_ROLE_MAP
     }
@@ -151,6 +156,16 @@ def get_uap(uap_id: str, namespace_id: str) -> UapOut:
 def update_uap(uap_id: str, payload: UpdateUapIn, namespace_id: str) -> UapOut:
     client = get_firestore_client()
     uap = _load_scoped(client, uap_id, namespace_id)
+
+    if payload.name is not None:
+        assert_name_unique(
+            client,
+            UAP_COLLECTION,
+            namespace_id,
+            payload.name,
+            exclude_id=uap_id,
+            resource_label="UAP",
+        )
 
     provided_lists = {
         field: getattr(payload, field)

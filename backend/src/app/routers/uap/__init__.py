@@ -28,13 +28,16 @@ _uap_read_scope = require_roles(
     summary="Create a new UAP",
     description=(
         "Creates a UAP (Unite Autonome de Production / production area) in the "
-        "caller's namespace. Each of the 8 id lists must reference existing "
-        "users in the same namespace whose role matches the list (e.g. "
-        "`maintenance_agent_ids` members must have the 'maintenance agent' "
-        "role). Restricted to owner/admin/production supervisor."
+        "caller's namespace. `name` must be unique within the namespace "
+        "(comparison ignores leading/trailing whitespace and case). Each of "
+        "the 8 id lists must reference existing users in the same namespace "
+        "whose role matches the list (e.g. `maintenance_agent_ids` members "
+        "must have the 'maintenance agent' role). Restricted to owner/admin/"
+        "production supervisor."
     ),
     responses={
         403: {"description": "Caller lacks the required role."},
+        409: {"description": "A UAP with this name already exists in the caller's namespace."},
         422: {
             "description": (
                 "A referenced user id does not exist, is not in this "
@@ -88,13 +91,18 @@ async def get_uap(
     response_model=ApiResponse[UapOut],
     summary="Update a UAP",
     description=(
-        "Partially updates a UAP in the caller's namespace. Any of the 8 id "
-        "lists that is omitted (`None`) is left untouched; a provided list "
-        "(even an empty one) fully replaces the existing one, after "
-        "validation. Restricted to owner/admin/production supervisor."
+        "Partially updates a UAP in the caller's namespace. If `name` is "
+        "provided it must be unique within the namespace (comparison ignores "
+        "leading/trailing whitespace and case; the UAP being updated is "
+        "excluded from the comparison, so keeping the same name, even with a "
+        "different case, never conflicts). Any of the 8 id lists that is "
+        "omitted (`None`) is left untouched; a provided list (even an empty "
+        "one) fully replaces the existing one, after validation. Restricted "
+        "to owner/admin/production supervisor."
     ),
     responses={
         404: {"description": "UAP not found in the caller's namespace."},
+        409: {"description": "A UAP with this name already exists in the caller's namespace."},
         422: {
             "description": (
                 "A referenced user id does not exist, is not in this "

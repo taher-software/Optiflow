@@ -31,12 +31,20 @@ _production_line_read_scope = require_roles(
     status_code=status.HTTP_201_CREATED,
     summary="Create a new production line",
     description=(
-        "Creates a production line in the caller's namespace. `uap_id` must "
-        "reference an existing UAP (production area) in the same namespace. "
-        "Restricted to owner/admin/production supervisor."
+        "Creates a production line in the caller's namespace. `name` must be "
+        "unique within the namespace (comparison ignores leading/trailing "
+        "whitespace and case). `uap_id` must reference an existing UAP "
+        "(production area) in the same namespace. Restricted to owner/admin/"
+        "production supervisor."
     ),
     responses={
         403: {"description": "Caller lacks the required role."},
+        409: {
+            "description": (
+                "A production line with this name already exists in the "
+                "caller's namespace."
+            )
+        },
         422: {
             "description": "`uap_id` does not reference an existing UAP in this namespace."
         },
@@ -91,13 +99,23 @@ async def get_production_line(
     response_model=ApiResponse[ProductionLineOut],
     summary="Update a production line",
     description=(
-        "Partially updates a production line in the caller's namespace. Any "
-        "field omitted (`None`) is left untouched. If `uap_id` is provided it "
-        "is re-validated against the caller's namespace. Restricted to "
-        "owner/admin/production supervisor."
+        "Partially updates a production line in the caller's namespace. If "
+        "`name` is provided it must be unique within the namespace "
+        "(comparison ignores leading/trailing whitespace and case; the line "
+        "being updated is excluded from the comparison, so keeping the same "
+        "name, even with a different case, never conflicts). Any field "
+        "omitted (`None`) is left untouched. If `uap_id` is provided it is "
+        "re-validated against the caller's namespace. Restricted to owner/"
+        "admin/production supervisor."
     ),
     responses={
         404: {"description": "Production line not found in the caller's namespace."},
+        409: {
+            "description": (
+                "A production line with this name already exists in the "
+                "caller's namespace."
+            )
+        },
         422: {
             "description": "`uap_id` does not reference an existing UAP in this namespace."
         },
