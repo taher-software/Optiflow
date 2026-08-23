@@ -137,6 +137,21 @@ l'égalité — ajouter le filtrage par plage (`>=`/`<=` sur `created_at`).
      illisibles), pas pour un mono-équipe correctement configuré.
    - Écran Settings frontend : fenêtre demandée pour chaque shift y compris en
      mono-équipe, plus les horaires de pause de chaque shift.
+   - **Jour en cours (révision 6, retour arrière client sur la révision 5)** :
+     pour la tranche encore ouverte (`maintenant < fin de période`), le temps
+     planifié du jour compte l'**occupation du jour civil** par la fenêtre
+     du shift (et par sa pause, mesurée de la même façon). Pour un shift à
+     cheval sur minuit (ex. 22:00→06:00), le jour civil peut recouvrir la
+     fenêtre en **deux morceaux disjoints** : la queue de l'instance de la
+     veille (`[0, fin)`) plus le début de celle du soir (`[début,
+     maintenant]`) — les deux comptent, d'où une somme et non un seul
+     morceau. Concrètement pour 22:00→06:00 : 05:00 → 5 h, 10:00 → 6 h,
+     21:59 → 6 h, 22:00 → 6 h, 23:00 → 7 h. Le terme des jours entièrement
+     écoulés (`temps planifié/jour × nb de jours`) reste exact sous cette
+     sémantique : un jour civil complet contient toujours une fenêtre
+     entière de shift, que celle-ci soit à cheval sur minuit ou non ; ce
+     traitement « jour civil » ne s'applique qu'au dernier jour, encore en
+     cours.
 5. Tickets historiques **sans champ `shift`** : **exclus** du décorticage par
    équipe (pas de bucket « non affecté »).
 6. **MTTR par intervenant** : attribué à **`resolved_by`**.

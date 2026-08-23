@@ -52,6 +52,7 @@ from src.app.core.firestore import (
     WORKSTATION_COLLECTION,
 )
 from src.app.core.shift_time import break_minutes_in_window
+from src.app.core.shift_time import clock_window_elapsed_since_midnight
 from src.app.core.shift_time import parse_hhmm as _strict_parse_hhmm
 from src.app.core.timezone import namespace_timezone
 from src.app.gcp import get_firestore_client
@@ -306,25 +307,33 @@ def _parse_hhmm(value: str) -> Optional[int]:
         return None
 
 
-def _break_seconds(shift: dict[str, Any]) -> float:
-    """The shift's break duration in seconds (revision 3, §5bis.4bis), read
-    from `break_start_time`/`break_end_time`. `0.0` when the shift has no
-    break (either field absent/`None` — includes legacy documents with a
-    residual `break_minutes`, which is ignored) or when the pair fails
-    `break_minutes_in_window`'s validation (unparsable clock time, or a
-    corrupted/out-of-window pair on a stored document that predates
-    request-time validation): same tolerant-degrade philosophy as fix #9 —
-    logged, the break is ignored rather than failing the whole request."""
+def _valid_break(shift: dict[str, Any]) -> Optional[tuple[int, int, int]]:
+    """`(break_start_min, break_end_min, break_len_min)` — minutes-since
+    -midnight bounds of `shift`'s break, plus its validated length — the
+    single validate-and-parse routine shared by `_break_window` (offset
+    -from-shift-start space, used by `_elapsed_shift_seconds`'s default
+    mode) and `_elapsed_shift_seconds`'s current-day-only mode (real
+    clock-time space, via `clock_window_elapsed_since_midnight`).
+
+    `None` when the shift has no break (either field absent/`None` —
+    includes legacy documents with a residual `break_minutes`, which is
+    ignored) or when the pair fails `break_minutes_in_window`'s validation
+    (unparsable clock time, or a corrupted/out-of-window pair on a stored
+    document that predates request-time validation): same tolerant-degrade
+    philosophy as fix #9 — logged once here, the break is ignored rather
+    than failing the whole request."""
     break_start = shift.get("break_start_time")
     break_end = shift.get("break_end_time")
     if not break_start or not break_end:
-        return 0.0
+        return None
+    start = _parse_hhmm(shift.get("start_time", ""))
+    break_start_min = _parse_hhmm(break_start)
+    break_end_min = _parse_hhmm(break_end)
+    if start is None or break_start_min is None or break_end_min is None:
+        return None
     try:
-        return float(
-            break_minutes_in_window(
-                shift.get("start_time", ""), shift.get("end_time", ""), break_start, break_end
-            )
-            * 60
+        break_len_minutes = break_minutes_in_window(
+            shift.get("start_time", ""), shift.get("end_time", ""), break_start, break_end
         )
     except ValueError:
         logger.warning(
@@ -332,7 +341,32 @@ def _break_seconds(shift: dict[str, Any]) -> float:
             break_start,
             break_end,
         )
-        return 0.0
+        return None
+    return break_start_min, break_end_min, break_len_minutes
+
+
+def _break_window(shift: dict[str, Any]) -> Optional[tuple[float, float]]:
+    """`(break_start_offset_seconds, break_length_seconds)`, `break_start_offset`
+    measured as a circular "distance since the shift's own start" (same
+    convention as `_elapsed_shift_seconds`'s default-mode `window_elapsed` —
+    this is what lets both midnight-wrap without a cascade of special cases:
+    a break is just another point expressed in the same offset space as
+    "now"). `None` per `_valid_break`'s degrade rules."""
+    start = _parse_hhmm(shift.get("start_time", ""))
+    parsed = _valid_break(shift)
+    if start is None or parsed is None:
+        return None
+    break_start_min, _break_end_min, break_len_minutes = parsed
+    offset_minutes = (break_start_min - start) % (24 * 60)
+    return offset_minutes * 60.0, break_len_minutes * 60.0
+
+
+def _break_seconds(shift: dict[str, Any]) -> float:
+    """The shift's break duration in seconds (revision 3, §5bis.4bis) — see
+    `_break_window` for the validation/degrade rules. `0.0` when the shift
+    has no (valid) break."""
+    window = _break_window(shift)
+    return window[1] if window is not None else 0.0
 
 
 def _shift_window_seconds(shift: dict[str, Any]) -> Optional[float]:
@@ -387,45 +421,124 @@ def _seconds_of_day(dt: datetime) -> float:
     return dt.hour * 3600.0 + dt.minute * 60.0 + dt.second + dt.microsecond / 1_000_000.0
 
 
-def _elapsed_shift_seconds(shift: dict[str, Any], now_local: datetime) -> float:
-    """Seconds of `shift`'s clock window elapsed by `now_local`'s
-    time-of-day (namespace-local), clamped to `[0, full window length]`.
-    Midnight-wrap aware. 0 when the window doesn't parse."""
+def _elapsed_shift_seconds(
+    shift: dict[str, Any], now_local: datetime, current_day_only: bool = False
+) -> float:
+    """Seconds **actually worked** in `shift`, net of its break (revision 3,
+    §5bis.4bis; client decision: no more proration, this IS the real worked
+    time, not an estimate of it). Two modes, selected by `current_day_only`:
+
+    - `current_day_only=False` (default) — the **current or most recent
+      instance**'s progress by `now_local`'s time-of-day: that instance's raw
+      clock-window elapsed time, net of break. Unchanged from before this
+      mode existed; every existing caller keeps this behavior.
+    - `current_day_only=True` — how much of the shift's window (and its
+      break) TODAY's civil day has occupied by `now_local`
+      (`clock_window_elapsed_since_midnight`), net of whatever part of the
+      break has elapsed under that same civil-day measurement.
+
+    Both modes agree exactly for a shift whose window doesn't cross midnight
+    (the whole window lives on one civil day already, so "this instance's
+    progress" and "today's civil-day occupation" are the same slice). They
+    only diverge for a midnight-wrapping shift (`end_time <= start_time`,
+    e.g. 22:00->06:00): `current_day_only=False` saturates to the full
+    window once the current/most recent instance has completed (see below);
+    `current_day_only=True` instead sums BOTH pieces of today's civil day
+    that the window touches — the tail of last night's instance, `[0,
+    end_time)`, plus however much of tonight's instance has run so far,
+    `[start_time, now_local]` — since a midnight-wrapping window can occupy
+    two disjoint slices of one civil day. Concretely, for 22:00->06:00:
+    05:00 -> 5h, 10:00 -> 6h, 21:59 -> 6h, 22:00 -> 6h, 23:00 -> 7h
+    (`clock_window_elapsed_since_midnight`).
+
+    Break netting, both modes, follows the same principle as the window
+    itself — measure the break exactly like the window, so the two stay
+    consistent:
+    - `current_day_only=False`: the raw window-elapsed time and the break's
+      own start are compared as circular "distance since the shift's
+      start" offsets (`window_elapsed` / `_break_window`'s offset) — before
+      the break starts -> unchanged; during the break -> pinned to the
+      elapsed time AT the break's start; after the break ends -> its full
+      duration is deducted. Comparing two offsets in the same space is what
+      makes the midnight-wrap case correct without extra special-casing.
+    - `current_day_only=True`: window and break are both literal clock
+      positions on today's civil day, so applying
+      `clock_window_elapsed_since_midnight` directly to the break's own
+      real clock bounds and subtracting is already coherent — entirely
+      elapsed -> deducted in full; `now_local` mid-break -> only the
+      elapsed part is deducted; not yet reached -> nothing deducted; and
+      for a midnight-wrapping break, both of its own civil-day pieces are
+      summed the same way the shift's window is.
+    Example — the client's break case, 22:00->06:00 shift, break
+    23:30->00:30, `now_local` = 23:45: window 7h45 (civil-day occupation),
+    break 45min elapsed (yesterday's 00:00->00:30 tail + tonight's
+    23:30->23:45 so far) -> net 7h.
+
+    For a non-wrapping shift, `current_day_only=False` saturates to the full
+    window (net of break) once `now_local` is past `end_time`, and stays
+    there until the next instance starts the following day. For a
+    midnight-wrapping shift, the *current or most recent* instance is: the
+    one running now if `now_local` is inside `[start_time, 24h)` or `[0,
+    end_time]`; otherwise — `now_local` is past that instance's end and
+    before its next start — the most recent instance already ran to
+    completion, so this also saturates to the full window (net of break),
+    exactly like the non-wrapping case. It resets to 0 only at the exact
+    instant the next instance starts.
+
+    Clamped to `[0, _shift_window_seconds(shift)]`. Midnight-wrap aware. A
+    shift with no (valid) break falls back to the raw elapsed time unchanged;
+    an unparsable window returns 0."""
     start = _parse_hhmm(shift.get("start_time", ""))
     end = _parse_hhmm(shift.get("end_time", ""))
     if start is None or end is None:
         return 0.0
     start_sec, end_sec = start * 60.0, end * 60.0
     now_sec = _seconds_of_day(now_local)
+
+    if current_day_only:
+        window_elapsed = clock_window_elapsed_since_midnight(now_sec, start_sec, end_sec)
+        parsed_break = _valid_break(shift)
+        if parsed_break is None:
+            return window_elapsed
+
+        # Window and break are both literal clock positions on today's
+        # civil day, so applying the SAME primitive directly to the break's
+        # own real clock bounds and subtracting is already coherent — this
+        # is what keeps the two measurements (window/break) consistent with
+        # each other under the "civil day occupation" semantics.
+        break_start_min, break_end_min, _break_len_min = parsed_break
+        break_elapsed = clock_window_elapsed_since_midnight(
+            now_sec, break_start_min * 60.0, break_end_min * 60.0
+        )
+        return max(0.0, window_elapsed - break_elapsed)
+
     if end_sec > start_sec:
-        return min(max(now_sec - start_sec, 0.0), end_sec - start_sec)
-    # Midnight-wrap window: [start, 24h) followed by [0, end).
-    day_sec = 24 * 3600.0
-    if now_sec >= start_sec:
-        return now_sec - start_sec
-    if now_sec <= end_sec:
-        return (day_sec - start_sec) + now_sec
-    return 0.0
+        window_elapsed = min(max(now_sec - start_sec, 0.0), end_sec - start_sec)
+    else:
+        # Midnight-wrap window: [start, 24h) followed by [0, end).
+        day_sec = 24 * 3600.0
+        if now_sec >= start_sec:
+            window_elapsed = now_sec - start_sec
+        elif now_sec <= end_sec:
+            window_elapsed = (day_sec - start_sec) + now_sec
+        else:
+            # `now` is past this shift's end and before its next start: the
+            # most recent instance (the one that started the previous day)
+            # already ran to completion. Saturate to the full window length
+            # instead of falling back to 0 — same value the branch above
+            # converges to as `now_sec` -> `end_sec`, so this is its natural
+            # continuation, not a separate case.
+            window_elapsed = (day_sec - start_sec) + end_sec
 
-
-def _shift_seconds_prorated(shift: dict[str, Any], now_local: datetime) -> float:
-    """`shift`'s planned seconds (its window, net of its break — revision 3,
-    §5bis.4bis, see `_shift_window_seconds`), prorated by the elapsed
-    fraction of the shift's own **raw clock window** as of `now_local` (fix
-    #2). The fraction denominator is deliberately the full window, not the
-    break-adjusted one: a linear approximation of "how far into today's
-    shift are we", not a break-aware simulation of exactly when the break
-    falls. 0 when the window doesn't parse or has zero length."""
-    start = _parse_hhmm(shift.get("start_time", ""))
-    end = _parse_hhmm(shift.get("end_time", ""))
-    if start is None or end is None:
-        return 0.0
-    window_minutes = (end - start) if end > start else (24 * 60 - start) + end
-    if window_minutes <= 0:
-        return 0.0
-    elapsed = _elapsed_shift_seconds(shift, now_local)
-    fraction = min(elapsed / (window_minutes * 60.0), 1.0)
-    return fraction * (_shift_window_seconds(shift) or 0.0)
+    break_window = _break_window(shift)
+    if break_window is None:
+        return window_elapsed
+    break_offset, break_len = break_window
+    if window_elapsed <= break_offset:
+        return window_elapsed
+    if window_elapsed >= break_offset + break_len:
+        return window_elapsed - break_len
+    return break_offset
 
 
 def _planned_seconds(
@@ -438,10 +551,37 @@ def _planned_seconds(
     """Planned production seconds over `[period_start, min(period_end,
     now)]` (fix #2): whole elapsed days each count their full per-day
     planned time; if the queried period isn't over yet (`now < period_end`),
-    the still-in-progress final day is prorated by the elapsed fraction of
-    each configured shift's clock window (namespace-local) instead of
-    counting it in full. 0 when the effective window is empty or there's no
-    positive planned time at all."""
+    the still-in-progress final day counts each configured shift's actually
+    -worked time so far TODAY (namespace-local), net of its break, per
+    `_elapsed_shift_seconds(..., current_day_only=True)` (revision 3,
+    §5bis.4bis — no more proration: the elapsed-time computation IS the real
+    worked time, not an estimate of it; revision 4 — `current_day_only=True`
+    specifically, not the default mode: for a midnight-wrapping shift the
+    default mode measures progress through that shift's own *instance*,
+    which for e.g. a 22:00->06:00 shift queried at 10:00 today would count
+    the full 8h instance (started yesterday 22:00) as "today's" planned time
+    — overcounting by the ~2h that actually belongs to yesterday. The
+    current-day mode instead reports how much of TODAY's civil day the
+    shift's window has occupied (§5bis.4bis; see
+    `clock_window_elapsed_since_midnight`): for that same 22:00->06:00 shift,
+    that's the tail of yesterday's instance (`[0, 06:00)`) PLUS however much
+    of tonight's instance has run so far (`[22:00, now]`) — a midnight
+    -wrapping window can occupy two disjoint slices of one civil day, and
+    both count toward today's planned time.
+
+    Full-elapsed-days term (`per_day * full_days` below) stays exact
+    regardless: it's `_planned_seconds_per_day`'s own per-day total (the
+    same figure this module already uses everywhere else for a fully
+    -elapsed day), multiplied by the day count — entirely independent of
+    `_elapsed_shift_seconds`/`current_day_only`. This is exact even for a
+    midnight-wrapping shift: each civil day's two disjoint slices
+    (yesterday's tail + tonight's start) sum to exactly one full window's
+    worth of planned time, so per-day totals still add up correctly across
+    a multi-day range. Only the LAST, still-open day uses the
+    current-day-only treatment, and only for that day.
+
+    0 when the effective window is empty or there's no positive planned time
+    at all."""
     effective_end = min(period_end, now)
     if effective_end <= period_start:
         return 0.0
@@ -465,7 +605,10 @@ def _planned_seconds(
         # starting at local midnight.
         last_day_planned = min(_seconds_of_day(effective_end), 24 * 3600.0)
     else:
-        last_day_planned = sum(_shift_seconds_prorated(shift, effective_end) for _, shift in shifts)
+        last_day_planned = sum(
+            _elapsed_shift_seconds(shift, effective_end, current_day_only=True)
+            for _, shift in shifts
+        )
 
     return per_day * full_days + last_day_planned
 
@@ -697,8 +840,8 @@ def _group_by_shift(
     no configured clock window emits no row at all (fix #3/#5 companion: a
     row with a permanently `None` planned time isn't useful). Tickets
     without a stored `shift` are excluded (no "unassigned" bucket). Each
-    shift's own planned time (its own window, carried-to-now/prorated per
-    fix #2) feeds its MTBF; downtime aggregates current + carry-over tickets
+    shift's own planned time (its own window minus its break, counted up to
+    now for the in-progress day per §5bis.4bis) feeds its MTBF; downtime aggregates current + carry-over tickets
     (fix #1), weighted per ticket (§5bis.1bis) — count/mttr stay on
     current-range only, unweighted."""
     shift_number = settings.get("shift_number", 1)

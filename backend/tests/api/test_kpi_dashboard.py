@@ -191,10 +191,12 @@ class TestDashboardExactNumbers:
         assert data["overall"]["mttr_seconds"] == 5400
         # planned (fix #2, no break deducted since revision 2 §5bis.3/4):
         # `freeze_kpi_clock` pins "now" to 18:00 Paris, BEFORE the queried
-        # day's end -> the day is prorated instead of counted in full.
-        # Shift 1 (06:00-14:00) is fully elapsed by 18:00 (8h = 28800s);
-        # shift 2 (14:00-22:00) is half elapsed (4h of its 8h window ->
-        # 0.5 * 28800 = 14400s). planned = 28800 + 14400 = 43200s.
+        # day's end -> each shift counts its own actually-elapsed time so
+        # far, not its full window (revision 3, §5bis.4bis: no break here,
+        # so elapsed == raw window-elapsed). Shift 1 (06:00-14:00) is fully
+        # elapsed by 18:00 (8h = 28800s); shift 2 (14:00-22:00) is half
+        # elapsed (4h of its 8h window = 14400s). planned = 28800 + 14400 =
+        # 43200s.
         assert data["overall"]["mtbf_seconds"] == 14400
 
         # by_shift: ticket C (no `shift` field) excluded entirely.
@@ -948,9 +950,9 @@ class TestMtbfPlannedTimeRevision3:
     3: required from `shift_number == 1`) instead of the 24h/day fallback,
     and its planned time (MTBF's numerator) is net of its break. All 3
     scenarios freeze "now" at 18:00 Paris, strictly after the 06:00-14:00
-    shift's raw window closes, so `_shift_seconds_prorated`'s elapsed
-    fraction is 1.0 and the full (break-adjusted) per-day planned time
-    counts without proration noise."""
+    shift's raw window closes, so `_elapsed_shift_seconds` is already at its
+    max (the full, break-adjusted per-day planned time) — no partial-day
+    noise to account for."""
 
     def test_configured_mono_shift_mtbf_is_window_minus_break(
         self, client, seed_user, auth_headers, fake_db, freeze_kpi_clock
@@ -1030,3 +1032,218 @@ class TestMtbfPlannedTimeRevision3:
         assert res.status_code == 200, res.text
         # Break ignored -> full 8h window counts, same as no-break case.
         assert res.json()["data"]["overall"]["mtbf_seconds"] == 8 * 3600
+
+    def test_mtbf_of_in_progress_day_nets_out_a_pause_already_passed(
+        self, client, seed_user, auth_headers, fake_db, monkeypatch
+    ):
+        """C1/C2 end-to-end (revision 3, §5bis.4bis): "now" is frozen
+        mid-shift, strictly AFTER the configured break has ended — the
+        current, not-yet-finished day's planned time (MTBF's denominator,
+        since there are 0 tickets) must be the shift's raw elapsed time
+        (12:00 - 06:00 = 6h) minus the break's full 30min duration, NOT the
+        old fractional estimate (elapsed/window * break-adjusted-window)."""
+        owner = _owner(seed_user)
+        _seed_settings(
+            fake_db,
+            shift_number=1,
+            shift_1={
+                "start_time": "06:00",
+                "end_time": "14:00",
+                "break_start_time": "10:00",
+                "break_end_time": "10:30",
+            },
+        )
+        fixed = datetime(2026, 1, 15, 12, 0, 0)
+
+        class _FixedDatetime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return fixed.replace(tzinfo=tz) if tz else fixed
+
+        monkeypatch.setattr(kpi_services_module, "datetime", _FixedDatetime)
+
+        res = client.get("/kpi/dashboard", params=_period(), headers=auth_headers(owner))
+        assert res.status_code == 200, res.text
+        # 6h elapsed (06:00 -> 12:00) minus the 30min break already passed.
+        assert res.json()["data"]["overall"]["mtbf_seconds"] == 6 * 3600 - 30 * 60
+
+    def test_midnight_wrap_shift_mtbf_not_empty_mid_morning(
+        self, client, seed_user, auth_headers, fake_db, monkeypatch
+    ):
+        """Regression — client-reported bug: a mono night-shift (22:00 ->
+        06:00) queried on the default "today" period at 10:00 (well after
+        the shift's raw window closed, well before its next instance
+        starts) used to fall into `_elapsed_shift_seconds`'s dead `else`
+        branch and return 0 planned seconds -> `mtbf_seconds` was `None`
+        even though 6h had actually been worked overnight. It must now be
+        populated all day (revision 4, §5bis.4bis: the "today" slice of a
+        midnight-wrapping shift is measured with
+        `_elapsed_shift_seconds(..., current_day_only=True)`, not saturated
+        to the shift's full raw-instance window — at 10:00, only the
+        overnight tail that actually falls on today, `[00:00, 06:00]`, has
+        elapsed; tonight's instance hasn't started yet)."""
+        owner = _owner(seed_user)
+        _seed_settings(
+            fake_db,
+            shift_number=1,
+            shift_1={"start_time": "22:00", "end_time": "06:00"},
+        )
+        # Closed ticket during the overnight instance that started the
+        # previous day (2026-01-14 22:00) and is now over.
+        _seed_issue(
+            fake_db,
+            shift=1,
+            status=DownTimeStatus.CLOSED.value,
+            created_at=_paris(0, 30),
+            resolved_at=_paris(1, 0),
+            resolved_by="agent-1",
+        )
+
+        fixed = datetime(2026, 1, 15, 10, 0, 0)
+
+        class _FixedDatetime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return fixed.replace(tzinfo=tz) if tz else fixed
+
+        monkeypatch.setattr(kpi_services_module, "datetime", _FixedDatetime)
+
+        res = client.get("/kpi/dashboard", params=_period(), headers=auth_headers(owner))
+        assert res.status_code == 200, res.text
+        data = res.json()["data"]["overall"]
+        # Before the fix: planned == 0 -> mtbf_seconds is None/absent.
+        assert data["mtbf_seconds"] is not None
+        # Only today's civil-day slice of the window has elapsed by 10:00:
+        # [00:00, 06:00] (tonight's 22:00 instance hasn't started), no break
+        # configured, 1 ticket -> 6h, not the full 8h raw window.
+        assert data["mtbf_seconds"] == 6 * 3600
+
+    def test_midnight_wrap_shift_mtbf_at_23h_sums_both_pieces_of_the_civil_day(
+        self, client, seed_user, auth_headers, fake_db, monkeypatch
+    ):
+        """Same night shift (22:00 -> 06:00), "now" frozen at 23:00 instead
+        of 10:00: `current_day_only` measures today's civil-day occupation
+        of the window, which for a midnight-wrapping shift once tonight's
+        instance has begun can be TWO disjoint pieces — this morning's 6h
+        overnight tail PLUS tonight's own 1h progress so far (`now - start`)
+        — summing to 7h."""
+        owner = _owner(seed_user)
+        _seed_settings(
+            fake_db,
+            shift_number=1,
+            shift_1={"start_time": "22:00", "end_time": "06:00"},
+        )
+        _seed_issue(
+            fake_db,
+            shift=1,
+            status=DownTimeStatus.CLOSED.value,
+            created_at=_paris(0, 30),
+            resolved_at=_paris(1, 0),
+            resolved_by="agent-1",
+        )
+
+        fixed = datetime(2026, 1, 15, 23, 0, 0)
+
+        class _FixedDatetime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return fixed.replace(tzinfo=tz) if tz else fixed
+
+        monkeypatch.setattr(kpi_services_module, "datetime", _FixedDatetime)
+
+        res = client.get("/kpi/dashboard", params=_period(), headers=auth_headers(owner))
+        assert res.status_code == 200, res.text
+        data = res.json()["data"]["overall"]
+        assert data["mtbf_seconds"] == 7 * 3600
+
+    def test_midnight_wrap_shift_mtbf_with_break_crossing_midnight_at_23h45(
+        self, client, seed_user, auth_headers, fake_db, monkeypatch
+    ):
+        """Client's own reference scenario, end-to-end: 22:00 -> 06:00 shift,
+        break 23:30 -> 00:30 (itself midnight-wrapping), "now" frozen at
+        23:45. Today's civil-day occupation of the window is 7h45 (this
+        morning's 6h tail + tonight's 1h45 progress so far); the break's own
+        civil-day occupation is 45min (this morning's 00:00 -> 00:30 tail
+        [30min] + tonight's 23:30 -> 23:45 so far [15min]) -> net planned
+        time for the still-open day is 7h, with 0 tickets so `mtbf_seconds`
+        reads that planned time back directly."""
+        owner = _owner(seed_user)
+        _seed_settings(
+            fake_db,
+            shift_number=1,
+            shift_1={
+                "start_time": "22:00",
+                "end_time": "06:00",
+                "break_start_time": "23:30",
+                "break_end_time": "00:30",
+            },
+        )
+        fixed = datetime(2026, 1, 15, 23, 45, 0)
+
+        class _FixedDatetime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return fixed.replace(tzinfo=tz) if tz else fixed
+
+        monkeypatch.setattr(kpi_services_module, "datetime", _FixedDatetime)
+
+        res = client.get("/kpi/dashboard", params=_period(), headers=auth_headers(owner))
+        assert res.status_code == 200, res.text
+        data = res.json()["data"]["overall"]
+        assert data["mtbf_seconds"] == 7 * 3600
+
+    def test_midnight_wrap_shift_multi_day_plus_current_day_totals_correctly(
+        self, client, seed_user, auth_headers, fake_db, monkeypatch
+    ):
+        """Non-regression: a period spanning several FULLY elapsed civil days
+        plus a still-in-progress final day, for a midnight-wrapping shift.
+        The full-days term (`per_day * full_days`) must still be exact — it
+        comes directly from `_planned_seconds_per_day`, entirely independent
+        of `_elapsed_shift_seconds`/`current_day_only` — and the total must
+        equal `full_days * 8h + current_day_slice`. This holds under the
+        "civil day occupation" semantics precisely because a midnight
+        -wrapping shift's daily slices always sum to exactly one full
+        window per civil day (yesterday's tail + today's start, or vice
+        versa), so the full-elapsed-days term is exact regardless of the
+        wrap. `now` is frozen at 10:00, still inside yesterday-instance's
+        tail phase (`now < start_time`), so the final day's own term is the
+        plain 6h tail (see the 10:00 case above)."""
+        owner = _owner(seed_user)
+        _seed_settings(
+            fake_db,
+            shift_number=1,
+            shift_1={"start_time": "22:00", "end_time": "06:00"},
+        )
+        # No tickets needed -- asserting on `mtbf_seconds` alone requires a
+        # non-zero ticket count, so seed exactly one closed ticket to read
+        # `mtbf_seconds` back as `planned_seconds / count` directly.
+        _seed_issue(
+            fake_db,
+            shift=1,
+            status=DownTimeStatus.CLOSED.value,
+            created_at=_paris(0, 30, day=12),
+            resolved_at=_paris(1, 0, day=12),
+            resolved_by="agent-1",
+        )
+
+        fixed = datetime(2026, 1, 15, 10, 0, 0)  # 10:00 on the 15th.
+
+        class _FixedDatetime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return fixed.replace(tzinfo=tz) if tz else fixed
+
+        monkeypatch.setattr(kpi_services_module, "datetime", _FixedDatetime)
+
+        # Period: 12th -> 15th. The 12th, 13th, 14th are fully elapsed civil
+        # days (3 full days); the 15th is the still-in-progress final day,
+        # frozen at 10:00 -> 6h counted for it (per the case above).
+        res = client.get(
+            "/kpi/dashboard",
+            params={"from": "2026-01-12", "to": "2026-01-15"},
+            headers=auth_headers(owner),
+        )
+        assert res.status_code == 200, res.text
+        data = res.json()["data"]["overall"]
+        expected_planned = 3 * 8 * 3600 + 6 * 3600
+        assert data["mtbf_seconds"] == expected_planned

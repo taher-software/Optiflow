@@ -7,16 +7,14 @@ than `start_time` means the shift crosses midnight (e.g. 22:00 -> 06:00).
 
 
 def parse_hhmm(value: str) -> int:
-    """`"HH:MM"` -> minutes since midnight.
-
-    Raises:
-        ValueError: `value` isn't two `:`-separated integers.
-    """
-    hours_str, sep, minutes_str = value.partition(":")
-    if not sep:
-        raise ValueError(f"not a HH:MM time: {value!r}")
-    return int(hours_str) * 60 + int(minutes_str)
-
+    """Parse an "HH:MM" string into minutes-since-midnight. Raises `ValueError`
+    on anything malformed — callers treat that as "no match", never as a
+    reason to fail ticket creation."""
+    hours_str, minutes_str = value.split(":")
+    hours, minutes = int(hours_str), int(minutes_str)
+    if not (0 <= hours < 24 and 0 <= minutes < 60):
+        raise ValueError(f"hour/minute out of range in '{value}'")
+    return hours * 60 + minutes
 
 def window_length_minutes(start_minutes: int, end_minutes: int) -> int:
     """Length, in minutes, of the clock window `[start_minutes, end_minutes)`
@@ -29,6 +27,46 @@ def window_length_minutes(start_minutes: int, end_minutes: int) -> int:
         if end_minutes > start_minutes
         else (24 * 60 - start_minutes) + end_minutes
     )
+
+
+def clock_window_elapsed_since_midnight(
+    now: float, start: float, end: float
+) -> float:
+    """How much of the clock interval `[start, end)` falls within `[0, now]`
+    (midnight-wrap aware: `end <= start` means the window crosses midnight,
+    e.g. 22:00 -> 06:00), given `now`/`start`/`end` all expressed in the SAME
+    unit, counted from midnight (minutes or seconds, caller's choice — the
+    formula is unit-agnostic). In other words: how much of the window has
+    the CURRENT CIVIL DAY occupied so far, by `now`.
+
+    This is the one primitive behind the KPI service's "current day only"
+    elapsed-time mode (`src.app.routers.kpi.services._elapsed_shift_seconds`,
+    §5bis.4bis): it answers "how much of today's civil day has this clock
+    window occupied, by `now`" for BOTH the shift's own window and its break
+    window (a break is just another, smaller, clock window contained in the
+    shift's).
+
+    Non-wrapping window (`end > start`): the whole window lives on one civil
+    day already, so this is the ordinary `clamp(now - start, 0, end -
+    start)` — unchanged regardless of the wrap case below.
+
+    Wrapping window (`end <= start`): today's civil day `[0, now]` can
+    intersect the window in TWO disjoint pieces, which is why this sums
+    them rather than picking one:
+    - the tail of the instance that started YESTERDAY, `[0, end)` — however
+      much of it falls before `now`, `min(now, end)`.
+    - the start of TODAY's own instance, `[start, 24h)` — however much of
+      it has elapsed by `now`, `max(0.0, now - start)`.
+    Before `start` the second piece is 0 (nothing to add yet); at/after
+    `start` both pieces are live simultaneously (this morning's tail already
+    happened, tonight's instance is now running), hence the sum.
+
+    Reference values for a 22:00 -> 06:00 shift: 05:00 -> 5h, 10:00 -> 6h,
+    21:59 -> 6h, 22:00 -> 6h, 23:00 -> 7h.
+    """
+    if end > start:
+        return max(0.0, min(now, end) - start)
+    return min(now, end) + max(0.0, now - start)
 
 
 def break_minutes_in_window(

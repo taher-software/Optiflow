@@ -22,6 +22,7 @@ from src.app.globals.enum import DOWNTIME_TYPE_PROCESS, DownTimeStatus, DownTime
 from src.app.routers.kpi.services import (
     _compute_kpis,
     _configured_shifts,
+    _elapsed_shift_seconds,
     _location_hierarchy,
     _mttr_seconds,
     _parse_drill_path,
@@ -353,6 +354,355 @@ class TestShiftWindowSecondsBreak:
 
 
 # --------------------------------------------------------------------------
+# _elapsed_shift_seconds — revision 3, §5bis.4bis (C1: net of break).
+# --------------------------------------------------------------------------
+
+
+class TestElapsedShiftSecondsBreak:
+    """A plain 06:00-14:00 shift with a 10:00-10:30 break, and its
+    midnight-wrapping twin (22:00-06:00 with a 01:00-01:30 break — same
+    relative positions, shifted by the wrap), at the same relative
+    `now_local` positions."""
+
+    _SHIFT = {
+        "start_time": "06:00",
+        "end_time": "14:00",
+        "break_start_time": "10:00",
+        "break_end_time": "10:30",
+    }
+    _WRAP_SHIFT = {
+        "start_time": "22:00",
+        "end_time": "06:00",
+        "break_start_time": "01:00",
+        "break_end_time": "01:30",
+    }
+
+    def _now(self, hour, minute=0, day=15):
+        return datetime(2026, 1, day, hour, minute, tzinfo=UTC)
+
+    def test_before_break_starts_unchanged(self):
+        # 3h into the shift (06:00 -> 09:00), break not reached yet.
+        assert _elapsed_shift_seconds(self._SHIFT, self._now(9, 0)) == 3 * 3600
+
+    def test_exactly_at_break_start(self):
+        # 4h in (06:00 -> 10:00) == the break's own start.
+        assert _elapsed_shift_seconds(self._SHIFT, self._now(10, 0)) == 4 * 3600
+
+    def test_mid_break_pins_to_break_start(self):
+        # 10:15, mid-break -> pinned to time-until-break-start (4h).
+        assert _elapsed_shift_seconds(self._SHIFT, self._now(10, 15)) == 4 * 3600
+
+    def test_exactly_at_break_end(self):
+        # Break just ended -> net worked time == time-until-break-start (4h),
+        # nothing worked since the break ended yet.
+        assert _elapsed_shift_seconds(self._SHIFT, self._now(10, 30)) == 4 * 3600
+
+    def test_after_break_end_deducts_full_break(self):
+        # 12:00 -> 6h raw elapsed, minus the 30min break already passed.
+        assert _elapsed_shift_seconds(self._SHIFT, self._now(12, 0)) == 6 * 3600 - 30 * 60
+
+    def test_before_shift_start_is_zero(self):
+        assert _elapsed_shift_seconds(self._SHIFT, self._now(5, 0)) == 0.0
+
+    def test_after_shift_end_is_full_planned_net_of_break(self):
+        # 18:00, well past the 14:00 end -> full window minus the break.
+        assert _elapsed_shift_seconds(self._SHIFT, self._now(18, 0)) == 8 * 3600 - 30 * 60
+
+    def test_no_break_configured_matches_raw_window_elapsed(self):
+        shift = {"start_time": "06:00", "end_time": "14:00"}
+        assert _elapsed_shift_seconds(shift, self._now(9, 0)) == 3 * 3600
+
+    def test_illegible_break_ignored_matches_raw_window_elapsed(self):
+        shift = {
+            "start_time": "06:00",
+            "end_time": "14:00",
+            "break_start_time": "20:00",  # outside the shift window -> invalid.
+            "break_end_time": "20:30",
+        }
+        assert _elapsed_shift_seconds(shift, self._now(9, 0)) == 3 * 3600
+
+    # -- Midnight-wrap twin, same relative positions --------------------
+
+    def test_wrap_before_break_starts_unchanged(self):
+        # 2.5h into the shift (22:00 -> 00:30), break (at 01:00) not reached yet.
+        assert (
+            _elapsed_shift_seconds(self._WRAP_SHIFT, self._now(0, 30))
+            == pytest.approx(2.5 * 3600)
+        )
+
+    def test_wrap_mid_break_pins_to_break_start(self):
+        # 01:15, mid-break -> pinned to 3h (time-until-break-start).
+        assert _elapsed_shift_seconds(self._WRAP_SHIFT, self._now(1, 15)) == 3 * 3600
+
+    def test_wrap_exactly_at_break_end(self):
+        assert _elapsed_shift_seconds(self._WRAP_SHIFT, self._now(1, 30)) == 3 * 3600
+
+    def test_wrap_after_break_end_deducts_full_break(self):
+        # 03:00 -> 5h raw elapsed (22:00 -> 03:00), minus the 30min break.
+        assert _elapsed_shift_seconds(self._WRAP_SHIFT, self._now(3, 0)) == 5 * 3600 - 30 * 60
+
+    def test_wrap_after_shift_end_is_full_planned_net_of_break(self):
+        # 06:00 is the wrap shift's own end -> full window minus the break.
+        assert (
+            _elapsed_shift_seconds(self._WRAP_SHIFT, self._now(6, 0)) == 8 * 3600 - 30 * 60
+        )
+
+    # -- Regression: "else" branch (past end, before next start) must
+    # -- saturate to the full window, not fall back to 0. ----------------
+
+    def test_wrap_just_after_end_saturates_full_window(self):
+        # 06:01, just past the 06:00 end -> full window (net of break),
+        # same as exactly-at-end, NOT 0.
+        assert (
+            _elapsed_shift_seconds(self._WRAP_SHIFT, self._now(6, 1))
+            == 8 * 3600 - 30 * 60
+        )
+
+    def test_wrap_mid_morning_saturates_full_window(self):
+        assert (
+            _elapsed_shift_seconds(self._WRAP_SHIFT, self._now(10, 0))
+            == 8 * 3600 - 30 * 60
+        )
+
+    def test_wrap_mid_afternoon_saturates_full_window(self):
+        assert (
+            _elapsed_shift_seconds(self._WRAP_SHIFT, self._now(15, 0))
+            == 8 * 3600 - 30 * 60
+        )
+
+    def test_wrap_just_before_next_start_saturates_full_window(self):
+        # 21:59, one minute before the next instance starts at 22:00.
+        assert (
+            _elapsed_shift_seconds(self._WRAP_SHIFT, self._now(21, 59))
+            == 8 * 3600 - 30 * 60
+        )
+
+    def test_wrap_next_instance_start_resets_to_zero(self):
+        # 22:00 exactly -> the next instance just started -> back to 0.
+        assert _elapsed_shift_seconds(self._WRAP_SHIFT, self._now(22, 0)) == 0.0
+
+    def test_wrap_continuity_around_end_no_drop_to_zero(self):
+        # Just before vs. just after 06:00: neighboring values, no cliff.
+        before = _elapsed_shift_seconds(self._WRAP_SHIFT, self._now(5, 59))
+        after = _elapsed_shift_seconds(self._WRAP_SHIFT, self._now(6, 1))
+        assert after == pytest.approx(8 * 3600 - 30 * 60)
+        assert before == pytest.approx(8 * 3600 - 30 * 60, abs=120)
+        assert abs(after - before) < 200
+
+
+class TestElapsedShiftSecondsMidnightWrapNoBreak:
+    """Same regression, no break configured — isolates the fix in
+    `_elapsed_shift_seconds` from the break-deduction logic."""
+
+    _WRAP_SHIFT = {"start_time": "22:00", "end_time": "06:00"}
+
+    def _now(self, hour, minute=0, day=15):
+        return datetime(2026, 1, day, hour, minute, tzinfo=UTC)
+
+    def test_just_after_end_is_full_window_not_zero(self):
+        assert _elapsed_shift_seconds(self._WRAP_SHIFT, self._now(6, 1)) == 8 * 3600
+
+    def test_mid_morning_is_full_window(self):
+        assert _elapsed_shift_seconds(self._WRAP_SHIFT, self._now(10, 0)) == 8 * 3600
+
+    def test_mid_afternoon_is_full_window(self):
+        assert _elapsed_shift_seconds(self._WRAP_SHIFT, self._now(15, 0)) == 8 * 3600
+
+    def test_just_before_next_start_is_full_window(self):
+        assert _elapsed_shift_seconds(self._WRAP_SHIFT, self._now(21, 59)) == 8 * 3600
+
+    def test_exact_start_is_zero(self):
+        assert _elapsed_shift_seconds(self._WRAP_SHIFT, self._now(22, 0)) == 0.0
+
+
+# --------------------------------------------------------------------------
+# _elapsed_shift_seconds(..., current_day_only=True) — revision 4,
+# §5bis.4bis: "today's civil-day slice", not "this instance's progress".
+# --------------------------------------------------------------------------
+
+
+class TestElapsedShiftSecondsCurrentDayOnlyMidnightWrap:
+    """22:00 -> 06:00 night shift, no break — both modes at every requested
+    clock position, to pin down exactly where they diverge. They agree while
+    `now < start_time` (both are still measuring yesterday's tail) and
+    diverge once tonight's instance starts (`now >= start_time`): the
+    default mode saturates to the full window, while `current_day_only`
+    sums BOTH pieces of today's civil day the window touches — yesterday's
+    tail PLUS tonight's progress so far — since a midnight-wrapping window
+    can occupy two disjoint slices of one civil day."""
+
+    _WRAP_SHIFT = {"start_time": "22:00", "end_time": "06:00"}
+
+    def _now(self, hour, minute=0, day=15):
+        return datetime(2026, 1, day, hour, minute, tzinfo=timezone.utc)
+
+    @pytest.mark.parametrize(
+        "hour, minute, expected_hours",
+        [
+            (2, 0, 2.0),  # 02:00 -> today's tail so far: [00:00, 02:00].
+            (5, 0, 5.0),  # 05:00 -> [00:00, 05:00].
+            (6, 0, 6.0),  # 06:00 -> the whole overnight tail, [00:00, 06:00].
+            (10, 0, 6.0),  # 10:00 -- tonight hasn't started, still the tail.
+            (21, 59, 6.0),  # 21:59 -- tonight's instance hasn't started yet.
+            (22, 0, 6.0),  # 22:00 -- tonight's instance starts: yesterday's
+            # full 6h tail PLUS 0h of tonight so far.
+            (23, 0, 7.0),  # 23:00 -- yesterday's 6h tail PLUS 1h of tonight.
+        ],
+    )
+    def test_current_day_only(self, hour, minute, expected_hours):
+        assert _elapsed_shift_seconds(
+            self._WRAP_SHIFT, self._now(hour, minute), current_day_only=True
+        ) == pytest.approx(expected_hours * 3600)
+
+    @pytest.mark.parametrize(
+        "hour, minute, expected_hours",
+        [
+            (2, 0, 4.0),  # default mode: current instance started at 22:00 ->
+            # 4h elapsed of the CURRENT instance by 02:00, not "since midnight".
+            (5, 0, 7.0),
+            (6, 0, 8.0),
+            (10, 0, 8.0),  # saturates to the full window (old behavior).
+            (21, 59, 8.0),
+            (22, 0, 0.0),  # resets: a brand new instance just started.
+            (23, 0, 1.0),
+        ],
+    )
+    def test_default_mode_unchanged(self, hour, minute, expected_hours):
+        assert _elapsed_shift_seconds(
+            self._WRAP_SHIFT, self._now(hour, minute)
+        ) == pytest.approx(expected_hours * 3600)
+
+
+class TestElapsedShiftSecondsCurrentDayOnlyMidnightWrapWithBreak:
+    """Same night shift, now with a 01:00 -> 01:30 break — proves the
+    break-netting cases: fully passed, mid-break, and not-yet-reached, all
+    measured the same way as the window itself, against TODAY's civil day
+    (`clock_window_elapsed_since_midnight` applied to the break's own real
+    clock bounds). The break sits entirely inside `[0, 06:00)`, so once
+    01:30 has passed it stays fully netted out regardless of how far into
+    tonight's instance `now` has advanced."""
+
+    _WRAP_SHIFT = {
+        "start_time": "22:00",
+        "end_time": "06:00",
+        "break_start_time": "01:00",
+        "break_end_time": "01:30",
+    }
+
+    def _now(self, hour, minute=0, day=15):
+        return datetime(2026, 1, day, hour, minute, tzinfo=timezone.utc)
+
+    def test_break_not_yet_reached_at_00h30(self):
+        # In the break's own future -> nothing to deduct: [00:00, 00:30].
+        assert _elapsed_shift_seconds(
+            self._WRAP_SHIFT, self._now(0, 30), current_day_only=True
+        ) == pytest.approx(0.5 * 3600)
+
+    def test_break_partially_elapsed_mid_break_at_01h15(self):
+        # 1h15 raw tail elapsed, minus the 15min already spent in the break.
+        assert _elapsed_shift_seconds(
+            self._WRAP_SHIFT, self._now(1, 15), current_day_only=True
+        ) == pytest.approx(1.0 * 3600)
+
+    def test_break_fully_passed_at_02h00(self):
+        # 2h raw tail elapsed, minus the full 30min break.
+        assert _elapsed_shift_seconds(
+            self._WRAP_SHIFT, self._now(2, 0), current_day_only=True
+        ) == pytest.approx(1.5 * 3600)
+
+    def test_at_05h00(self):
+        assert _elapsed_shift_seconds(
+            self._WRAP_SHIFT, self._now(5, 0), current_day_only=True
+        ) == pytest.approx(4.5 * 3600)
+
+    def test_at_06h00_full_overnight_tail_minus_break(self):
+        assert _elapsed_shift_seconds(
+            self._WRAP_SHIFT, self._now(6, 0), current_day_only=True
+        ) == pytest.approx(5.5 * 3600)
+
+    def test_at_10h00_capped_at_overnight_tail_minus_break(self):
+        assert _elapsed_shift_seconds(
+            self._WRAP_SHIFT, self._now(10, 0), current_day_only=True
+        ) == pytest.approx(5.5 * 3600)
+
+    def test_at_21h59_still_capped(self):
+        assert _elapsed_shift_seconds(
+            self._WRAP_SHIFT, self._now(21, 59), current_day_only=True
+        ) == pytest.approx(5.5 * 3600)
+
+    def test_at_22h00_tonights_instance_just_started(self):
+        # Civil-day occupation: window = 6h (full overnight tail) + 0h of
+        # tonight so far = 6h; break already fully elapsed this morning
+        # (01:00 -> 01:30) -> net 6h - 0.5h = 5.5h.
+        assert _elapsed_shift_seconds(
+            self._WRAP_SHIFT, self._now(22, 0), current_day_only=True
+        ) == pytest.approx(5.5 * 3600)
+
+    def test_at_23h00_plus_one_hour_of_tonight(self):
+        # Window: yesterday's full 6h tail + 1h of tonight so far = 7h.
+        # Break (01:00 -> 01:30) already fully elapsed this morning -> net
+        # 7h - 0.5h = 6.5h.
+        assert _elapsed_shift_seconds(
+            self._WRAP_SHIFT, self._now(23, 0), current_day_only=True
+        ) == pytest.approx(6.5 * 3600)
+
+
+class TestElapsedShiftSecondsCurrentDayOnlyMidnightWrapBreakCrossesMidnight:
+    """The client's own reference case: 22:00 -> 06:00 shift, break
+    23:30 -> 00:30 (itself midnight-wrapping, unlike the previous class's
+    01:00 -> 01:30 break) -- both the shift window and its break are
+    civil-day occupations, each possibly split into two disjoint pieces by
+    the same primitive (`clock_window_elapsed_since_midnight`), so netting
+    stays coherent."""
+
+    _WRAP_SHIFT = {
+        "start_time": "22:00",
+        "end_time": "06:00",
+        "break_start_time": "23:30",
+        "break_end_time": "00:30",
+    }
+
+    def _now(self, hour, minute=0, day=15):
+        return datetime(2026, 1, day, hour, minute, tzinfo=timezone.utc)
+
+    def test_at_23h45_window_7h45_break_45min_net_7h(self):
+        # Window: 7h45 (yesterday's full 6h tail + 1h45 of tonight so far).
+        # Break: 45min elapsed (yesterday's 00:00 -> 00:30 tail [30min] +
+        # tonight's 23:30 -> 23:45 so far [15min]). Net: 7h45 - 45min = 7h.
+        assert _elapsed_shift_seconds(
+            self._WRAP_SHIFT, self._now(23, 45), current_day_only=True
+        ) == pytest.approx(7.0 * 3600)
+
+
+class TestElapsedShiftSecondsCurrentDayOnlyDayShiftCoincidesWithDefault:
+    """A non-wrapping day shift (06:00 -> 14:00, break 09:00 -> 09:30): the
+    two modes must be IDENTICAL at every position — the whole window already
+    lives on a single civil day, so "this instance's progress" and "today's
+    slice" are the same slice by construction."""
+
+    _SHIFT = {
+        "start_time": "06:00",
+        "end_time": "14:00",
+        "break_start_time": "09:00",
+        "break_end_time": "09:30",
+    }
+
+    def _now(self, hour, minute=0, day=15):
+        return datetime(2026, 1, day, hour, minute, tzinfo=timezone.utc)
+
+    @pytest.mark.parametrize(
+        "hour, minute",
+        [(0, 30), (2, 0), (5, 0), (6, 0), (7, 0), (9, 0), (9, 15), (9, 30), (10, 0), (14, 0), (21, 59), (22, 0), (23, 0)],
+    )
+    def test_modes_coincide(self, hour, minute):
+        default = _elapsed_shift_seconds(self._SHIFT, self._now(hour, minute))
+        current_day = _elapsed_shift_seconds(
+            self._SHIFT, self._now(hour, minute), current_day_only=True
+        )
+        assert current_day == pytest.approx(default)
+
+
+# --------------------------------------------------------------------------
 # _parse_hhmm / _configured_shifts — fix #9 (tolerant parsing).
 # --------------------------------------------------------------------------
 
@@ -429,7 +779,10 @@ class TestPlannedSecondsClampedToNow:
         # 2 full days (10th, 11th) + 6h prorated on the 12th.
         assert planned == 2 * 24 * 3600 + 6 * 3600
 
-    def test_configured_shift_prorated_by_elapsed_fraction_of_its_window(self):
+    def test_configured_shift_counts_its_actually_elapsed_time(self):
+        """Revision 3, §5bis.4bis (C2): the in-progress day's planned time is
+        the configured shift's real elapsed time (`_elapsed_shift_seconds`),
+        not a fractional estimate of it."""
         settings = {
             "shift_number": 1,
             "shift_1": {"start_time": "06:00", "end_time": "14:00"},

@@ -116,6 +116,7 @@ from ._common import (
     schedule_escalation_cycle,
 )
 from .exceptions import FunctionalJobError, SystemJobError
+from src.app.routers.kpi.services import parse_hhmm as _parse_hhmm
 
 logger = logging.getLogger(__name__)
 
@@ -126,15 +127,6 @@ _REQUIRED_FIELDS = (
 )
 
 
-def _parse_hhmm(value: str) -> int:
-    """Parse an "HH:MM" string into minutes-since-midnight. Raises `ValueError`
-    on anything malformed — callers treat that as "no match", never as a
-    reason to fail ticket creation."""
-    hours_str, minutes_str = value.split(":")
-    hours, minutes = int(hours_str), int(minutes_str)
-    if not (0 <= hours < 24 and 0 <= minutes < 60):
-        raise ValueError(f"hour/minute out of range in '{value}'")
-    return hours * 60 + minutes
 
 
 def _resolve_shift(settings: dict | None, now_local: datetime) -> Optional[int]:
