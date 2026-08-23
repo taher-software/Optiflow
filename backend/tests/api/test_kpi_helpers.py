@@ -31,6 +31,7 @@ from src.app.routers.kpi.services import (
     _planned_seconds_per_day,
     _process_for_ticket,
     _resolve_location,
+    _shift_window_seconds,
     _ticket_downtime_seconds,
     _ticket_weight,
     _weight_of_builder,
@@ -276,7 +277,8 @@ class TestPlannedSecondsPerDay:
 
         seconds = _planned_seconds_per_day(settings)
 
-        # 22:00 -> 06:00 = 8h clock window, no break deducted (§5bis.3/4).
+        # 22:00 -> 06:00 = 8h clock window; no break configured here, so
+        # nothing is deducted (revision 3, §5bis.4bis).
         assert seconds == 8 * 3600
 
     def test_no_settings_defaults_to_24h(self):
@@ -297,6 +299,57 @@ class TestPlannedSecondsPerDay:
         settings = {"shift_number": 1, "shift_1": {"start_time": "06:00", "end_time": "14:00"}}
 
         assert _planned_seconds_per_day(settings, shift_filter="2") == 0.0
+
+
+# --------------------------------------------------------------------------
+# _shift_window_seconds — revision 3, §5bis.4bis (break deducted).
+# --------------------------------------------------------------------------
+
+
+class TestShiftWindowSecondsBreak:
+    def test_no_break_configured_full_window_counts(self):
+        shift = {"start_time": "06:00", "end_time": "14:00"}
+        assert _shift_window_seconds(shift) == 8 * 3600
+
+    def test_break_deducted_from_window(self):
+        shift = {
+            "start_time": "06:00",
+            "end_time": "14:00",
+            "break_start_time": "10:00",
+            "break_end_time": "10:30",
+        }
+        # 8h window - 30min break.
+        assert _shift_window_seconds(shift) == 8 * 3600 - 30 * 60
+
+    def test_break_across_midnight_wrapping_shift_deducted(self):
+        shift = {
+            "start_time": "22:00",
+            "end_time": "06:00",
+            "break_start_time": "01:00",
+            "break_end_time": "01:30",
+        }
+        assert _shift_window_seconds(shift) == 8 * 3600 - 30 * 60
+
+    def test_unparsable_break_is_ignored_not_500(self):
+        """A stored break pair that fails validation (here: outside the
+        shift window — a corrupted document written before request-time
+        validation existed) degrades to "no break" instead of raising."""
+        shift = {
+            "start_time": "06:00",
+            "end_time": "14:00",
+            "break_start_time": "20:00",
+            "break_end_time": "20:30",
+        }
+        assert _shift_window_seconds(shift) == 8 * 3600
+
+    def test_only_one_break_field_present_is_ignored(self):
+        shift = {
+            "start_time": "06:00",
+            "end_time": "14:00",
+            "break_start_time": "10:00",
+            "break_end_time": None,
+        }
+        assert _shift_window_seconds(shift) == 8 * 3600
 
 
 # --------------------------------------------------------------------------

@@ -27,9 +27,12 @@ _settings_scope = require_roles(
     description=(
         "Creates the plant settings (shift schedule + escalation delay) for "
         "the caller's namespace. Stores a document reflecting the payload "
-        "exactly. When `shift_number` > 1, the first `shift_number` shift "
-        "windows are required. Restricted to owner/admin/manager/production "
-        "supervisor."
+        "exactly. The first `shift_number` shift windows are always "
+        "required — including `shift_1` when `shift_number == 1` (revision "
+        "3, §5bis.4bis). Each shift window may optionally carry a break, "
+        "given as `break_start_time`/`break_end_time` (both or neither), "
+        "which must fall inside the shift window. Restricted to "
+        "owner/admin/manager/production supervisor."
     ),
     responses={
         403: {"description": "Caller lacks the required role."},
@@ -50,12 +53,21 @@ async def create_settings(
     summary="Update the namespace plant settings",
     description=(
         "Partially updates the caller's namespace settings. A field omitted "
-        "from the request body is left untouched. Restricted to owner/admin/"
-        "manager/production supervisor."
+        "from the request body is left untouched. The resulting document "
+        "(existing settings merged with this payload) must still carry a "
+        "shift window for every shift up to `shift_number` — a PATCH that "
+        "would leave one missing (e.g. raising `shift_number` without "
+        "supplying the new shift's window) is rejected. Restricted to "
+        "owner/admin/manager/production supervisor."
     ),
     responses={
         403: {"description": "Caller lacks the required role."},
         404: {"description": "The namespace has no settings yet."},
+        422: {
+            "description": (
+                "The merged document would be missing a required shift window."
+            )
+        },
     },
 )
 async def update_settings(

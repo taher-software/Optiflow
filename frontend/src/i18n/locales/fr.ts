@@ -283,8 +283,26 @@ const fr = {
       },
       shift: {
         title: "Équipe {{number}}",
+        window: "Fenêtre de travail",
         start: "Heure de début",
         end: "Heure de fin",
+        break: "Pause (facultative)",
+        breakStart: "Début de la pause",
+        breakEnd: "Fin de la pause",
+        breakHelp:
+          "La pause est retirée de la fenêtre de l'équipe pour obtenir le temps planifié, qui sert au calcul du MTBF (temps moyen entre arrêts). Laissez les deux champs vides si l'équipe n'a pas de pause.",
+        errors: {
+          missingWindow:
+            "Renseignez l'heure de début et l'heure de fin de l'équipe.",
+          zeroLengthWindow:
+            "L'heure de début et l'heure de fin de l'équipe doivent différer.",
+          breakIncomplete:
+            "Renseignez le début et la fin de la pause, ou laissez les deux champs vides.",
+          breakOutsideWindow:
+            "La pause doit être comprise dans la fenêtre de l'équipe.",
+          breakLength:
+            "La durée de la pause doit être supérieure à zéro et plus courte que la fenêtre de l'équipe.",
+        },
       },
       escalate: {
         label: "Délai d'escalade (secondes)",

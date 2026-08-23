@@ -10,15 +10,17 @@ import {
 } from "../constants/settings";
 import { useAuthStore } from "../stores/useAuthStore";
 import { useSettingsStore } from "../stores/useSettingsStore";
-
-type ShiftDraft = {
-  start_time: string;
-  end_time: string;
-};
+import {
+  toShiftTime,
+  validateShiftDraft,
+  type ShiftDraft,
+} from "../utils/shiftTime";
 
 const EMPTY_SHIFT: ShiftDraft = {
   start_time: "",
   end_time: "",
+  break_start_time: "",
+  break_end_time: "",
 };
 
 /** Namespace plant settings: number of shifts + each shift's clock window, and
@@ -56,7 +58,12 @@ export function SettingsPage() {
     setShiftNumber(settings.shift_number);
     const toDraft = (s: ShiftTime | null): ShiftDraft =>
       s
-        ? { start_time: s.start_time, end_time: s.end_time }
+        ? {
+            start_time: s.start_time,
+            end_time: s.end_time,
+            break_start_time: s.break_start_time ?? "",
+            break_end_time: s.break_end_time ?? "",
+          }
         : { ...EMPTY_SHIFT };
     setShifts([
       toDraft(settings.shift_1),
@@ -80,11 +87,22 @@ export function SettingsPage() {
     Number.isInteger(escalateSeconds) &&
     escalateSeconds >= 0;
 
-  const shiftsValid =
-    shiftNumber === 1 ||
-    shifts
-      .slice(0, shiftNumber)
-      .every((s) => s.start_time !== "" && s.end_time !== "");
+  // Every declared shift needs its window (mandatory since revision 3, even
+  // for a single-shift plant) and a coherent break pair.
+  const shiftErrors = shifts.map((s, i) =>
+    i < shiftNumber ? validateShiftDraft(s) : null,
+  );
+  const shiftsValid = shiftErrors.every((e) => e === null);
+
+  // A brand-new, untouched shift shows no error yet — it only blocks the save.
+  const isPristine = (s: ShiftDraft) =>
+    s.start_time === "" &&
+    s.end_time === "" &&
+    s.break_start_time === "" &&
+    s.break_end_time === "";
+  const visibleShiftErrors = shiftErrors.map((e, i) =>
+    e === "missingWindow" && isPristine(shifts[i]) ? null : e,
+  );
 
   const valid = escalateValid && shiftsValid;
 
@@ -96,11 +114,7 @@ export function SettingsPage() {
     setSaved(false);
 
     const toShift = (i: number): ShiftTime | null =>
-      i < shiftNumber &&
-      shifts[i].start_time !== "" &&
-      shifts[i].end_time !== ""
-        ? { start_time: shifts[i].start_time, end_time: shifts[i].end_time }
-        : null;
+      i < shiftNumber ? toShiftTime(shifts[i]) : null;
 
     const payload: SaveSettingsPayload = {
       shift_number: shiftNumber,
@@ -152,16 +166,20 @@ export function SettingsPage() {
               {t("settings.shiftNumber.help")}
             </p>
 
-            {shiftNumber > 1 &&
-              shifts.slice(0, shiftNumber).map((s, i) => (
-                <div
-                  key={i}
-                  className="rounded-xl border border-slate-800 bg-slate-900/50 p-4"
-                >
-                  <p className="mb-3 text-sm font-semibold text-slate-200">
-                    {t("settings.shift.title", { number: i + 1 })}
-                  </p>
-                  <div className="grid grid-cols-2 gap-4">
+            {shifts.slice(0, shiftNumber).map((s, i) => (
+              <div
+                key={i}
+                className="rounded-xl border border-slate-800 bg-slate-900/50 p-4"
+              >
+                <p className="mb-3 text-sm font-semibold text-slate-200">
+                  {t("settings.shift.title", { number: i + 1 })}
+                </p>
+
+                <fieldset className="space-y-3">
+                  <legend className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+                    {t("settings.shift.window")}
+                  </legend>
+                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                     <TimeInput
                       id={`shift_${i}_start`}
                       label={t("settings.shift.start")}
@@ -175,8 +193,38 @@ export function SettingsPage() {
                       onChange={(v) => setShift(i, { end_time: v })}
                     />
                   </div>
-                </div>
-              ))}
+                </fieldset>
+
+                <fieldset className="mt-4 space-y-3 border-t border-slate-800 pt-4">
+                  <legend className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+                    {t("settings.shift.break")}
+                  </legend>
+                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                    <TimeInput
+                      id={`shift_${i}_break_start`}
+                      label={t("settings.shift.breakStart")}
+                      value={s.break_start_time}
+                      onChange={(v) => setShift(i, { break_start_time: v })}
+                    />
+                    <TimeInput
+                      id={`shift_${i}_break_end`}
+                      label={t("settings.shift.breakEnd")}
+                      value={s.break_end_time}
+                      onChange={(v) => setShift(i, { break_end_time: v })}
+                    />
+                  </div>
+                  <p className="text-xs text-slate-500">
+                    {t("settings.shift.breakHelp")}
+                  </p>
+                </fieldset>
+
+                {visibleShiftErrors[i] && (
+                  <p className="mt-3 text-sm text-red-400">
+                    {t(`settings.shift.errors.${visibleShiftErrors[i]}`)}
+                  </p>
+                )}
+              </div>
+            ))}
           </section>
 
           {/* Escalation delay */}

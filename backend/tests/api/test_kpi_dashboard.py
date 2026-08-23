@@ -941,3 +941,92 @@ class TestQueryParamValidation:
             headers=auth_headers(owner),
         )
         assert res.status_code == 422
+
+
+class TestMtbfPlannedTimeRevision3:
+    """§5bis.4bis — a configured mono-shift now has a real window (revision
+    3: required from `shift_number == 1`) instead of the 24h/day fallback,
+    and its planned time (MTBF's numerator) is net of its break. All 3
+    scenarios freeze "now" at 18:00 Paris, strictly after the 06:00-14:00
+    shift's raw window closes, so `_shift_seconds_prorated`'s elapsed
+    fraction is 1.0 and the full (break-adjusted) per-day planned time
+    counts without proration noise."""
+
+    def test_configured_mono_shift_mtbf_is_window_minus_break(
+        self, client, seed_user, auth_headers, fake_db, freeze_kpi_clock
+    ):
+        owner = _owner(seed_user)
+        _seed_settings(
+            fake_db,
+            shift_number=1,
+            shift_1={
+                "start_time": "06:00",
+                "end_time": "14:00",
+                "break_start_time": "10:00",
+                "break_end_time": "10:30",
+            },
+        )
+        _seed_issue(
+            fake_db,
+            shift=1,
+            status=DownTimeStatus.CLOSED.value,
+            created_at=_paris(7, 0),
+            resolved_at=_paris(8, 0),
+            resolved_by="agent-1",
+        )
+
+        res = client.get("/kpi/dashboard", params=_period(), headers=auth_headers(owner))
+        assert res.status_code == 200, res.text
+        data = res.json()["data"]
+
+        # planned = 8h window - 30min break = 27000s; 1 ticket -> mtbf = planned.
+        assert data["overall"]["mtbf_seconds"] == 8 * 3600 - 30 * 60
+
+    def test_mtbf_without_pause_is_higher_than_with_pause(
+        self, client, seed_user, auth_headers, fake_db, freeze_kpi_clock
+    ):
+        owner = _owner(seed_user)
+        _seed_settings(fake_db, shift_number=1, shift_1={"start_time": "06:00", "end_time": "14:00"})
+        _seed_issue(
+            fake_db,
+            shift=1,
+            status=DownTimeStatus.CLOSED.value,
+            created_at=_paris(7, 0),
+            resolved_at=_paris(8, 0),
+            resolved_by="agent-1",
+        )
+
+        res = client.get("/kpi/dashboard", params=_period(), headers=auth_headers(owner))
+        assert res.status_code == 200, res.text
+        assert res.json()["data"]["overall"]["mtbf_seconds"] == 8 * 3600
+
+    def test_illegible_break_ignored_without_500(
+        self, client, seed_user, auth_headers, fake_db, freeze_kpi_clock
+    ):
+        """A stored break pair that predates request-time validation and is
+        outside the shift window (or otherwise invalid) must degrade to "no
+        break" rather than 500ing the dashboard request."""
+        owner = _owner(seed_user)
+        _seed_settings(
+            fake_db,
+            shift_number=1,
+            shift_1={
+                "start_time": "06:00",
+                "end_time": "14:00",
+                "break_start_time": "20:00",
+                "break_end_time": "20:30",
+            },
+        )
+        _seed_issue(
+            fake_db,
+            shift=1,
+            status=DownTimeStatus.CLOSED.value,
+            created_at=_paris(7, 0),
+            resolved_at=_paris(8, 0),
+            resolved_by="agent-1",
+        )
+
+        res = client.get("/kpi/dashboard", params=_period(), headers=auth_headers(owner))
+        assert res.status_code == 200, res.text
+        # Break ignored -> full 8h window counts, same as no-break case.
+        assert res.json()["data"]["overall"]["mtbf_seconds"] == 8 * 3600

@@ -1,7 +1,11 @@
-/** The clock window of a single work shift ("HH:MM" 24h). */
+/** The clock window of a single work shift ("HH:MM" 24h), plus its optional
+ * break window — an all-or-nothing pair, `null` on both when the shift has no
+ * break. The break is subtracted from the shift window to get planned time. */
 export interface ShiftTime {
   start_time: string;
   end_time: string;
+  break_start_time: string | null;
+  break_end_time: string | null;
 }
 
 /** Plant settings of a namespace as returned by the API (mirrors

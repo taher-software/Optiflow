@@ -89,9 +89,9 @@ closed_at/rejected_at` (tz namespace), `status`, `process`, `down_time_type`,
 `shift` (int|null — seulement namespaces multi-shifts, tickets récents),
 `uap_id/production_line_id/workstation_id/down_time_scope`, `resolved_by`.
 Settings `NamespaceSettings/{ns}/settings/{ns}` : `shift_number`, `shift_1..3
-{start_time, end_time}`, `time_to_escalate` (pas de `break_minutes` : retiré en
-révision 2 avec la disponibilité, §5bis.3). Namespace : `company_name`,
-`timezone`.
+{start_time, end_time, break_start_time?, break_end_time?}` (révision 3,
+§5bis.4bis — remplace le `break_minutes` de la révision 2, lui-même retiré),
+`time_to_escalate`. Namespace : `company_name`, `timezone`.
 
 Plomberie requise : `FirestoreClient.find_subdocuments` ne supporte que
 l'égalité — ajouter le filtrage par plage (`>=`/`<=` sur `created_at`).
@@ -119,12 +119,24 @@ l'égalité — ajouter le filtrage par plage (`>=`/`<=` sur `created_at`).
    Retirée du modèle `Kpis`, du dashboard et du drill-down. Conséquence :
    `break_minutes` (pause par shift) est **retiré** des settings backend ET de
    l'écran Settings frontend (plus aucune saisie de pause demandée).
-4. **MTBF** = `temps de shift de la tranche / nb de pannes` — fenêtres de
-   shifts des settings **sans** soustraction de pause ; namespace sans
-   settings → 24 h/jour. (Décision d'implémentation : formule validée en
-   révision 1 conservée, seul le terme « pause » disparaît avec
-   `break_minutes`.) `null` quand la tranche n'a pas de dénominateur (lignes
-   de décorticage).
+4. **MTBF** = `temps planifié de la tranche / nb d'arrêts` ; `null` quand la
+   tranche n'a pas de dénominateur (lignes de décorticage).
+4bis. **Temps planifié — RÉVISION 3.** La disponibilité reste supprimée
+   (§5bis.3) ; le temps planifié ne sert donc plus qu'au MTBF, mais il est
+   affiné :
+   - **Fenêtre de shift obligatoire dès `shift_number = 1`** (avant : exigée
+     seulement au-delà de 1). Un plant mono-équipe déclare donc ses horaires
+     réels au lieu de se voir attribuer 24 h/jour.
+   - **Pause par shift saisie en horaires** — `break_start_time` /
+     `break_end_time` en `"HH:MM"`, remplaçant le `break_minutes` de la
+     révision 2. Paire tout-ou-rien : les deux ou aucun. Doit tomber **dans**
+     la fenêtre du shift (bornes incluses, gestion du passage minuit) et être
+     de longueur non nulle et strictement inférieure à la fenêtre.
+   - Temps planifié d'un shift = `fenêtre − pause`. Repli 24 h/jour conservé
+     uniquement pour un namespace **sans settings** (ou dont les fenêtres sont
+     illisibles), pas pour un mono-équipe correctement configuré.
+   - Écran Settings frontend : fenêtre demandée pour chaque shift y compris en
+     mono-équipe, plus les horaires de pause de chaque shift.
 5. Tickets historiques **sans champ `shift`** : **exclus** du décorticage par
    équipe (pas de bucket « non affecté »).
 6. **MTTR par intervenant** : attribué à **`resolved_by`**.

@@ -51,6 +51,7 @@ from src.app.core.firestore import (
     USERS_COLLECTION,
     WORKSTATION_COLLECTION,
 )
+from src.app.core.shift_time import break_minutes_in_window
 from src.app.core.shift_time import parse_hhmm as _strict_parse_hhmm
 from src.app.core.timezone import namespace_timezone
 from src.app.gcp import get_firestore_client
@@ -305,17 +306,48 @@ def _parse_hhmm(value: str) -> Optional[int]:
         return None
 
 
+def _break_seconds(shift: dict[str, Any]) -> float:
+    """The shift's break duration in seconds (revision 3, §5bis.4bis), read
+    from `break_start_time`/`break_end_time`. `0.0` when the shift has no
+    break (either field absent/`None` — includes legacy documents with a
+    residual `break_minutes`, which is ignored) or when the pair fails
+    `break_minutes_in_window`'s validation (unparsable clock time, or a
+    corrupted/out-of-window pair on a stored document that predates
+    request-time validation): same tolerant-degrade philosophy as fix #9 —
+    logged, the break is ignored rather than failing the whole request."""
+    break_start = shift.get("break_start_time")
+    break_end = shift.get("break_end_time")
+    if not break_start or not break_end:
+        return 0.0
+    try:
+        return float(
+            break_minutes_in_window(
+                shift.get("start_time", ""), shift.get("end_time", ""), break_start, break_end
+            )
+            * 60
+        )
+    except ValueError:
+        logger.warning(
+            "kpi: unparsable/invalid shift break %r/%r, ignoring break.",
+            break_start,
+            break_end,
+        )
+        return 0.0
+
+
 def _shift_window_seconds(shift: dict[str, Any]) -> Optional[float]:
     """One shift's planned seconds: its clock window length (midnight-wrap
-    aware), no break deducted (§5bis.3/4 — `break_minutes` was removed in
-    revision 2; a legacy stored shift that still carries the field simply
-    has it ignored here). `None` when the window doesn't parse."""
+    aware) minus its break's duration, if any (revision 3, §5bis.4bis —
+    replaces the revision-2 `break_minutes`, itself removed in favor of
+    `break_start_time`/`break_end_time`). `None` when the window itself
+    doesn't parse; an unparsable/invalid break degrades to "no break"
+    (`_break_seconds`) rather than failing the whole shift."""
     start = _parse_hhmm(shift.get("start_time", ""))
     end = _parse_hhmm(shift.get("end_time", ""))
     if start is None or end is None:
         return None
     length_minutes = (end - start) if end > start else (24 * 60 - start) + end
-    return float(length_minutes * 60)
+    return float(length_minutes * 60) - _break_seconds(shift)
 
 
 def _configured_shifts(settings: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
@@ -377,9 +409,13 @@ def _elapsed_shift_seconds(shift: dict[str, Any], now_local: datetime) -> float:
 
 
 def _shift_seconds_prorated(shift: dict[str, Any], now_local: datetime) -> float:
-    """`shift`'s planned seconds, prorated by the elapsed fraction of its own
-    clock window as of `now_local` (fix #2). 0 when the window doesn't parse
-    or has zero length."""
+    """`shift`'s planned seconds (its window, net of its break — revision 3,
+    §5bis.4bis, see `_shift_window_seconds`), prorated by the elapsed
+    fraction of the shift's own **raw clock window** as of `now_local` (fix
+    #2). The fraction denominator is deliberately the full window, not the
+    break-adjusted one: a linear approximation of "how far into today's
+    shift are we", not a break-aware simulation of exactly when the break
+    falls. 0 when the window doesn't parse or has zero length."""
     start = _parse_hhmm(shift.get("start_time", ""))
     end = _parse_hhmm(shift.get("end_time", ""))
     if start is None or end is None:
@@ -1136,7 +1172,7 @@ def get_dashboard(query: DashboardQueryIn, namespace_id: str) -> DashboardData:
             all_tickets, hierarchy, location_kind, period_start, period_end, now, current, weight_of
         ),
         pareto_by_process=_pareto_by_process(all_tickets, period_start, period_end, now, weight_of),
-        repair_by_process=_repair_by_process(all_tickets),
+        repair_by_process=_repair_by_process(current),
         by_type=_group_by_type(all_tickets, period_start, period_end, now, current, weight_of),
     )
 
@@ -1279,7 +1315,7 @@ def get_drilldown(query: DrilldownQueryIn, namespace_id: str) -> DrilldownData:
     pareto = repair = None
     if "process" not in dims_fixed:
         pareto = _pareto_by_process(all_tickets, period_start, period_end, now, weight_of)
-        repair = _repair_by_process(all_tickets)
+        repair = _repair_by_process(current)
 
     downtime_by_shift = None
     if "shift" not in dims_fixed:
@@ -1305,7 +1341,7 @@ def get_drilldown(query: DrilldownQueryIn, namespace_id: str) -> DrilldownData:
     process_effectively_fixed = bool(query.process or process_in_path or type_in_path)
     mttr_by_agent = count_by_agent = None
     if process_effectively_fixed:
-        mttr_by_agent, count_by_agent = _by_agent_bars(client, all_tickets)
+        mttr_by_agent, count_by_agent = _by_agent_bars(client, current)
 
     return DrilldownData(
         kpis=kpis,

@@ -279,8 +279,24 @@ const en = {
       },
       shift: {
         title: "Shift {{number}}",
+        window: "Working window",
         start: "Start time",
         end: "End time",
+        break: "Break (optional)",
+        breakStart: "Break start",
+        breakEnd: "Break end",
+        breakHelp:
+          "The break is subtracted from the shift window to get planned time, which drives the MTBF (mean time between downtimes). Leave both fields empty if the shift has no break.",
+        errors: {
+          missingWindow: "Enter the shift start time and end time.",
+          zeroLengthWindow: "The shift start and end times must differ.",
+          breakIncomplete:
+            "Enter both the break start and end, or leave both fields empty.",
+          breakOutsideWindow:
+            "The break must fall inside the shift working window.",
+          breakLength:
+            "The break must be longer than zero and shorter than the shift window.",
+        },
       },
       escalate: {
         label: "Escalation delay (seconds)",
