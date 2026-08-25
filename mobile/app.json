@@ -8,6 +8,8 @@
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
       "backgroundColor": "#020617"
     },
     "assetBundlePatterns": [
@@ -15,10 +17,14 @@
     ],
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.ttaherhagui.optiflow"
+      "bundleIdentifier": "com.optiflow"
     },
     "android": {
-      "package": "com.ttaherhagui.optiflow",
+      "package": "com.optiflow",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#020617"
+      },
       "googleServicesFile": "./google-services.json"
     },
     "web": {
@@ -41,6 +47,7 @@
       "eas": {
         "projectId": "efbd63ec-95cf-483c-9966-11ab923120f5"
       }
-    }
+    },
+    "icon": "./assets/icon.png"
   }
 }

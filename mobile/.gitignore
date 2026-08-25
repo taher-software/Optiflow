@@ -1,0 +1,8 @@
+
+
+# Native projects are generated from app.json by `expo prebuild` / EAS Build —
+# app.json is the single source of truth. Keeping them checked in is what let
+# them drift (applicationId com.optiflow vs com.ttaherhagui.optiflow, a splash
+# theme pointing at a drawable that was never generated).
+/android/
+/ios/
