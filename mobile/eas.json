@@ -12,6 +12,9 @@
       "distribution": "internal",
       "env": {
         "EXPO_PUBLIC_API_URL": "https://optiflow-921991757287.europe-west1.run.app"
+      },
+      "android": {
+        "buildType": "apk"
       }
     },
     "production": {
