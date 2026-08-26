@@ -31,6 +31,7 @@
       "bundler": "metro"
     },
     "plugins": [
+      "./plugins/withAdiRegistration",
       "expo-asset",
       "expo-localization",
       [
