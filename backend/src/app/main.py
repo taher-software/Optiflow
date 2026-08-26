@@ -1,6 +1,8 @@
 import asyncio
 import logging
+import sys
 from contextlib import asynccontextmanager
+from importlib.metadata import PackageNotFoundError, version
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,8 +14,30 @@ from src.app.routers import api_router
 logger = logging.getLogger(__name__)
 
 
+
+
+def _configure_logging(level: str) -> None:
+    """Give the root logger a handler and a level.
+
+    Without this the process runs with the default root logger: level
+    WARNING, no handler — so every `logger.info(...)` in the codebase is
+    discarded and warnings escape only through logging's unformatted
+    last-resort handler. `force=True` because uvicorn may have installed its
+    own handlers first; an unrecognized level falls back to INFO rather than
+    raising and taking the whole boot down with it."""
+    logging.basicConfig(
+        level=getattr(logging, level.upper(), logging.INFO),
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        force=True,
+    )
+
+
+
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
+    _configure_logging(get_settings().log_level)
     # Build the geocoding singletons (GeonamesCache/TimezoneFinder — ~1s,
     # CPU-bound) here, off the event loop via `asyncio.to_thread`, so the
     # first registration request never pays that cost inline and stalls

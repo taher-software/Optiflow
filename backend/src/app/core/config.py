@@ -20,6 +20,11 @@ class Settings(BaseSettings):
     confirm_token_max_age_seconds: int = 60 * 60 * 24  # 24 hours
     access_token_max_age_seconds: int = 60 * 60 * 24 * 7  # 7 days
 
+    # Root logging level. Nothing configures logging otherwise, so every
+    # `logger.info(...)` in the codebase is dropped and warnings only escape
+    # through logging's last-resort handler — see `main._configure_logging`.
+    log_level: str = "INFO"
+
     # GCP — backs Pub/Sub topics and Cloud Tasks queues.
     google_project_id: str = ""
     # Cloud Tasks target: base URL of the worker service (task is POSTed to

@@ -1,0 +1,35 @@
+# Local virtualenv — 446 MB of host-platform binaries that must never enter the
+# image (the image installs its own dependencies from requirements.txt).
+.venv/
+venv/
+
+# Python build artefacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Tests and dev-only scripts are not shipped
+tests/
+scripts/
+
+# VCS
+.git/
+.gitignore
+
+# Secrets: never bake credentials into an image. Runtime config comes from
+# Cloud Run environment variables; GCP credentials come from the service
+# account attached to the revision (ADC), never from a file in the image.
+.env
+.env.example
+*service-account*.json
+*serviceAccount*.json
+google-service*.json
+GoogleService-Info.plist
+*.pem
+*.key
+
+# Image-build files themselves
+Dockerfile
+.dockerignore

@@ -18,12 +18,20 @@ dist/
 .env.local
 *.local
 
-# Firebase / GCP credentials — never commit
+# Firebase / GCP SERVER credentials — never commit. `google-service.json`
+# (singular) is a service-account private key: it authenticates as the project
+# and must only ever reach EAS through `eas credentials`.
 google-service.json
-google-services.json
-GoogleService-Info.plist
 *-service-account*.json
 serviceAccountKey*.json
+
+# NOT ignored, on purpose: `google-services.json` / `GoogleService-Info.plist`
+# (plural/client) are Firebase CLIENT config. They are compiled into the app
+# binary and are readable by anyone who downloads it, so hiding them buys
+# nothing — while ignoring them breaks EAS Build, which only uploads
+# git-tracked files. Their protection is the Firebase console: API keys
+# restricted to the app's package name + signing certificate, plus security
+# rules.
 
 # OS / editor
 .DS_Store

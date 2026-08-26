@@ -1,20 +1,43 @@
-fastapi>=0.115
-uvicorn[standard]>=0.32
-pydantic>=2.9
-pydantic-settings>=2.6
-email-validator>=2.2
-google-cloud-firestore>=2.19
-google-cloud-tasks>=2.16
+# Versions pinned to the environment where the test suite is green
+# (backend/.venv, 696 tests passing). Unbounded `>=` ranges let each image
+# build resolve a different SDK combination than the one actually validated —
+# that drift is what produced the Cloud Run
+# `400 Invalid database id %28default%29` failure (image had
+# google-api-core 2.35.0 / firestore 2.29.0 vs 2.32.0 / 2.28.0 locally).
+# Re-pin deliberately after re-running the suite, never by widening a bound.
+
+fastapi==0.139.0
+pydantic==2.13.4
+pydantic-settings==2.14.2
+email-validator==2.3.0
+bcrypt==5.0.0
+itsdangerous==2.2.0
+backoff==2.2.1
+requests==2.34.2
+timezonefinder==8.2.0
+geonamescache==3.0.2
+
+google-cloud-firestore==2.28.0
+google-cloud-tasks==2.24.0
 # Imported lazily by `src.app.gcp.get_pubsub_publisher` (and only there), so a
 # missing SDK surfaces at the first publish in production, never at boot and
 # never in the test suite — keep it declared.
 google-cloud-pubsub>=2.23
 # Required by `src.app.gcp.gcs`, which currently has no caller in the codebase.
 google-cloud-storage>=2.18
+
+# Transitive, pinned on purpose: these are the packages the Firestore client
+# actually routes through, and the ones that differed between the working
+# local environment and the failing image. Leaving them to be resolved freshly
+# would defeat the pins above.
+google-api-core==2.32.0
+google-auth==2.56.0
+googleapis-common-protos==1.75.0
+proto-plus==1.28.1
+grpcio==1.82.1
+protobuf==7.35.1
+
+# Not installed in the local venv, so no validated version to pin to
+# (see README): left on a lower bound.
+uvicorn[standard]>=0.32
 resend>=2.4
-bcrypt>=4.1
-itsdangerous>=2.2
-backoff>=2.2
-requests>=2.32
-timezonefinder>=8.2
-geonamescache>=3.0
