@@ -4,6 +4,122 @@ const fr = {
 
     language: { fr: "Français", en: "English" },
 
+    legal: {
+      taxId: "Matricule fiscal :",
+      lastUpdated: "Dernière mise à jour :",
+      backToHome: "Retour à l'accueil",
+
+      privacy: {
+        title: "Politique de confidentialité",
+        updated: "27 août 2026",
+        sections: {
+          controller: {
+            heading: "Qui est responsable de vos données",
+            body: "OptiFlow est édité et exploité par {{tradeName}} {{legalForm}}, dont le siège social est situé {{registeredOffice}}, matricule fiscal {{taxId}}.\n\n{{tradeName}} {{legalForm}} est responsable de traitement pour les données de compte, de contact et de facturation de ses clients. Pour les données d'exploitation qu'une usine enregistre dans OptiFlow, elle agit en qualité de sous-traitant, sur instruction de cette usine.\n\nPour toute question sur la présente politique, ou pour exercer vos droits, écrivez à {{contactEmail}} ou appelez le {{contactPhone}}.",
+          },
+          data: {
+            heading: "Les données que nous collectons",
+            body: "Données de compte : nom et prénom, adresse e-mail professionnelle, numéro de téléphone lorsque vous en renseignez un, rôle dans l'usine et organisation de rattachement.\n\nDonnées d'exploitation : les tickets d'arrêt que vous ouvrez, prenez en charge ou clôturez, les postes de travail, lignes de production et unités autonomes de production que vous configurez, ainsi que les horodatages de chaque étape du cycle de vie de l'arrêt.\n\nDonnées techniques : journaux de connexion, adresse IP, type de navigateur et d'appareil, et pages de l'application consultées.\n\nNous ne collectons aucune donnée sensible et n'utilisons jamais vos données à des fins publicitaires.",
+          },
+          purposes: {
+            heading: "Pourquoi nous les utilisons",
+            body: "Fournir le service : créer votre compte, vous authentifier et vous donner accès aux seules données de votre organisation.\n\nFaire fonctionner le flux de traitement des arrêts : notifier les intervenants concernés, suivre la prise en charge et la résolution, et calculer les KPI de votre usine.\n\nMaintenir la sécurité et la disponibilité du service : détecter les abus, diagnostiquer les incidents et conserver les journaux d'audit.\n\nAssurer le support et la facturation : répondre à vos demandes et gérer l'abonnement.",
+          },
+          basis: {
+            heading: "Base légale",
+            body: "Nous traitons vos données pour l'exécution du contrat qui nous lie à votre organisation, pour respecter nos obligations légales et comptables, et sur le fondement de notre intérêt légitime à préserver la sécurité du service. Lorsque le consentement est requis, il vous est demandé et vous pouvez le retirer à tout moment.",
+          },
+          retention: {
+            heading: "Durée de conservation",
+            body: "Les données de compte sont conservées pendant toute la durée de l'abonnement de votre organisation, puis 12 mois après son terme.\n\nLes données d'exploitation (tickets, KPI) sont conservées pendant la durée de l'abonnement et peuvent être exportées ou supprimées à la demande de votre organisation.\n\nLes journaux techniques sont conservés 12 mois.\n\nLes pièces comptables sont conservées pendant la durée imposée par la législation fiscale applicable.",
+          },
+          sharing: {
+            heading: "Avec qui nous les partageons",
+            body: "Nous ne vendons pas vos données et ne les transmettons à aucun tiers pour son propre compte.\n\nNous faisons appel aux sous-traitants suivants, chacun lié par contrat et agissant sur nos seules instructions :\n\n· Google Cloud (Firestore, Pub/Sub, Cloud Tasks, Cloud Run) — hébergement et stockage des données, en région europe-west1.\n· Resend — envoi des e-mails transactionnels : confirmation de compte et notifications d'arrêt.\n\nNous pouvons également communiquer des données lorsque la loi ou une autorité compétente l'exige.",
+          },
+          security: {
+            heading: "Sécurité",
+            body: "Les données sont chiffrées en transit (HTTPS) et au repos par notre hébergeur. L'accès est réservé aux membres de votre organisation : chaque requête est cantonnée à votre espace et aucune donnée ne circule d'une usine à une autre.\n\nL'accès de nos équipes est limité à ce qui est strictement nécessaire à l'exploitation et au support du service.",
+          },
+          rights: {
+            heading: "Vos droits",
+            body: "Vous pouvez demander l'accès à vos données, leur rectification, leur suppression, une copie portable, ou la limitation de leur traitement. Vous pouvez également vous opposer à un traitement déterminé.\n\nAdressez votre demande à {{contactEmail}}. Nous répondons dans un délai d'un mois. Si vous relevez d'une organisation cliente, nous pouvons être amenés à lui transmettre votre demande : c'est elle qui décide du sort des données d'exploitation dont elle est responsable.",
+          },
+          cookies: {
+            heading: "Cookies et stockage local",
+            body: "OptiFlow n'utilise ni cookie publicitaire, ni traceur tiers.\n\nL'application web enregistre deux éléments dans le stockage local de votre navigateur : votre jeton de session, pour vous maintenir connecté, et votre préférence de langue. Effacer les données de votre navigateur supprime les deux et vous déconnecte.",
+          },
+          children: {
+            heading: "Mineurs",
+            body: "OptiFlow est un outil professionnel destiné au personnel des usines. Il ne s'adresse pas aux personnes de moins de 16 ans et ne doit pas être utilisé par elles.",
+          },
+          changes: {
+            heading: "Modification de la présente politique",
+            body: "Nous pouvons faire évoluer cette politique pour tenir compte des évolutions du service ou de la réglementation. La date figurant en haut de cette page indique toujours la version en vigueur, et toute modification substantielle est notifiée aux organisations clientes.",
+          },
+        },
+      },
+
+      terms: {
+        title: "Conditions générales de vente",
+        updated: "27 août 2026",
+        sections: {
+          purpose: {
+            heading: "1. Objet",
+            body: "Les présentes conditions générales de vente régissent la souscription au service OptiFlow et son utilisation. Le service est édité par {{tradeName}} {{legalForm}}, dont le siège social est situé {{registeredOffice}}, matricule fiscal {{taxId}} (l'« Éditeur »).\n\nElles sont acceptées par le client lors de la souscription et prévalent sur ses propres conditions d'achat.",
+          },
+          service: {
+            heading: "2. Description du service",
+            body: "OptiFlow est une plateforme logicielle en mode SaaS dédiée à la gestion des arrêts machine en milieu industriel. Elle couvre la détection de l'arrêt, la notification des intervenants, la prise en charge et le suivi du ticket, la validation du retour à la production et le calcul des KPI de l'usine.\n\nLe service s'utilise via une application web et une application mobile, sans installation sur les serveurs du client.",
+          },
+          account: {
+            heading: "3. Comptes et accès",
+            body: "Chaque organisation cliente dispose d'un espace isolé. Le client désigne un administrateur qui crée et gère les comptes utilisateurs et leurs rôles.\n\nLes identifiants sont personnels et confidentiels. Le client en assume l'usage et informe l'Éditeur sans délai de toute suspicion de compromission.",
+          },
+          subscription: {
+            heading: "4. Souscription",
+            body: "L'abonnement est souscrit pour le périmètre indiqué au devis ou au bon de commande accepté par le client : nombre d'utilisateurs, de sites et options retenues.\n\nToute extension de ce périmètre en cours de période est facturée au prorata, dans les mêmes conditions.",
+          },
+          pricing: {
+            heading: "5. Prix",
+            body: "Les prix sont ceux figurant au devis ou au bon de commande accepté par le client. Ils s'entendent hors taxes ; les taxes applicables s'ajoutent au taux en vigueur à la date de facturation.\n\nLes prix peuvent être révisés à chaque renouvellement. L'Éditeur en informe le client au moins 60 jours avant l'échéance ; le client peut alors résilier dans les conditions de l'article 7.",
+          },
+          payment: {
+            heading: "6. Paiement",
+            body: "Les factures sont payables à 30 jours date d'émission, par virement bancaire, sauf stipulation contraire du bon de commande.\n\nToute somme impayée à l'échéance porte intérêt de retard au taux légal, sans mise en demeure préalable. Après une relance restée sans réponse pendant 15 jours, l'Éditeur peut suspendre l'accès jusqu'au règlement.",
+          },
+          duration: {
+            heading: "7. Durée et résiliation",
+            body: "L'abonnement est conclu pour la durée indiquée au bon de commande et se renouvelle par périodes de même durée, sauf résiliation notifiée par écrit par l'une des parties au moins 30 jours avant le terme de la période en cours.\n\nChaque partie peut résilier en cas de manquement grave de l'autre non réparé dans les 30 jours suivant une mise en demeure écrite.\n\nÀ la fin du contrat, le client dispose de 30 jours pour exporter ses données. Passé ce délai, elles sont supprimées dans les conditions prévues par la politique de confidentialité.",
+          },
+          obligations: {
+            heading: "8. Obligations du client",
+            body: "Le client s'engage à utiliser le service conformément aux présentes conditions et à la réglementation applicable, à fournir des informations exactes, à tenir à jour ses comptes utilisateurs, et à ne pas tenter de contourner les mesures techniques protégeant le service ni d'accéder aux données d'une autre organisation.\n\nLe client est responsable des contenus qu'il enregistre dans le service et de l'information de son propre personnel sur les traitements réalisés.",
+          },
+          availability: {
+            heading: "9. Disponibilité et support",
+            body: "L'Éditeur met en œuvre les moyens nécessaires pour assurer la disponibilité du service 24 h/24, hors opérations de maintenance planifiées — annoncées à l'avance dans la mesure du possible — et hors défaillance d'un prestataire tiers ou de la connexion du client.\n\nLe support est joignable les jours ouvrés à {{contactEmail}} et au {{contactPhone}}. Tout engagement spécifique de disponibilité ou de délai de réponse est celui figurant au bon de commande.",
+          },
+          liability: {
+            heading: "10. Responsabilité",
+            body: "L'Éditeur est tenu d'une obligation de moyens. Sa responsabilité est limitée aux dommages directs et, toutes causes confondues, au montant des sommes versées par le client au cours des douze mois précédant le fait générateur.\n\nL'Éditeur n'est pas responsable des dommages indirects, notamment perte de production, perte de chiffre d'affaires ou perte de données résultant d'une cause extérieure à son contrôle.\n\nOptiFlow est un outil de gestion et de traçabilité. Il ne se substitue ni aux procédures de sécurité du client, ni à ses obligations réglementaires relatives à ses équipements.",
+          },
+          intellectualProperty: {
+            heading: "11. Propriété intellectuelle",
+            body: "Le service, ses logiciels, ses interfaces et sa documentation demeurent la propriété exclusive de l'Éditeur. L'abonnement confère un droit d'usage non exclusif et non cessible, pour la durée de l'abonnement et pour les seuls besoins internes du client.\n\nLes données enregistrées par le client restent sa propriété.",
+          },
+          dataProtection: {
+            heading: "12. Données à caractère personnel",
+            body: "Chaque partie respecte la législation applicable en matière de données à caractère personnel. Les traitements réalisés par l'Éditeur sont décrits dans la politique de confidentialité, qui fait partie intégrante des présentes conditions.",
+          },
+          law: {
+            heading: "13. Droit applicable et litiges",
+            body: "Les présentes conditions sont soumises au droit tunisien.\n\nLes parties s'efforcent de régler à l'amiable tout différend. À défaut d'accord dans un délai de 30 jours, le litige relève de la compétence exclusive des tribunaux de Sousse, Tunisie.",
+          },
+        },
+      },
+    },
+
     common: {
       showPassword: "Afficher le mot de passe",
       hidePassword: "Masquer le mot de passe",

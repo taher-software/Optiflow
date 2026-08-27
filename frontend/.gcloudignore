@@ -1,0 +1,27 @@
+# Files NOT uploaded by `gcloud app deploy`.
+# The nodejs runtime rejects app.yaml's ignore-list key, so patterns live here.
+#
+# Syntax is .gitignore's — so root-level entries are anchored with a leading
+# slash. Without it, `index.html` would also match `dist/index.html`, the very
+# file the single-page-app fallback serves.
+
+/.git/
+/.gitignore
+
+# Dependencies are reinstalled by the runtime from package.json.
+/node_modules/
+
+# Sources and tooling: only dist/ and server.js are needed at runtime.
+/src/
+/public/
+/index.html
+/vite.config.ts
+/tsconfig.json
+/eslint.config.js
+/.prettierrc.json
+/.prettierignore
+/README.md
+
+# Never ship local environment values.
+/.env
+/.env.*

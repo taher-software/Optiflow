@@ -12,4 +12,13 @@ export default tseslint.config(
       sourceType: "module",
     },
   },
+  {
+    // server.js runs on Node (App Engine), not in the browser.
+    files: ["server.js"],
+    languageOptions: {
+      ecmaVersion: 2022,
+      sourceType: "module",
+      globals: { process: "readonly" },
+    },
+  },
 );

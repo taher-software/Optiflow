@@ -10,8 +10,10 @@ import ProspectPage from "../pages/ProspectPage";
 import RegisterPage from "../pages/RegisterPage";
 import SettingsPage from "../pages/SettingsPage";
 import StatsPage from "../pages/StatsPage";
+import PrivacyPolicyPage from "../pages/PrivacyPolicyPage";
 import ProductionLineFormPage from "../pages/ProductionLineFormPage";
 import ProductionLinesPage from "../pages/ProductionLinesPage";
+import TermsPage from "../pages/TermsPage";
 import UapFormPage from "../pages/UapFormPage";
 import UapsPage from "../pages/UapsPage";
 import UserFormPage from "../pages/UserFormPage";
@@ -24,6 +26,7 @@ import WorkstationsPage from "../pages/WorkstationsPage";
  *   /       public prospect page
  *   /login  sign in
  *   /app    protected operations area (guarded -> splash -> dashboard)
+ *   /privacy, /terms  public legal documents
  */
 export function AppRouter() {
   return (
@@ -33,6 +36,8 @@ export function AppRouter() {
         <Route path={ROUTES.login} element={<LoginPage />} />
         <Route path={ROUTES.register} element={<RegisterPage />} />
         <Route path={ROUTES.confirmAccount} element={<ConfirmAccountPage />} />
+        <Route path={ROUTES.privacy} element={<PrivacyPolicyPage />} />
+        <Route path={ROUTES.terms} element={<TermsPage />} />
         <Route element={<ProtectedRoute />}>
           <Route element={<AppLayout />}>
             <Route path={ROUTES.app} element={<DashboardPage />} />

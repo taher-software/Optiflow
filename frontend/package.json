@@ -4,15 +4,18 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview",
-    "typecheck": "tsc --noEmit",
-    "lint": "eslint .",
+    "dev": "vite",
     "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check .",
+    "gcp-build": "",
+    "lint": "eslint .",
+    "preview": "vite preview",
+    "start": "node server.js",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "express": "^5.2.1",
     "i18next": "^26.3.6",
     "i18next-browser-languagedetector": "^8.2.1",
     "react": "^19.1.0",

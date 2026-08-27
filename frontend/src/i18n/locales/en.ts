@@ -4,6 +4,122 @@ const en = {
 
     language: { fr: "Français", en: "English" },
 
+    legal: {
+      taxId: "Tax identification number:",
+      lastUpdated: "Last updated:",
+      backToHome: "Back to the home page",
+
+      privacy: {
+        title: "Privacy Policy",
+        updated: "27 August 2026",
+        sections: {
+          controller: {
+            heading: "Who is responsible for your data",
+            body: "OptiFlow is published and operated by {{tradeName}} {{legalForm}}, registered office {{registeredOffice}}, tax identification number {{taxId}}.\n\n{{tradeName}} {{legalForm}} is the data controller for the account, contact and billing data of its customers. For the operational data a plant records in OptiFlow, it acts on that plant's instructions as a data processor.\n\nFor any question about this policy, or to exercise your rights, contact us at {{contactEmail}} or {{contactPhone}}.",
+          },
+          data: {
+            heading: "What we collect",
+            body: "Account data: first and last name, professional email address, phone number where you provide one, your role in the plant, and the organization you belong to.\n\nOperational data: the downtime tickets you open, acknowledge or resolve, the workstations, production lines and production areas you configure, and the timestamps of each step of the downtime lifecycle.\n\nTechnical data: connection logs, IP address, browser and device type, and the pages of the application you visit.\n\nWe do not collect sensitive personal data, and we never use your data for advertising.",
+          },
+          purposes: {
+            heading: "Why we use it",
+            body: "To provide the service: create your account, authenticate you, and give you access to your organization's data only.\n\nTo run the downtime workflow: notify the right responders, track acknowledgement and resolution, and compute your plant's KPIs.\n\nTo keep the service secure and available: detect abuse, diagnose incidents, and maintain audit logs.\n\nTo support and bill you: answer your requests and manage the subscription.",
+          },
+          basis: {
+            heading: "Legal basis",
+            body: "We process your data to perform the contract that binds us to your organization, to comply with our legal and accounting obligations, and on the basis of our legitimate interest in keeping the service secure. Where consent is required, we ask for it and you may withdraw it at any time.",
+          },
+          retention: {
+            heading: "How long we keep it",
+            body: "Account data is kept for as long as your organization's subscription is active, then for 12 months after it ends.\n\nOperational data (tickets, KPIs) is kept for the duration of the subscription and can be exported or deleted at your organization's request.\n\nTechnical logs are kept for 12 months.\n\nAccounting records are kept for the period required by the applicable tax law.",
+          },
+          sharing: {
+            heading: "Who we share it with",
+            body: "We do not sell your data and we do not share it with third parties for their own purposes.\n\nWe rely on the following processors, each bound by a contract and acting only on our instructions:\n\n· Google Cloud (Firestore, Pub/Sub, Cloud Tasks, Cloud Run) — hosting and data storage, in the europe-west1 region.\n· Resend — sending transactional email such as account confirmation and downtime notifications.\n\nWe may also disclose data where required by law or by a competent authority.",
+          },
+          security: {
+            heading: "Security",
+            body: "Data is encrypted in transit (HTTPS) and at rest by our hosting provider. Access is restricted to the members of your own organization: every request is scoped to your tenant, and no data crosses from one plant to another.\n\nAccess by our staff is limited to what is strictly necessary for operating and supporting the service.",
+          },
+          rights: {
+            heading: "Your rights",
+            body: "You may request access to your data, its correction, its deletion, a portable copy, or the restriction of its processing. You may also object to a given processing operation.\n\nSend your request to {{contactEmail}}. We reply within one month. If you belong to a customer organization, we may need to forward your request to that organization, which decides on the operational data it controls.",
+          },
+          cookies: {
+            heading: "Cookies and local storage",
+            body: "OptiFlow does not use advertising or third-party tracking cookies.\n\nThe web application stores two items in your browser's local storage: your session token, so you stay signed in, and your language preference. Clearing your browser data removes both and signs you out.",
+          },
+          children: {
+            heading: "Children",
+            body: "OptiFlow is a professional tool intended for plant staff. It is not directed at, and must not be used by, persons under 16.",
+          },
+          changes: {
+            heading: "Changes to this policy",
+            body: "We may update this policy to reflect changes to the service or to the law. The date at the top of this page always shows the current version, and we notify customer organizations of any substantial change.",
+          },
+        },
+      },
+
+      terms: {
+        title: "Terms of Sale",
+        updated: "27 August 2026",
+        sections: {
+          purpose: {
+            heading: "1. Purpose",
+            body: 'These terms of sale govern the subscription to and use of the OptiFlow service, published by {{tradeName}} {{legalForm}}, registered office {{registeredOffice}}, tax identification number {{taxId}} (the "Publisher").\n\nThey are accepted by the customer when the subscription is signed and prevail over any of the customer\'s own purchasing terms.',
+          },
+          service: {
+            heading: "2. The service",
+            body: "OptiFlow is a software-as-a-service platform for managing machine downtime in manufacturing plants. It covers detecting a stoppage, notifying the responders, acknowledging and tracking the ticket, validating the return to production, and computing the resulting plant KPIs.\n\nThe service is accessed over the internet through a web application and a mobile application. No installation on the customer's servers is required.",
+          },
+          account: {
+            heading: "3. Accounts and access",
+            body: "Each customer organization has its own isolated space. The customer appoints an administrator who creates and manages user accounts and their roles.\n\nCredentials are personal and confidential. The customer is responsible for their use and must inform the Publisher without delay of any suspected compromise.",
+          },
+          subscription: {
+            heading: "4. Subscription",
+            body: "The subscription is taken out for the scope stated in the quote or order form accepted by the customer: number of users, sites and options.\n\nAny extension of that scope during the term is billed on a pro-rata basis under the same conditions.",
+          },
+          pricing: {
+            heading: "5. Pricing",
+            body: "Prices are those set out in the quote or order form accepted by the customer. They are stated exclusive of tax; applicable taxes are added at the rate in force on the invoice date.\n\nPrices may be revised at each renewal. The Publisher gives at least 60 days' notice before the renewal date; the customer may then terminate under section 7.",
+          },
+          payment: {
+            heading: "6. Payment",
+            body: "Invoices are payable within 30 days of their issue date, by bank transfer, unless the order form provides otherwise.\n\nAny sum unpaid on its due date bears late-payment interest at the legal rate, without the need for a formal notice. After a reminder that remains unanswered for 15 days, the Publisher may suspend access until payment is received.",
+          },
+          duration: {
+            heading: "7. Term and termination",
+            body: "The subscription runs for the term stated in the order form and renews for equal periods unless either party terminates it in writing at least 30 days before the end of the current period.\n\nEither party may terminate for a material breach that remains uncured 30 days after a written notice.\n\nOn termination, the customer may export its data for 30 days. After that period, the data is deleted under the conditions of the privacy policy.",
+          },
+          obligations: {
+            heading: "8. Customer obligations",
+            body: "The customer undertakes to use the service in accordance with these terms and with the applicable law, to provide accurate information, to keep its user accounts up to date, and not to attempt to circumvent the technical measures protecting the service or to access another organization's data.\n\nThe customer is responsible for the content it records in the service and for informing its own staff of the processing carried out.",
+          },
+          availability: {
+            heading: "9. Availability and support",
+            body: "The Publisher undertakes to use its best efforts to keep the service available around the clock, excluding scheduled maintenance, which is announced in advance whenever possible, and excluding failures of third-party providers or of the customer's own connection.\n\nSupport is available on business days at {{contactEmail}} and {{contactPhone}}. Any specific availability or response commitment is the one stated in the order form.",
+          },
+          liability: {
+            heading: "10. Liability",
+            body: "The Publisher is bound by an obligation of means. Its liability is limited to direct damage and, in the aggregate, to the amounts paid by the customer over the twelve months preceding the event giving rise to the claim.\n\nThe Publisher is not liable for indirect damage, in particular loss of production, loss of turnover or loss of data resulting from a cause outside its control.\n\nOptiFlow is a management and traceability tool. It does not replace the customer's safety procedures or its regulatory obligations regarding its equipment.",
+          },
+          intellectualProperty: {
+            heading: "11. Intellectual property",
+            body: "The service, its software, its interfaces and its documentation remain the exclusive property of the Publisher. The subscription grants a non-exclusive, non-transferable right to use them for the term of the subscription and for the customer's internal needs only.\n\nThe data recorded by the customer remains the customer's property.",
+          },
+          dataProtection: {
+            heading: "12. Personal data",
+            body: "Each party complies with the applicable personal-data legislation. The processing carried out by the Publisher is described in the privacy policy, which forms an integral part of these terms.",
+          },
+          law: {
+            heading: "13. Governing law and disputes",
+            body: "These terms are governed by Tunisian law.\n\nThe parties will seek an amicable settlement of any dispute. Failing agreement within 30 days, the dispute falls under the exclusive jurisdiction of the competent courts of Sousse, Tunisia.",
+          },
+        },
+      },
+    },
+
     common: {
       showPassword: "Show password",
       hidePassword: "Hide password",

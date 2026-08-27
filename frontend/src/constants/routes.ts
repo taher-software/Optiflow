@@ -8,6 +8,10 @@ export const ROUTES = {
   register: "/register",
   /** Email/account confirmation landing (reads ?token=). */
   confirmAccount: "/confirm-account",
+  /** Privacy policy (public; the URL declared to the app stores). */
+  privacy: "/privacy",
+  /** Terms of sale — Conditions générales de vente (public). */
+  terms: "/terms",
   /** Protected operations area (tenant-scoped). */
   app: "/app",
   /** User management (owner/admin). */

@@ -1,0 +1,27 @@
+# App Engine standard — the built Vite bundle in frontend/dist, served by server.js.
+#
+# Deploy with:
+#   cd frontend && npm run build && gcloud app deploy
+#
+# The bundle is built locally and uploaded; the runtime only serves it. Caching
+# and the single-page-app fallback (/privacy, /terms, /app/... are client-side
+# routes with no file behind them) are handled in server.js.
+#
+# What gets uploaded is controlled by .gcloudignore. Do NOT reintroduce the
+# ignore-list key the older runtimes used: gcloud greps the raw text of this
+# file for that word and aborts the deploy even when it appears in a comment
+# (see api_lib/app/yaml_parsing.py, _InitializeHasExplicitSkipFiles).
+runtime: nodejs22
+
+# Smallest instance: this process only reads files off disk.
+instance_class: F1
+
+automatic_scaling:
+  min_instances: 0
+  max_instances: 2
+  target_cpu_utilization: 0.75
+
+handlers:
+  - url: /.*
+    script: auto
+    secure: always

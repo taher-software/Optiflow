@@ -4,6 +4,7 @@ import { Link } from "react-router-dom";
 import { BrandLogo } from "../components/BrandLogo";
 import { CtaButton } from "../components/CtaButton";
 import { FeatureCard } from "../components/FeatureCard";
+import { LegalFooter } from "../components/LegalFooter";
 import { LanguageSwitcher } from "../components/LanguageSwitcher";
 import { CALENDLY_URL, FEATURE_ICONS } from "../constants/features";
 import { ROUTES } from "../constants/routes";
@@ -87,9 +88,14 @@ export function ProspectPage() {
       </section>
 
       {/* Footer */}
-      <footer className="mx-auto max-w-6xl px-6 py-8 text-center text-xs text-slate-600">
-        {t("prospect.footer", { year: new Date().getFullYear() })}
-      </footer>
+      <div className="mx-auto max-w-6xl px-6 py-8">
+        <p className="text-center text-xs text-slate-600">
+          {t("prospect.footer", { year: new Date().getFullYear() })}
+        </p>
+        <div className="mt-6">
+          <LegalFooter />
+        </div>
+      </div>
     </div>
   );
 }

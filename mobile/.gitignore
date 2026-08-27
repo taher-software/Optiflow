@@ -6,3 +6,6 @@
 # theme pointing at a drawable that was never generated).
 /android/
 /ios/
+
+# Local Expo state (device history, dev-server settings) — expo-doctor.
+.expo/
