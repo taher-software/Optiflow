@@ -12,7 +12,7 @@ class Settings(BaseSettings):
     frontend_url: str = "http://localhost:5173/"
 
     # Resend (transactional email).
-    resend_api_key: str = "re_REQ5ayRn_WZoktpg3E6i9NCtiyPDLQfks"
+    resend_api_key: str = ""
     email_from: str = "bodor@bodor.tn"
 
     # Security — signs the email-confirmation and access tokens.
