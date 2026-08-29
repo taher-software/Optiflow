@@ -10,9 +10,12 @@ class CloudJobAckOut(BaseModel):
     redeliver the message indefinitely."""
 
     job_id: Optional[str] = Field(
-        default=None, description="Idempotency key of the processed job, if any."
+        default=None,
+        description="Idempotency key of the processed job, if any.",
+        examples=["8f14e45f-ceea-467e-9c4e-8b0d9d3b1a11"],
     )
     result: Optional[Any] = Field(
         default=None,
         description="The handler's own result (e.g. `{status, ...}`), if any.",
+        examples=[{"status": "notified", "recipients": 2}],
     )

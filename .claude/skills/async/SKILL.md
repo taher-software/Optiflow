@@ -19,13 +19,26 @@ The publisher depends on the task: use `get_pubsub_publisher().publish_job(...)`
 get_pubsub_publisher().publish_job(JobType.X, namespace_id, payload, job_id)  # Pub/Sub
 ```
 
-## Worker route — the ONLY entrypoint that runs jobs
-A single route `POST /cloud_job` (no app auth — infra OIDC only) receives the push from
-**Pub/Sub or Cloud Tasks**, parses `{job_id, job_type, namespace_id, payload}`, looks the
-handler up in the registry by `job_type`, calls it, and **returns the handler's response**
-(HTTP 200 — never a non-2xx, which would requeue). There is **no manual `dispatch_job`/retry
-orchestrator**: the registry in `src/app/async_jobs/__init__.py` is a plain
-`dict[JobType, handler]`.
+## Worker route — the ONLY entrypoints that run jobs
+Two routes, one shared registry lookup — **neither has app auth, infra OIDC only** — and
+**both always return HTTP 200**, never a non-2xx, which would make the broker requeue a
+message forever:
+
+- `POST /cloud_job` — **Cloud Tasks only.** Body is the flat shape Cloud Tasks delivers:
+  `{job_id, job_type, namespace_id, payload}`.
+- `POST /pubsub_job` — **Pub/Sub push only.** Body is the push subscription envelope
+  (`{message: {data: <base64 JSON>, messageId, publishTime, attributes}, subscription}`);
+  the route base64-decodes `message.data`, reads `{job_id, job_type, namespace_id, payload}`
+  from the root of that decoded JSON, and delegates to the exact same lookup as
+  `/cloud_job`. Any envelope that cannot be turned into a valid job (missing/invalid `data`,
+  bad base64, invalid JSON, unknown `job_type`, no `message` at all, ...) is **logged at
+  `error` and still acked 200** — it is never rejected with a 4xx/5xx.
+
+Do not send a Pub/Sub push to `/cloud_job` (its flat body won't match the envelope and it
+will 422, which is a redelivery loop) or a Cloud Tasks body to `/pubsub_job`. Whichever route
+receives the call, it looks the handler up in the registry by `job_type` and **returns the
+handler's response**. There is **no manual `dispatch_job`/retry orchestrator**: the registry
+in `src/app/async_jobs/__init__.py` is a plain `dict[JobType, handler]`.
 
 ## Handler — one file per job in `src/app/async_jobs/`
 1. New job → new file `src/app/async_jobs/<job>.py`; add its value to the `JobType` enum
