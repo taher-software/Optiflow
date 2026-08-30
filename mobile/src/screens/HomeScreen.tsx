@@ -11,6 +11,7 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { BrandLogo } from "../components/BrandLogo";
+import { OnlineToggle } from "../components/OnlineToggle";
 import {
   DOWN_TIME_STATUSES,
   formatDuration,
@@ -30,6 +31,8 @@ export function HomeScreen({ navigation }: Props) {
   const { t } = useTranslation();
   const insets = useSafeAreaInsets();
   const user = useAuthStore((s) => s.user);
+  const settingOnline = useAuthStore((s) => s.settingOnline);
+  const setOnline = useAuthStore((s) => s.setOnline);
   const summary = useDownTimeStore((s) => s.summary);
   const loading = useDownTimeStore((s) => s.loadingSummary);
   const fetchSummary = useDownTimeStore((s) => s.fetchSummary);
@@ -64,6 +67,14 @@ export function HomeScreen({ navigation }: Props) {
         {user ? `, ${user.first_name}` : ""}.
       </Text>
       <Text className="mt-1 text-sm text-slate-400">{t("home.overview")}</Text>
+
+      {user && (
+        <OnlineToggle
+          online={user.online}
+          pending={settingOnline}
+          onChange={(next) => void setOnline(next)}
+        />
+      )}
 
       <View className="mt-6 flex-row flex-wrap justify-between">
         {DOWN_TIME_STATUSES.map((status) => (

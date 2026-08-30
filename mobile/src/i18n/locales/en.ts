@@ -26,6 +26,14 @@ const en = {
       greeting: "Welcome",
       overview: "Downtime at a glance",
       declare: "Declare a downtime",
+      online: {
+        label: "My availability",
+        on: "Online",
+        off: "Offline",
+        escalationNote:
+          "You still receive supervisor escalations while offline.",
+        error: "Could not update your availability. Please try again.",
+      },
     },
     downtime: {
       avgTime: "Avg",

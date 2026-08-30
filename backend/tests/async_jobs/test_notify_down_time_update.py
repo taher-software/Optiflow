@@ -37,8 +37,16 @@ def _wire_firestore(fake_db, monkeypatch):
 def push_spy(monkeypatch):
     calls: list[dict] = []
 
-    def _spy(tokens, title, body, data=None):
-        calls.append({"tokens": list(tokens), "title": title, "body": body, "data": data})
+    def _spy(tokens, title, body, data=None, notif_level="urgent"):
+        calls.append(
+            {
+                "tokens": list(tokens),
+                "title": title,
+                "body": body,
+                "data": data,
+                "notif_level": notif_level,
+            }
+        )
 
     monkeypatch.setattr(notify_module, "send_push_notifications", _spy)
     return calls
@@ -393,8 +401,16 @@ def _raising_spy(monkeypatch, fail_tokens):
     `_no_real_backoff_sleep` autouse fixture keeps the retries instant."""
     calls: list[dict] = []
 
-    def _spy(tokens, title, body, data=None):
-        calls.append({"tokens": list(tokens), "title": title, "body": body, "data": data})
+    def _spy(tokens, title, body, data=None, notif_level="urgent"):
+        calls.append(
+            {
+                "tokens": list(tokens),
+                "title": title,
+                "body": body,
+                "data": data,
+                "notif_level": notif_level,
+            }
+        )
         valid = [t for t in tokens if t]
         if valid and all(t in fail_tokens for t in valid):
             raise PushDeliveryError("simulated total delivery failure")

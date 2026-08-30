@@ -57,6 +57,7 @@ def _build_login_out(user: dict[str, Any]) -> LoginOut:
             role=user.get("role", ""),
             namespace_id=user.get("namespace_id", ""),
             avatar_url=user.get("avatar_url"),
+            online=user.get("online", True),
         ),
     )
 

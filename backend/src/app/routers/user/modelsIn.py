@@ -28,6 +28,25 @@ class CreateUserIn(BaseModel):
         return self
 
 
+class SetOnlineIn(BaseModel):
+    """Payload for a user to declare themselves online/offline for team push
+    notifications. `online` is required (no default) so an empty body cannot
+    silently change the caller's state."""
+
+    online: bool = Field(
+        ...,
+        strict=True,
+        description=(
+            "Explicit reachability state to set on the caller's own account: "
+            "`True` to receive team push notifications, `False` to opt out of "
+            "them. Supervisor escalations are still delivered regardless of "
+            "this value. Strictly typed: string/int look-alikes (\"yes\", 1, "
+            "\"true\") are rejected rather than silently coerced."
+        ),
+        examples=[False],
+    )
+
+
 class UpdateUserIn(BaseModel):
     """Payload to update an existing user. All fields optional."""
 

@@ -23,6 +23,7 @@ def _to_out(user: dict[str, Any]) -> UserOut:
         email=user.get("email"),
         security_code=user.get("security_code", ""),
         namespace_id=user.get("namespace_id", ""),
+        online=user.get("online", True),
     )
 
 
@@ -113,4 +114,14 @@ def update_user(user_id: str, payload: UpdateUserIn, namespace_id: str) -> UserO
 
     if updates:
         client.update_document(USERS_COLLECTION, user_id, updates)
+    return _to_out({**user, **updates})
+
+
+def set_own_online(user: dict[str, Any], online: bool) -> UserOut:
+    """Set the `online` flag on the CALLER's own document (self-service, no
+    role check). Writes only the `online` key; every other field on the
+    document is left untouched."""
+    client = get_firestore_client()
+    updates = {"online": online}
+    client.update_document(USERS_COLLECTION, user["id"], updates)
     return _to_out({**user, **updates})

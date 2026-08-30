@@ -9,7 +9,7 @@ import type {
 } from "../constants/downtime";
 import { apiRequest, type ApiResult } from "./apiClient";
 
-const PAGE_SIZE = 1;
+const PAGE_SIZE = 10;
 
 interface DownTimeState {
   summary: DownTimeSummary | null;

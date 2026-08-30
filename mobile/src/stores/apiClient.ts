@@ -14,7 +14,7 @@ export interface ApiResult<T> {
  * unwraps the ApiResponse envelope's `data`. Used for all post-login calls. */
 export async function apiRequest<T>(
   path: string,
-  method: "GET" | "POST" | "PUT" | "DELETE" = "GET",
+  method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE" = "GET",
   body?: unknown,
 ): Promise<ApiResult<T>> {
   try {

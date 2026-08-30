@@ -1,17 +1,42 @@
 from fastapi import APIRouter, Depends, status
 
 from src.app.core.api_response import ApiResponse
-from src.app.core.deps import require_roles
+from src.app.core.deps import get_current_user, require_roles
 from src.app.globals.enum import Role
 
 from src.app.routers.user import services
-from src.app.routers.user.modelsIn import CreateUserIn, UpdateUserIn
+from src.app.routers.user.modelsIn import CreateUserIn, SetOnlineIn, UpdateUserIn
 from src.app.routers.user.modelsOut import UserOut
 
 router = APIRouter(prefix="/users", tags=["users"])
 
 # Only owners and admins may manage users.
 _admin_or_owner = require_roles(Role.OWNER, Role.ADMIN)
+
+
+@router.patch(
+    "/me/online",
+    response_model=ApiResponse[UserOut],
+    status_code=status.HTTP_200_OK,
+    summary="Set my own online/offline reachability",
+    description=(
+        "Self-service: any authenticated user may declare themselves online or "
+        "offline for team push notifications. Idempotent — repeating the same "
+        "value is a no-op and never errors. Identity comes only from the "
+        "bearer token; no user id may be passed in the path or body, so a "
+        "caller can never modify anyone else's account, in this tenant or "
+        "another. Declaring yourself offline does not silence supervisor "
+        "escalations, only team-level notifications.\n\n"
+        "NOTE: declared BEFORE `/{user_id}` so `me` is never captured as a "
+        "user id by the routes below."
+    ),
+)
+async def set_own_online(
+    payload: SetOnlineIn,
+    current: dict = Depends(get_current_user),
+) -> ApiResponse[UserOut]:
+    result = services.set_own_online(current, payload.online)
+    return ApiResponse(message="Online status updated.", data=result)
 
 
 @router.post(

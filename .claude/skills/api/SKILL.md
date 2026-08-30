@@ -24,3 +24,6 @@ Rules for every endpoint:
    rollback of everything it did — datastore writes and any resources created during
    execution, whenever possible. The endpoint either completes fully or leaves the system
    unchanged.
+4. A self-service route acting on the caller's own resource (e.g. `/{resource}/me/...`) must
+   be declared in `__init__.py` **before** any `/{resource}/{id}...` route on the same
+   resource, otherwise the path parameter greedily captures the literal `me` segment.

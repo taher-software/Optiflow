@@ -24,6 +24,7 @@ dist/
 google-service.json
 *-service-account*.json
 serviceAccountKey*.json
+private_key*.json
 
 # NOT ignored, on purpose: `google-services.json` / `GoogleService-Info.plist`
 # (plural/client) are Firebase CLIENT config. They are compiled into the app

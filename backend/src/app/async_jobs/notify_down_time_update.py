@@ -106,7 +106,7 @@ def _notify_user(
         return
 
     send_push_notifications(
-        [token], title=title, body=body, data={"down_time_id": down_time_id, "event": event}
+        [token], title=title, body=body, data={"down_time_id": down_time_id, "event": event}, notif_level="standard"
     )
 
 
@@ -154,6 +154,7 @@ def _notify_process_agents(
         title=title,
         body=body,
         data={"down_time_id": down_time_id, "process": process.value, "event": "rejected"},
+        notif_level="urgent",
     )
 
 

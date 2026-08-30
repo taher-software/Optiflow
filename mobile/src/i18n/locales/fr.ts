@@ -26,6 +26,14 @@ const fr = {
       greeting: "Bienvenue",
       overview: "Les arrêts en un coup d'œil",
       declare: "Déclarer un arrêt",
+      online: {
+        label: "Ma disponibilité",
+        on: "En ligne",
+        off: "Hors ligne",
+        escalationNote:
+          "Les escalades superviseur vous parviennent toujours hors ligne.",
+        error: "Impossible de mettre à jour votre disponibilité. Réessayez.",
+      },
     },
     downtime: {
       avgTime: "Moy",
