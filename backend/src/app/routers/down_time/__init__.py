@@ -34,7 +34,10 @@ _down_time_report_scope = require_roles(Role.PRODUCTION_AGENT)
         "`workstation_id`) is required for its scope and is validated "
         "against the caller's namespace, including the cascading "
         "UAP -> production line -> workstation parent/child relationship. "
-        "`department` is required (and restricted to `production`/"
+        "`plant` scope is the mirror image: it covers the whole factory, so "
+        "it forbids all three id fields — a `plant` downtime that names "
+        "`uap_id`, `production_line_id`, or `workstation_id` is rejected "
+        "with 422. `department` is required (and restricted to `production`/"
         "`maintenance`) only when `down_time_type` is Setup / Changeover.\n\n"
         "This endpoint does not write the downtime ticket synchronously: it "
         "validates the request then dispatches the `add_down_time` async "
@@ -50,8 +53,10 @@ _down_time_report_scope = require_roles(Role.PRODUCTION_AGENT)
                 "the given `production_scope`, an id that does not exist in "
                 "the caller's namespace, an id that does not match its "
                 "declared parent (e.g. a production line under a different "
-                "UAP), or an invalid/missing `department` for a "
-                "Setup / Changeover downtime."
+                "UAP), `production_scope: plant` combined with a non-empty "
+                "`uap_id` / `production_line_id` / `workstation_id`, or an "
+                "invalid/missing `department` for a Setup / Changeover "
+                "downtime."
             )
         },
     },

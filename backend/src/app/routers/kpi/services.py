@@ -643,6 +643,15 @@ def _location_hierarchy(client: FirestoreClient, namespace_id: str) -> dict[str,
         if station.get("production_line_id"):
             stations_by_line[station["production_line_id"]].append(station)
 
+    # Perf (review W3): precompute the per-UAP workstation count once here
+    # instead of re-summing `stations_by_line` over `lines_by_uap` every time
+    # `_row_weight`/`_locations_for_ticket` need a UAP's total — with 300
+    # stations and 2000 tickets that re-sum was happening per ticket per row.
+    uap_station_counts: dict[str, int] = {
+        uap_id: sum(len(stations_by_line.get(line["id"], [])) for line in lines_here)
+        for uap_id, lines_here in lines_by_uap.items()
+    }
+
     return {
         "uaps": {u["id"]: u for u in uaps},
         "lines": {l["id"]: l for l in lines},
@@ -651,6 +660,7 @@ def _location_hierarchy(client: FirestoreClient, namespace_id: str) -> dict[str,
         "stations_by_line": dict(stations_by_line),
         "line_to_uap": {l["id"]: l.get("uap_id") for l in lines},
         "station_to_line": {s["id"]: s.get("production_line_id") for s in stations},
+        "uap_station_counts": uap_station_counts,
     }
 
 
@@ -752,6 +762,240 @@ def _resolve_location(
     return uap_id, line_id, station_id
 
 
+# §2 (contract kpi-scope-spread) — downward spread. A ticket declared at a
+# wide `down_time_scope` is attributable not only to its own stored
+# location but to every descendant of it, symmetric with the existing
+# upward roll-up in `_resolve_location`. Rank order narrow -> wide.
+_SCOPE_RANK: dict[str, int] = {
+    ProductionScope.WORK_STATION.value: 0,
+    ProductionScope.PRODUCTION_LINE.value: 1,
+    ProductionScope.UAP.value: 2,
+    ProductionScope.PLANT.value: 3,
+}
+_KIND_RANK: dict[str, int] = {"station": 0, "line": 1, "uap": 2}
+
+
+def _stored_id_rank(issue: dict[str, Any]) -> Optional[int]:
+    """§9.4/W2 — the rank (`_KIND_RANK`) of `issue`'s own deepest STORED id
+    (`workstation_id` > `production_line_id` > `uap_id`, most specific
+    first), or `None` if it carries no location id at all. Used to tell a
+    genuine upward ROLL-UP (`_resolve_location` deriving a value for a
+    `kind` ABOVE this rank, e.g. a line ticket's own `uap` row — always
+    deterministic, always trusted) from a plain IDENTITY read (`kind`
+    exactly at this rank, e.g. reading `production_line_id` back for a
+    `line`-kind query) — the two need different trust rules, see
+    `_locations_for_ticket`."""
+    if issue.get("workstation_id"):
+        return _KIND_RANK["station"]
+    if issue.get("production_line_id"):
+        return _KIND_RANK["line"]
+    if issue.get("uap_id"):
+        return _KIND_RANK["uap"]
+    return None
+
+
+def _locations_for_ticket(
+    issue: dict[str, Any], hierarchy: dict[str, Any], kind: str
+) -> set[str]:
+    """§2 — the ids of type `kind` that `issue` is attributable to.
+
+    First tries `issue`'s own location at `kind`'s level, rolled UP via
+    `_resolve_location` exactly as today (a station ticket's own `uap`/
+    `line` row, a line ticket's own `uap` row, ...). Whenever that roll-up
+    yields a concrete id, `_stored_id_rank` tells whether it's a genuine
+    UPWARD roll-up (`kind` strictly ABOVE the ticket's own deepest stored
+    id — e.g. a `line` ticket's own `uap` row: deterministic, always
+    trusted, no ambiguity) or a plain IDENTITY read (`kind` sits exactly AT
+    that deepest stored id's own level — e.g. reading `production_line_id`
+    back for a `line`-kind query). A roll-up always wins outright — full
+    stop, no spreading, whatever `down_time_scope` says (this is what keeps
+    a ticket declared "plant" that nonetheless carries a specific
+    `production_line_id` attributed to that one line's UAP, not sprayed
+    across every UAP: the roll-up is the more specific, unambiguous fact).
+
+    An IDENTITY read only wins when `kind` is at or above the ticket's own
+    DECLARED `down_time_scope` level (`kind_rank >= scope_rank`, or the
+    scope is absent/unrecognized). Below that (`kind_rank < scope_rank`),
+    the stored id is CONTEXT, not a restriction, and is never consulted —
+    `_ticket_weight`/`_weight_from_ids` already treat a scope's own id
+    field as authoritative when present (`:689`) and only fall back to the
+    most-specific id when it's missing, so a `uap`-scope ticket with no
+    `uap_id` but a `production_line_id` must still spread across every line
+    of the UAP that line resolves to (§9.4/W2's own scenario), not collapse
+    onto that one line — this is what treating ANY concrete id as
+    authoritative, identity or roll-up alike, would do, and is the anomaly
+    the developer raised back after the first pass of this contract's
+    revision 2.
+
+    Once `own` is not trusted (either it's `None`, or it's an identity read
+    below the declared scope), `down_time_scope` (read the same way
+    `_ticket_weight` already does, `:689`) fills the row set, and only when
+    it is strictly WIDER than `kind`: a `plant` ticket reaches every
+    uap/line/station; a `uap` ticket (via its own RESOLVED uap, `uap_id`)
+    reaches every line/station under that uap; a `production line` ticket
+    (via its own RESOLVED line, `production_line_id`) reaches every station
+    under that line. "Resolved" (§9.4/W2) means the ids already unpacked at
+    the top of this function via `_resolve_location` — NOT the ticket's raw
+    stored fields — so a `uap`-scope ticket carrying only a
+    `production_line_id` (no `uap_id`) still spreads from the UAP that line
+    rolls up to, instead of disappearing from every row.
+
+    A legacy document with no `down_time_scope`, an unrecognized value, or
+    a scope that is not strictly wider than `kind` gets today's behavior
+    only: nothing at this level — never inferred or spread from absent
+    ids ("on ne devine pas un scope large à partir d'ids absents", §2).
+
+    §9.3/W4 — reconciliation (§7) beats the weight floor for a SPREAD
+    ticket: a `kind`/id with zero descendant workstations is never included
+    here when spreading (a `uap`/`line` with no workstations under it is
+    dropped from the result). This does not affect a ticket declared
+    (`own` above) exactly at that empty location — that row still exists,
+    floored at 1 by `_row_weight`, just never populated via spread.
+    """
+    uap_id, line_id, station_id = _resolve_location(issue, hierarchy)
+    scope = issue.get("down_time_scope")
+    scope_rank = _SCOPE_RANK.get(scope) if isinstance(scope, str) else None
+    kind_rank = _KIND_RANK[kind]
+    stored_rank = _stored_id_rank(issue)
+
+    own = {"uap": uap_id, "line": line_id, "station": station_id}[kind]
+    if own is not None:
+        is_roll_up = stored_rank is not None and kind_rank > stored_rank
+        # Addendum §8's own worked example ("a `plant` ticket carrying a
+        # `uap_id` stays attributed to that one UAP") is deliberately kept
+        # as-is for `plant` specifically — `plant` has no "own id field" at
+        # all (the §8 validator forbids one on every NEW document), so any
+        # id found on a `plant`-scope ticket is legacy data Addendum §8
+        # already ruled should restrict attribution, not spread. §9.4/W2's
+        # narrower-than-declared-scope case is different: `uap`/`production
+        # line` DO have a well-defined own id field, and when THAT field is
+        # missing but a narrower one is present, `_ticket_weight`'s own
+        # fallback (`:689`) already treats it as "scope's own id missing",
+        # so `own` must not block the scope-driven spread below either.
+        if (
+            is_roll_up
+            or scope_rank is None
+            or kind_rank >= scope_rank
+            or scope == ProductionScope.PLANT.value
+        ):
+            return {own}
+
+    if scope_rank is None or scope_rank <= kind_rank:
+        return set()
+
+    if scope == ProductionScope.PLANT.value:
+        if kind == "uap":
+            return {
+                u for u in hierarchy["uaps"] if hierarchy["uap_station_counts"].get(u, 0) > 0
+            }
+        if kind == "line":
+            return {l for l in hierarchy["lines"] if hierarchy["stations_by_line"].get(l)}
+        return set(hierarchy["stations"].keys())
+    if scope == ProductionScope.UAP.value:
+        uap_scope_id = uap_id  # resolved (§9.4/W2), not the raw `issue.get("uap_id")`
+        if not uap_scope_id:
+            return set()
+        lines = hierarchy["lines_by_uap"].get(uap_scope_id, [])
+        if kind == "line":
+            return {
+                line["id"] for line in lines if hierarchy["stations_by_line"].get(line["id"])
+            }
+        ids: set[str] = set()
+        for line in lines:
+            ids.update(s["id"] for s in hierarchy["stations_by_line"].get(line["id"], []))
+        return ids
+    if scope == ProductionScope.PRODUCTION_LINE.value:
+        line_scope_id = line_id  # resolved (§9.4/W2), not the raw `issue.get("production_line_id")`
+        if not line_scope_id:
+            return set()
+        return {s["id"] for s in hierarchy["stations_by_line"].get(line_scope_id, [])}
+    return set()
+
+
+def _row_weight(
+    issue: dict[str, Any], hierarchy: dict[str, Any], kind: str, loc_id: str
+) -> int:
+    """§3 — the weight `issue` carries in the `kind`/`loc_id` breakdown row:
+    the workstations it touches IN THAT ROW, floored at 1. Mirrors
+    `_locations_for_ticket`'s own-location-first rule: when `issue` has a
+    concrete rolled-up location at `kind`'s level (not spread into this
+    row), this is exactly `_ticket_weight(issue, hierarchy)` — no existing
+    number moves. Only a ticket spread into `loc_id` from a strictly wider
+    `down_time_scope` (no id of its own at this level) gets that row's OWN
+    share (never the whole ticket's weight, which would
+    triple/quintuple-count a wide-scope ticket across the rows it spreads
+    into).
+
+    Worked example (§3): a plant with 3 UAPs — A=10 workstations, B=6, C=4
+    (20 total) — logs one 30-minute plant-wide stop. The header KPI is
+    `30 * 20 = 600` workstation-minutes. Weighing every row by the ticket's
+    FULL weight (20) would give each of A/B/C `30 * 20 = 600`, summing to
+    1800 — triple the header, and A/B/C would look equally hurt despite
+    having different workstation counts. Weighing each row by its OWN share
+    instead gives A: `30 * 10 = 300`, B: `30 * 6 = 180`, C: `30 * 4 = 120` —
+    summing back to exactly 600, and preserving the A > B > C ranking.
+
+    §9.4/W2 (revision 2): mirrors `_locations_for_ticket`'s own-trust rule
+    exactly (`_stored_id_rank`) — a genuine upward roll-up (`kind` above the
+    ticket's own deepest stored id) always wins; a plain identity read
+    (`kind` AT that stored id's own level) only wins when `kind` is at or
+    above the ticket's DECLARED `down_time_scope` level. Below that, the
+    narrower id is context, not a restriction, and must not stop the
+    ticket's OWN-share spread weight from applying to a sibling row
+    `_locations_for_ticket` now reaches."""
+    uap_id, line_id, station_id = _resolve_location(issue, hierarchy)
+    scope = issue.get("down_time_scope")
+    scope_rank = _SCOPE_RANK.get(scope) if isinstance(scope, str) else None
+    kind_rank = _KIND_RANK[kind]
+    stored_rank = _stored_id_rank(issue)
+
+    own = {"uap": uap_id, "line": line_id, "station": station_id}[kind]
+    if own is not None:
+        is_roll_up = stored_rank is not None and kind_rank > stored_rank
+        # See `_locations_for_ticket`'s matching comment: `plant` is kept
+        # special-cased (Addendum §8), every other scope's narrower-id case
+        # is §9.4/W2's fallback-not-restriction rule.
+        if (
+            is_roll_up
+            or scope_rank is None
+            or kind_rank >= scope_rank
+            or scope == ProductionScope.PLANT.value
+        ):
+            return _ticket_weight(issue, hierarchy)
+
+    if scope_rank is None or scope_rank <= kind_rank:
+        return _ticket_weight(issue, hierarchy)
+    if kind == "station":
+        return 1
+    if kind == "line":
+        return max(1, len(hierarchy["stations_by_line"].get(loc_id, [])))
+    return max(1, hierarchy["uap_station_counts"].get(loc_id, 0))
+
+
+def _location_weight_fn(
+    hierarchy: dict[str, Any], kind: str, loc_id: str
+) -> Callable[[dict[str, Any]], int]:
+    """Per-row `weight_of` closure for one `(kind, loc_id)` breakdown row —
+    `_row_weight` memoized by ticket id, but the cache is scoped to THIS row
+    only (never shared across rows/kinds). This is the fix for the
+    `_weight_of_builder` trap (§5.1): that closure's cache is keyed by
+    ticket id alone, so a spread ticket appearing in several rows would be
+    served the first row's weight everywhere else. Here the row is baked
+    into the closure itself, so the effective cache key is
+    `(ticket_id, kind, loc_id)`."""
+    cache: dict[str, int] = {}
+
+    def weight_of(issue: dict[str, Any]) -> int:
+        issue_id = issue.get("id")
+        if issue_id is None:
+            return _row_weight(issue, hierarchy, kind, loc_id)
+        if issue_id not in cache:
+            cache[issue_id] = _row_weight(issue, hierarchy, kind, loc_id)
+        return cache[issue_id]
+
+    return weight_of
+
+
 def _pick_location_kind(uap_count: int, line_count: int, station_count: int) -> str:
     """§3 — UAPs when there's more than one, else lines when more than one,
     else stations."""
@@ -770,13 +1014,53 @@ def _pick_location_kind(uap_count: int, line_count: int, station_count: int) -> 
 def _group_tickets_by_location(
     tickets: list[dict[str, Any]], hierarchy: dict[str, Any], kind: str
 ) -> dict[str, list[dict[str, Any]]]:
+    """Buckets `tickets` by every `kind`-level location id each is
+    attributable to (§2 — `_locations_for_ticket`), not just a single
+    rolled-up id: a wide-scope ticket (e.g. `plant`) lands in EVERY row of
+    this kind, each row's list carrying that same ticket instance."""
     groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for issue in tickets:
-        uap_id, line_id, station_id = _resolve_location(issue, hierarchy)
-        loc_id = {"uap": uap_id, "line": line_id, "station": station_id}[kind]
-        if loc_id:
+        for loc_id in _locations_for_ticket(issue, hierarchy, kind):
             groups[loc_id].append(issue)
     return groups
+
+
+def _spreads_from_plant(issue: dict[str, Any], hierarchy: dict[str, Any], kind: str) -> bool:
+    """§9.2/B2 — true when `issue` is a `plant`-scope ticket with no concrete
+    own location at `kind`'s level, i.e. exactly the kind of ticket whose
+    weight (`_ticket_weight`) already counts EVERY workstation in the plant,
+    including ones `_locations_for_ticket` can place in no real row
+    (workstations with no `production_line_id`, or under a line with no
+    `uap_id`). Used only to populate the explicit `unassigned` row below —
+    a legacy/unrecognized-scope ticket never matches this (§2: no spread)."""
+    if issue.get("down_time_scope") != ProductionScope.PLANT.value:
+        return False
+    uap_id, line_id, station_id = _resolve_location(issue, hierarchy)
+    own = {"uap": uap_id, "line": line_id, "station": station_id}[kind]
+    return own is None
+
+
+def _unassigned_count(hierarchy: dict[str, Any], kind: str) -> int:
+    """§9.2/B2 — the number of workstations `kind`'s real rows structurally
+    cannot reach: a `station` breakdown has no such gap (every real station
+    is its own row regardless of its `production_line_id`). A `line`
+    breakdown misses workstations with no `production_line_id` at all. A
+    `uap` breakdown additionally misses workstations whose line itself has
+    no `uap_id` (the line rolls up to nothing) — not just line-less
+    workstations."""
+    if kind == "station":
+        return 0
+    if kind == "line":
+        return sum(
+            1 for s in hierarchy["stations"].values() if not s.get("production_line_id")
+        )
+    # kind == "uap"
+    count = 0
+    for s in hierarchy["stations"].values():
+        line_id = s.get("production_line_id")
+        if not line_id or not hierarchy["line_to_uap"].get(line_id):
+            count += 1
+    return count
 
 
 def _group_by_location(
@@ -787,14 +1071,45 @@ def _group_by_location(
     period_end: datetime,
     now: datetime,
     count_tickets: list[dict[str, Any]],
-    weight_of: Optional[Callable[[dict[str, Any]], int]] = None,
 ) -> list[BreakdownRow]:
-    """Tickets not attributable to `kind`'s level are excluded (never bucketed
-    under a synthetic "unassigned" row). `tickets` (downtime aggregation,
-    current + carry-over per fix #1) and `count_tickets` (current-range only,
-    for `count`/`mttr`) are grouped independently. Rows never carry a
-    meaningful `mtbf_seconds` (fix #5 — no single planned-time denominator
-    makes sense for one location/type slice)."""
+    """Tickets not attributable to `kind`'s level are excluded from the real
+    rows below (never bucketed under a synthetic row there). `tickets`
+    (downtime aggregation, current + carry-over per fix #1) and
+    `count_tickets` (current-range only, for `count`/`mttr`) are grouped
+    independently. Rows never carry a meaningful `mtbf_seconds` (fix #5 — no
+    single planned-time denominator makes sense for one location/type
+    slice).
+
+    §2/§3 (contract kpi-scope-spread): a wide-scope ticket (e.g. `plant`)
+    is bucketed into EVERY row of this `kind` (`_group_tickets_by_location`),
+    each row weighted by its OWN share of the ticket (`_row_weight`, via a
+    per-row `_location_weight_fn` closure — a request-wide `weight_of` is
+    deliberately never reused here, to avoid a ticket-id-only cache serving
+    one row's weight to every other row the same ticket appears in).
+
+    §4 (explicit, not a bug): `count`/`mttr` are never weighted, so a
+    spread ticket counts 1 in EACH row it lands in — three UAP rows at
+    `count == 1` for a single plant-wide stop. A breakdown's `count`/`mttr`
+    therefore do NOT reconcile against the header's (the header counts the
+    ticket once).
+
+    §9.2/B2: an explicit `id="unassigned"`/`label=""` row (this breakdown's
+    `kind`) is appended, weighted by the FIXED count of workstations no real
+    row can reach (`_unassigned_count`), for the plant-scope tickets that
+    structurally include them (`_spreads_from_plant`) — emitted ONLY when
+    that count is > 0 (never a zero row), and never drillable (this
+    function never treats `"unassigned"` as a real hierarchy id anywhere
+    else).
+
+    Given both of the above, `sum(row.downtime_seconds for row in rows) ==
+    header.downtime_seconds` holds whenever every ticket contributing to the
+    header is either (a) attributable to a real `kind` row (own location or
+    a spread that lands in a non-empty one, §9.3/W4) or (b) a plant-scope
+    ticket captured by the `unassigned` row — i.e. NOT for a legacy/
+    unrecognized-scope ticket with no id (§2 deliberately never spreads or
+    counts it toward `unassigned` either, so its header weight has no
+    matching row at all — an existing, unchanged gap this contract does not
+    claim to close)."""
     names: dict[str, str]
     if kind == "uap":
         names = {i: d.get("name", "") for i, d in hierarchy["uaps"].items()}
@@ -818,11 +1133,36 @@ def _group_by_location(
                 now,
                 0.0,
                 count_tickets=count_groups.get(loc_id, []),
-                weight_of=weight_of,
+                weight_of=_location_weight_fn(hierarchy, kind, loc_id),
             ),
         )
         for loc_id in set(downtime_groups) | set(count_groups)
     ]
+
+    unassigned_count = _unassigned_count(hierarchy, kind)
+    if unassigned_count > 0:
+        unassigned_tickets = [t for t in tickets if _spreads_from_plant(t, hierarchy, kind)]
+        unassigned_count_tickets = [
+            t for t in count_tickets if _spreads_from_plant(t, hierarchy, kind)
+        ]
+        if unassigned_tickets or unassigned_count_tickets:
+            rows.append(
+                BreakdownRow(
+                    kind=kind,
+                    id="unassigned",
+                    label="",
+                    kpis=_compute_kpis(
+                        unassigned_tickets,
+                        period_start,
+                        period_end,
+                        now,
+                        0.0,
+                        count_tickets=unassigned_count_tickets,
+                        weight_of=lambda _issue, _n=unassigned_count: _n,
+                    ),
+                )
+            )
+
     rows.sort(key=lambda row: row.kpis.downtime_seconds, reverse=True)
     return rows
 
@@ -1114,12 +1454,13 @@ def _parse_drill_path(path: str) -> list[tuple[str, str]]:
 def _apply_path_step(
     tickets: list[dict[str, Any]], hierarchy: dict[str, Any], kind: str, seg_id: str
 ) -> list[dict[str, Any]]:
-    if kind == "uap":
-        return [t for t in tickets if _resolve_location(t, hierarchy)[0] == seg_id]
-    if kind == "line":
-        return [t for t in tickets if _resolve_location(t, hierarchy)[1] == seg_id]
-    if kind == "station":
-        return [t for t in tickets if t.get("workstation_id") == seg_id]
+    if kind in ("uap", "line", "station"):
+        # §1/§2 (contract kpi-scope-spread) — a location path step must keep
+        # a wide-scope ticket that spreads down into `seg_id` (e.g. a
+        # `plant` ticket drilled into via `uap:<id>`), same rule as
+        # `_filter_by_scope`; otherwise a drill-down path silently loses the
+        # very ticket its own children block would show.
+        return [t for t in tickets if seg_id in _locations_for_ticket(t, hierarchy, kind)]
     if kind == "shift":
         return [t for t in tickets if str(t.get("shift")) == seg_id]
     if kind == "process":
@@ -1312,7 +1653,7 @@ def get_dashboard(query: DashboardQueryIn, namespace_id: str) -> DashboardData:
             current, carry_overs, settings, period_start, period_end, now, weight_of
         ),
         by_location=_group_by_location(
-            all_tickets, hierarchy, location_kind, period_start, period_end, now, current, weight_of
+            all_tickets, hierarchy, location_kind, period_start, period_end, now, current
         ),
         pareto_by_process=_pareto_by_process(all_tickets, period_start, period_end, now, weight_of),
         repair_by_process=_repair_by_process(current),
@@ -1329,7 +1670,6 @@ def get_drilldown(query: DrilldownQueryIn, namespace_id: str) -> DrilldownData:
 
     current, carry_overs = _fetch_tickets(client, namespace_id, period_start, period_end)
     hierarchy = _location_hierarchy(client, namespace_id)
-    weight_of = _weight_of_builder(hierarchy)
 
     steps = _parse_drill_path(query.path)
 
@@ -1354,6 +1694,23 @@ def get_drilldown(query: DrilldownQueryIn, namespace_id: str) -> DrilldownData:
         if kind in _LOCATION_PATH_KINDS:
             last_location_kind = kind
             last_location_id = seg_id
+
+    # §9.1/B1 (contract kpi-scope-spread, revision 2): once the path fixes a
+    # location, the request-wide weight must be that location's OWN share
+    # (`_location_weight_fn`, exactly what `get_daily` already does for its
+    # `scope_kind`/`scope_id` filter), not the whole-plant `weight_of` —
+    # otherwise the header (and every aggregation below that reuses it)
+    # shows the entire plant's weight for a UAP/line/station drill-down and
+    # doesn't reconcile with its own `children` block. The location step(s)
+    # above are applied to `current`/`carry_overs` BEFORE this point, so
+    # every ticket reaching the aggregations below is already confined to
+    # this location's subtree — the substitution is safe. `_weight_of_builder`
+    # is kept only for a path with NO location step at all.
+    weight_of = (
+        _location_weight_fn(hierarchy, last_location_kind, last_location_id)
+        if last_location_kind is not None
+        else _weight_of_builder(hierarchy)
+    )
 
     if query.process:
         current = [t for t in current if _process_for_ticket(t) == query.process]
@@ -1398,15 +1755,21 @@ def get_drilldown(query: DrilldownQueryIn, namespace_id: str) -> DrilldownData:
                     id=line["id"],
                     label=line.get("name", ""),
                     kpis=_compute_kpis(
-                        [t for t in all_tickets if _resolve_location(t, hierarchy)[1] == line["id"]],
+                        [
+                            t
+                            for t in all_tickets
+                            if line["id"] in _locations_for_ticket(t, hierarchy, "line")
+                        ],
                         period_start,
                         period_end,
                         now,
                         0.0,
                         count_tickets=[
-                            t for t in current if _resolve_location(t, hierarchy)[1] == line["id"]
+                            t
+                            for t in current
+                            if line["id"] in _locations_for_ticket(t, hierarchy, "line")
                         ],
-                        weight_of=weight_of,
+                        weight_of=_location_weight_fn(hierarchy, "line", line["id"]),
                     ),
                 )
                 for line in child_lines
@@ -1428,15 +1791,21 @@ def get_drilldown(query: DrilldownQueryIn, namespace_id: str) -> DrilldownData:
                 id=station["id"],
                 label=station.get("name", ""),
                 kpis=_compute_kpis(
-                    [t for t in all_tickets if t.get("workstation_id") == station["id"]],
+                    [
+                        t
+                        for t in all_tickets
+                        if station["id"] in _locations_for_ticket(t, hierarchy, "station")
+                    ],
                     period_start,
                     period_end,
                     now,
                     0.0,
                     count_tickets=[
-                        t for t in current if t.get("workstation_id") == station["id"]
+                        t
+                        for t in current
+                        if station["id"] in _locations_for_ticket(t, hierarchy, "station")
                     ],
-                    weight_of=weight_of,
+                    weight_of=_location_weight_fn(hierarchy, "station", station["id"]),
                 ),
             )
             for station in child_stations
@@ -1451,7 +1820,7 @@ def get_drilldown(query: DrilldownQueryIn, namespace_id: str) -> DrilldownData:
             len(hierarchy["uaps"]), len(hierarchy["lines"]), len(hierarchy["stations"])
         )
         children = _group_by_location(
-            all_tickets, hierarchy, top_kind, period_start, period_end, now, current, weight_of
+            all_tickets, hierarchy, top_kind, period_start, period_end, now, current
         )
         children_hint_key = "dashboard.drill.locationsHint"
 
@@ -1502,12 +1871,14 @@ def get_drilldown(query: DrilldownQueryIn, namespace_id: str) -> DrilldownData:
 def _filter_by_scope(
     tickets: list[dict[str, Any]], hierarchy: dict[str, Any], scope_kind: str, scope_id: str
 ) -> list[dict[str, Any]]:
-    if scope_kind == "uap":
-        return [t for t in tickets if _resolve_location(t, hierarchy)[0] == scope_id]
-    if scope_kind == "line":
-        return [t for t in tickets if _resolve_location(t, hierarchy)[1] == scope_id]
-    if scope_kind == "station":
-        return [t for t in tickets if t.get("workstation_id") == scope_id]
+    """§5.1/§1 — a ticket is retained for `(scope_kind, scope_id)` when
+    `scope_id` is one of the ids `_locations_for_ticket` attributes it to at
+    that level (§2's downward spread), so a `plant`-scope ticket is no
+    longer dropped from every drill-down/daily scope filter — the same rule
+    `_group_tickets_by_location` uses for the dashboard breakdown, which is
+    what keeps the two views reconciled for the same location (§1)."""
+    if scope_kind in ("uap", "line", "station"):
+        return [t for t in tickets if scope_id in _locations_for_ticket(t, hierarchy, scope_kind)]
     return tickets
 
 
@@ -1566,12 +1937,22 @@ def get_daily(query: DailyQueryIn, namespace_id: str) -> DailyPointsOut:
     # `count`/`mttr` requests, which use neither (review fix W5).
     needs_hierarchy = query.scope_kind != "plant" or query.metric == "duration"
     hierarchy = _location_hierarchy(client, namespace_id) if needs_hierarchy else None
-    weight_of = _weight_of_builder(hierarchy) if hierarchy is not None else None
+    weight_of: Optional[Callable[[dict[str, Any]], int]] = None
     if query.scope_kind != "plant":
+        assert hierarchy is not None  # `needs_hierarchy` guarantees this
         current = _filter_by_scope(current, hierarchy, query.scope_kind, query.scope_id or "")
         carry_overs = _filter_by_scope(
             carry_overs, hierarchy, query.scope_kind, query.scope_id or ""
         )
+        # §1/§3 (contract kpi-scope-spread): once filtered to a scope, a
+        # spread ticket's `duration` contribution here must be its OWN share
+        # of THAT scope row (`_location_weight_fn`), not its whole-ticket
+        # weight (`_weight_of_builder`) — otherwise this drill-down/daily
+        # total stops matching the dashboard's `by_location` row for the
+        # same location (the exact coherence this contract exists for).
+        weight_of = _location_weight_fn(hierarchy, query.scope_kind, query.scope_id or "")
+    elif hierarchy is not None:
+        weight_of = _weight_of_builder(hierarchy)
     if query.process:
         current = [t for t in current if _process_for_ticket(t) == query.process]
         carry_overs = [t for t in carry_overs if _process_for_ticket(t) == query.process]

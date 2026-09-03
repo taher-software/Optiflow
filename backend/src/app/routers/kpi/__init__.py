@@ -2,6 +2,8 @@ from datetime import date
 from typing import Literal, Optional, TypeVar
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ValidationError
 
 from src.app.core.api_response import ApiResponse
@@ -108,9 +110,12 @@ async def get_dashboard(
         "instead returns `mttr_by_agent`/`count_by_agent` — same as "
         "selecting a process directly (via path or the `process` query "
         "param). `children` are unaffected by this: a type still "
-        "decorticates by places, never by types. Omitted sections are "
-        "absent from the response body entirely (not `null`). Restricted "
-        "to owner/admin/manager/production supervisor."
+        "decorticates by places, never by types. Suppressed sections (their "
+        "dimension is fixed by the path/params) are absent from the "
+        "response body entirely (not `null`) — EXCEPT `children`, which is "
+        "always present and is explicitly `null` for a leaf (station) "
+        "depth, so a leaf can be told apart from a `children` list not yet "
+        "returned. Restricted to owner/admin/manager/production supervisor."
     ),
     responses={
         403: {"description": "Caller lacks the required role."},
@@ -137,12 +142,24 @@ async def get_drilldown(
     from_: date = Query(..., alias="from", description="Period start (inclusive)."),
     to: date = Query(..., description="Period end (inclusive)."),
     current: dict = Depends(_kpi_scope),
-) -> ApiResponse[DrilldownData]:
+) -> JSONResponse:
     query = _build_query(
         DrilldownQueryIn, path=path, process=process, shift=shift, date_from=from_, date_to=to
     )
     result = services.get_drilldown(query, current["namespace_id"])
-    return ApiResponse(data=result)
+
+    # `response_model_exclude_none=True` (above) omits every suppressed
+    # section — but `children` is `None` for a MEANINGFUL reason at a
+    # station (leaf) depth, distinct from "not applicable" (see
+    # `DrilldownData.children`'s own docstring: "or `None` for a leaf
+    # (station)"). A blanket exclude can't tell those two `None`s apart, so
+    # bypass automatic response_model serialization here and re-add
+    # `children` explicitly (even when `None`) after building the same
+    # exclude-none payload every other section still gets.
+    payload = ApiResponse(data=result).model_dump(exclude_none=True)
+    if payload.get("data") is not None:
+        payload["data"]["children"] = result.children
+    return JSONResponse(content=jsonable_encoder(payload))
 
 
 @router.get(

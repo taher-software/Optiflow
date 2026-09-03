@@ -501,15 +501,38 @@ def _run_add_down_time(
 
         is_setup_changeover = down_time_type == DownTimeType.SETUP_CHANGEOVER
 
+        # §9.5/W5 (kpi-scope-spread, revision 2) — `CreateDownTimeIn` refuses
+        # `plant` + a sub-location id at the HTTP boundary, but this handler
+        # is also reachable directly by the (unauthenticated-by-design)
+        # worker route, recopying whatever the payload says with no
+        # revalidation. Enforce the §8 invariant here too: NEUTRALISE (never
+        # reject) a forbidden combination by forcing the three sub-location
+        # ids to `None` on the stored document, and log a warning naming the
+        # ticket — a real downtime event must never be lost to a malformed
+        # payload.
+        uap_id = payload.get("uap_id")
+        production_line_id = payload.get("production_line_id")
+        workstation_id = payload.get("workstation_id")
+        if payload["production_scope"] == ProductionScope.PLANT.value and (
+            uap_id or production_line_id or workstation_id
+        ):
+            logger.warning(
+                f"add_down_time: ticket '{job_id}' declared 'plant' scope but "
+                "carried a sub-location id (uap_id/production_line_id/"
+                "workstation_id) — forcing all three to None per the §8 "
+                "invariant."
+            )
+            uap_id = production_line_id = workstation_id = None
+
         issue_data = {
             "id": job_id,
             "namespace_id": namespace_id,
             "created_at": now_iso,
             "updated_at": now_iso,
             "down_time_scope": payload["production_scope"],
-            "uap_id": payload.get("uap_id"),
-            "production_line_id": payload.get("production_line_id"),
-            "workstation_id": payload.get("workstation_id"),
+            "uap_id": uap_id,
+            "production_line_id": production_line_id,
+            "workstation_id": workstation_id,
             "down_time_type": payload["down_time_type"],
             "department": payload.get("department") if is_setup_changeover else None,
             "process": process.value,

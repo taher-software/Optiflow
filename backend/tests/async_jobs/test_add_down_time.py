@@ -1236,3 +1236,47 @@ class TestShiftAssignmentWiring:
         issue = _issue(fake_db, NS, "job-shift-gap")
         assert "shift" in issue
         assert issue["shift"] is None
+
+
+# --------------------------------------------------------------------------- #
+# `.claude/specs/kpi-scope-spread.md` §9.5/W5 (revision 2, scenario 24) — the
+# plant-scope sub-location invariant §8 gives `CreateDownTimeIn` (a `plant`
+# ticket may not carry `uap_id`/`production_line_id`/`workstation_id`) must
+# also hold for a document written by THIS handler. The worker route that
+# calls it is unauthenticated by design (see the
+# `worker-routes-unauthenticated-by-design` memory) and recopies whatever the
+# job payload says without revalidating it, so the HTTP-layer validator can
+# be bypassed entirely by a payload reaching this path directly. Appended
+# here without touching any existing test in this file, per the Work Unit's
+# instruction to prefer appending over a new file.
+# --------------------------------------------------------------------------- #
+
+
+class TestPlantScopeSubLocationInvariantEnforcedAtWrite:
+    """`add_down_time` must neutralise (never reject) a `production_scope
+    == "plant"` payload that also carries a sub-location id: force all three
+    ids to `None` on the stored document, log a warning naming the ticket,
+    and still create it — a real downtime event must not be lost to a
+    malformed payload (§9.5)."""
+
+    def test_plant_scope_with_uap_id_stores_all_three_ids_as_none_and_still_creates(
+        self, fake_db, push_spy, caplog
+    ):
+        with caplog.at_level("WARNING", logger=add_down_time_module.__name__):
+            result = add_down_time(
+                NS, _payload(uap_id="some-uap-id"), "job-plant-invariant"
+            )
+
+        assert result == {"status": "created", "down_time_id": "job-plant-invariant"}
+
+        issue = _issue(fake_db, NS, "job-plant-invariant")
+        assert issue["down_time_scope"] == "plant"
+        assert issue["uap_id"] is None
+        assert issue["production_line_id"] is None
+        assert issue["workstation_id"] is None
+
+        assert any(
+            "job-plant-invariant" in record.getMessage()
+            for record in caplog.records
+            if record.levelname == "WARNING"
+        )

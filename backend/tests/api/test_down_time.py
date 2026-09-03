@@ -324,6 +324,162 @@ class TestCreateDownTimeValidation:
         )
         assert res.status_code == 422
 
+    # ----------------------------------------------------------------- #
+    # Addendum (kpi-scope-spread §8): plant scope forbids all three ids.
+    # Mirror image of the existing "scope X requires id X" rules above.
+    # ----------------------------------------------------------------- #
+
+    def test_plant_scope_with_uap_id_422(
+        self, client, seed_user, seed_uap, auth_headers
+    ):
+        agent = _agent(seed_user)
+        uap = seed_uap(namespace_id=NS)
+        res = self._post(
+            client,
+            auth_headers,
+            agent,
+            production_scope="plant",
+            uap_id=uap["id"],
+            down_time_type=DownTimeType.BREAKDOWN.value,
+        )
+        assert res.status_code == 422
+
+    def test_plant_scope_with_production_line_id_422(
+        self, client, seed_user, seed_production_line, auth_headers
+    ):
+        agent = _agent(seed_user)
+        line = seed_production_line(namespace_id=NS, uap_id=None)
+        res = self._post(
+            client,
+            auth_headers,
+            agent,
+            production_scope="plant",
+            production_line_id=line["id"],
+            down_time_type=DownTimeType.BREAKDOWN.value,
+        )
+        assert res.status_code == 422
+
+    def test_plant_scope_with_workstation_id_422(
+        self, client, seed_user, seed_production_line, seed_workstation, auth_headers
+    ):
+        # production_line_id is supplied alongside workstation_id so the
+        # otherwise-valid chain isolates the new plant-only rule as the sole
+        # reason for rejection (a bare workstation_id with no
+        # production_line_id already 422s today for an unrelated business
+        # rule, which would mask this scenario).
+        agent = _agent(seed_user)
+        line = seed_production_line(namespace_id=NS, uap_id=None)
+        station = seed_workstation(namespace_id=NS, production_line_id=line["id"])
+        res = self._post(
+            client,
+            auth_headers,
+            agent,
+            production_scope="plant",
+            production_line_id=line["id"],
+            workstation_id=station["id"],
+            down_time_type=DownTimeType.BREAKDOWN.value,
+        )
+        assert res.status_code == 422
+
+    def test_plant_scope_with_all_ids_null_returns_202(
+        self, client, seed_user, auth_headers, publish_spy
+    ):
+        # Non-regression: plant scope with no ids at all (the normal case)
+        # must remain unaffected by the new §8 rule. This endpoint only
+        # publishes, so success is 202 (see TestCreateDownTime), not 201 as
+        # the BOM's generic phrasing suggests.
+        agent = _agent(seed_user)
+        res = self._post(
+            client,
+            auth_headers,
+            agent,
+            production_scope="plant",
+            down_time_type=DownTimeType.BREAKDOWN.value,
+        )
+        assert res.status_code == 202, res.text
+        assert publish_spy[0]["payload"]["production_scope"] == "plant"
+        assert publish_spy[0]["payload"]["uap_id"] is None
+        assert publish_spy[0]["payload"]["production_line_id"] is None
+        assert publish_spy[0]["payload"]["workstation_id"] is None
+
+    def test_uap_scope_with_contextual_line_id_still_accepted_202(
+        self, client, seed_user, seed_uap, seed_production_line, auth_headers
+    ):
+        # Non-regression: the §8 rule is plant-only. A uap-scope ticket may
+        # still carry a contextual production_line_id, exactly as before.
+        agent = _agent(seed_user)
+        uap = seed_uap(namespace_id=NS)
+        line = seed_production_line(namespace_id=NS, uap_id=uap["id"])
+        res = self._post(
+            client,
+            auth_headers,
+            agent,
+            production_scope="uap",
+            uap_id=uap["id"],
+            production_line_id=line["id"],
+            down_time_type=DownTimeType.BREAKDOWN.value,
+        )
+        assert res.status_code == 202, res.text
+
+    def test_line_scope_with_contextual_uap_id_still_accepted_202(
+        self, client, seed_user, seed_uap, seed_production_line, auth_headers
+    ):
+        # Non-regression: a production-line-scope ticket may still carry a
+        # contextual uap_id, exactly as before.
+        agent = _agent(seed_user)
+        uap = seed_uap(namespace_id=NS)
+        line = seed_production_line(namespace_id=NS, uap_id=uap["id"])
+        res = self._post(
+            client,
+            auth_headers,
+            agent,
+            production_scope="production line",
+            uap_id=uap["id"],
+            production_line_id=line["id"],
+            down_time_type=DownTimeType.BREAKDOWN.value,
+        )
+        assert res.status_code == 202, res.text
+
+    def test_uap_scope_still_requires_uap_id_422(self, client, seed_user, auth_headers):
+        # Non-regression: the existing "id required for its own scope" rule
+        # (tested above as test_uap_scope_without_uap_id_422) is untouched
+        # by the new plant-only rule.
+        agent = _agent(seed_user)
+        res = self._post(
+            client,
+            auth_headers,
+            agent,
+            production_scope="uap",
+            down_time_type=DownTimeType.BREAKDOWN.value,
+        )
+        assert res.status_code == 422
+
+    def test_line_scope_still_requires_line_id_422(
+        self, client, seed_user, auth_headers
+    ):
+        agent = _agent(seed_user)
+        res = self._post(
+            client,
+            auth_headers,
+            agent,
+            production_scope="production line",
+            down_time_type=DownTimeType.BREAKDOWN.value,
+        )
+        assert res.status_code == 422
+
+    def test_station_scope_still_requires_workstation_id_422(
+        self, client, seed_user, auth_headers
+    ):
+        agent = _agent(seed_user)
+        res = self._post(
+            client,
+            auth_headers,
+            agent,
+            production_scope="work station",
+            down_time_type=DownTimeType.BREAKDOWN.value,
+        )
+        assert res.status_code == 422
+
 
 # --------------------------------------------------------------------------- #
 # Authorization
