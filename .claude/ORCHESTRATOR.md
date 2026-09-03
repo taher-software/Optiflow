@@ -148,9 +148,35 @@ reason to exist is that the pipeline costs more than it saves there. Frontend an
 no test station yet, so their units are not gated; say so explicitly rather than implying
 coverage.
 
+**Step 0 — the scenario triage, before any test is written.**
+
+Once `contract.bom` is `done`, the orchestrator analyses the change and enumerates **every**
+scenario it can produce. It then sorts them into exactly three buckets and puts that list in
+front of the developer:
+
+| Bucket | What goes in it | What happens to it |
+|---|---|---|
+| **A — business decision** | The behaviour is a product call, not a technical one: what the rule *should* be, which number is right, what the user is promised. | The developer decides. Nothing downstream is built on a guess. |
+| **B — normal, auto-testable** | The behaviour follows from the contract with no judgement call left. | Goes straight to `test-agent` as the suite to write. |
+| **C — technically possible, low relevance** | Reachable only through data the product does not produce, or a degenerate case nobody hits. | Listed and **not** tested, unless the developer pulls one into A or B. |
+
+Rules for this step:
+
+- **The orchestrator writes this list in French, in plain words**, short enough to act on in a
+  couple of minutes. Long prose defeats the purpose: the developer must be able to rule on
+  bucket A at a glance. Agent briefs, test names, code and documentation stay in **English**.
+- **Bucket A is where the gate earns its keep.** Every item in it is a question, phrased so
+  that the answer changes what gets built — never a rhetorical one.
+- **Bucket C is stated, never silently dropped.** Saying "this case exists and I am not
+  testing it" is the point; discovering it later in production is the failure mode.
+- The developer may move any item between buckets. **A moved item is re-triaged, not argued
+  with.**
+- Only once bucket A is answered does `test-agent` start on A + B.
+
 **How it runs.**
 
-1. The `contract.bom` node must be `done` first. `test-agent` derives scenarios from it —
+1. The `contract.bom` node must be `done` first, and the **scenario triage above** must have
+   been put to the developer, with every bucket-A item answered. `test-agent` derives scenarios from it —
    `endpoints.md` / `jobs.md` / the BOM entry — and **never from implementation code**. A test
    agent that reads the finished implementation writes tests that mirror its bugs, and the
    gate becomes theater.
@@ -184,6 +210,12 @@ Playbooks: `.claude/factories/{backend,frontend,mobile}.md`.
 ## Rules
 
 - Every task passes the Gate.
+- **The orchestrator speaks French to the developer.** Every hand-back, question, triage list
+  and report is in French, kept short and concrete. Everything the machine reads stays in
+  **English**: agent briefs, contracts/BOMs, test names, code, comments, documentation and
+  commit messages.
+- **Before the test gate, the scenario triage (A / B / C) is put to the developer** — the
+  business calls are answered before a single test is written.
 - **Skills are the codebase conventions — every code change follows them, Lane B and Factory alike.**
 - The orchestrator writes code **only** in Lane B.
 - The **BOM** is the single source of truth for anything crossing a boundary.
