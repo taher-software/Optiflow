@@ -63,6 +63,7 @@ from src.app.globals.enum import (
     DownTimeType,
     Process,
     ProductionScope,
+    WorkstationType,
 )
 
 from src.app.routers.kpi.modelsIn import (
@@ -73,6 +74,7 @@ from src.app.routers.kpi.modelsIn import (
 )
 from src.app.routers.kpi.modelsOut import (
     Bar,
+    BaseKpis,
     BreakdownRow,
     DailyPoint,
     DailyPointsOut,
@@ -243,7 +245,7 @@ def _mttr_seconds(tickets: list[dict[str, Any]]) -> float:
     return sum(durations) / len(durations) if durations else 0.0
 
 
-def _compute_kpis(
+def _compute_base_kpis(
     tickets: list[dict[str, Any]],
     period_start: datetime,
     period_end: datetime,
@@ -251,9 +253,12 @@ def _compute_kpis(
     planned_seconds: float,
     count_tickets: Optional[list[dict[str, Any]]] = None,
     weight_of: Optional[Callable[[dict[str, Any]], int]] = None,
-) -> Kpis:
+) -> BaseKpis:
     """The 4 headline KPIs for a slice (§5bis.3/4/empty-slice rule;
-    availability removed in revision 2).
+    availability removed in revision 2). Used both for a `Kpis` object's own
+    root fields and for one workstation-type division's fields (§3.2 of the
+    kpi-workstation-type-slices contract) — same formula, different ticket
+    weight function.
 
     `tickets` drives `downtime_seconds` — it may include carry-over tickets
     from outside the queried `created_at` range (fix #1). Each ticket's
@@ -282,7 +287,131 @@ def _compute_kpis(
         mtbf: Optional[float] = None
     else:
         mtbf = planned_seconds if count == 0 else planned_seconds / count
-    return Kpis(
+    return BaseKpis(
+        downtime_seconds=int(round(downtime)),
+        count=count,
+        mttr_seconds=int(round(mttr)),
+        mtbf_seconds=int(round(mtbf)) if mtbf is not None else None,
+    )
+
+
+def _widen_kpis(
+    base: BaseKpis,
+    bottleneck: Optional[BaseKpis] = None,
+    critical: Optional[BaseKpis] = None,
+) -> Kpis:
+    """The single `BaseKpis` -> `Kpis` widening point (kpi-workstation-type-
+    slices §9 hygiene) — every call site that needs a `Kpis` from a computed
+    `BaseKpis` goes through here, so the two are never allowed to drift
+    (e.g. one call site casting/copying fields by hand while another uses a
+    different shortcut)."""
+    return Kpis(**base.model_dump(), bottleneck=bottleneck, critical=critical)
+
+
+def _compute_kpis(
+    tickets: list[dict[str, Any]],
+    period_start: datetime,
+    period_end: datetime,
+    now: datetime,
+    planned_seconds: float,
+    count_tickets: Optional[list[dict[str, Any]]] = None,
+    weight_of: Optional[Callable[[dict[str, Any]], int]] = None,
+    type_weight_fn: Optional[Callable[[dict[str, Any]], dict[str, int]]] = None,
+    perimeter_type_counts: Optional[dict[str, int]] = None,
+) -> Kpis:
+    """`_compute_base_kpis` plus, optionally, the `bottleneck`/`critical`
+    divisions (kpi-workstation-type-slices §3).
+
+    `type_weight_fn` and `perimeter_type_counts` are an all-or-nothing pair:
+    passing only one is a caller bug (there is no way to compute a slice
+    without both — the per-ticket type weight AND the perimeter's own
+    workstation-type composition), so it raises rather than silently
+    producing a base-only `Kpis` some callers might mistake for "no slices
+    applicable" (§9 hygiene — "impossible to call with a base model AND
+    slice arguments" in an inconsistent way). Passing NEITHER is the normal
+    "not applicable" case (`by_type`, a `station`-kind row, pareto/repair,
+    ...) and simply returns `bottleneck=None, critical=None`.
+    """
+    if (type_weight_fn is None) != (perimeter_type_counts is None):
+        raise ValueError(
+            "_compute_kpis: type_weight_fn and perimeter_type_counts must be "
+            "given together, or not at all."
+        )
+    base = _compute_base_kpis(
+        tickets, period_start, period_end, now, planned_seconds, count_tickets, weight_of
+    )
+    if type_weight_fn is None or perimeter_type_counts is None:
+        return _widen_kpis(base)
+
+    count_source = tickets if count_tickets is None else count_tickets
+    bottleneck = _compute_type_slice(
+        tickets,
+        count_source,
+        period_start,
+        period_end,
+        now,
+        planned_seconds,
+        type_weight_fn,
+        perimeter_type_counts,
+        WorkstationType.BOTTLENECK.value,
+    )
+    critical = _compute_type_slice(
+        tickets,
+        count_source,
+        period_start,
+        period_end,
+        now,
+        planned_seconds,
+        type_weight_fn,
+        perimeter_type_counts,
+        WorkstationType.CRITICAL.value,
+    )
+    return _widen_kpis(base, bottleneck=bottleneck, critical=critical)
+
+
+def _compute_type_slice(
+    tickets: list[dict[str, Any]],
+    count_tickets: list[dict[str, Any]],
+    period_start: datetime,
+    period_end: datetime,
+    now: datetime,
+    planned_seconds: float,
+    type_weight_fn: Callable[[dict[str, Any]], dict[str, int]],
+    perimeter_type_counts: dict[str, int],
+    type_key: str,
+) -> Optional[BaseKpis]:
+    """One `bottleneck`/`critical` division (§3.1/§3.2). `None` when the
+    perimeter (`perimeter_type_counts`, precomputed once per request, never
+    rebuilt per ticket — §9 performance) holds no workstation of `type_key`
+    at all; present-with-zeros when it does but nothing in `tickets`/
+    `count_tickets` weighs into this type this period.
+
+    `count`/`mttr_seconds` are this type's OWN mean over the tickets that
+    touch at least one `type_key` workstation in `count_tickets` (current
+    -range only, unweighted, mirroring the root's own `count`/`mttr`) — a
+    ticket touching both a bottleneck and a critical workstation counts once
+    in EACH slice (§5), so slice counts do not sum to the root's `count`.
+    `mtbf_seconds` reuses the SAME `planned_seconds` denominator as the
+    object's own root (never a new one) divided by this slice's own count.
+    """
+    if perimeter_type_counts.get(type_key, 0) <= 0:
+        return None
+
+    def _weight(issue: dict[str, Any]) -> int:
+        return type_weight_fn(issue).get(type_key, 0)
+
+    downtime = sum(
+        _ticket_downtime_seconds(issue, period_start, period_end, now) * _weight(issue)
+        for issue in tickets
+    )
+    slice_count_tickets = [issue for issue in count_tickets if _weight(issue) > 0]
+    count = len(slice_count_tickets)
+    mttr = _mttr_seconds(slice_count_tickets)
+    if planned_seconds <= 0:
+        mtbf: Optional[float] = None
+    else:
+        mtbf = planned_seconds if count == 0 else planned_seconds / count
+    return BaseKpis(
         downtime_seconds=int(round(downtime)),
         count=count,
         mttr_seconds=int(round(mttr)),
@@ -652,6 +781,28 @@ def _location_hierarchy(client: FirestoreClient, namespace_id: str) -> dict[str,
         for uap_id, lines_here in lines_by_uap.items()
     }
 
+    # kpi-workstation-type-slices §9 performance — the per-perimeter
+    # workstation-TYPE counts, precomputed ONCE per request right alongside
+    # the rest of the hierarchy, exactly like `uap_station_counts` above:
+    # `_row_type_weights`/the `overall`/`by_shift` slices must never rebuild
+    # a ticket's station-type tally per `(row, type)` pair.
+    type_counts_by_line: dict[str, dict[str, int]] = {}
+    for line_id, stations_here in stations_by_line.items():
+        counts = _empty_type_counts()
+        for station in stations_here:
+            counts[_station_type(station)] += 1
+        type_counts_by_line[line_id] = counts
+    type_counts_by_uap: dict[str, dict[str, int]] = {}
+    for uap_id, lines_here in lines_by_uap.items():
+        counts = _empty_type_counts()
+        for line in lines_here:
+            for type_key, type_count in type_counts_by_line.get(line["id"], {}).items():
+                counts[type_key] += type_count
+        type_counts_by_uap[uap_id] = counts
+    type_counts_namespace = _empty_type_counts()
+    for station in stations:
+        type_counts_namespace[_station_type(station)] += 1
+
     return {
         "uaps": {u["id"]: u for u in uaps},
         "lines": {l["id"]: l for l in lines},
@@ -661,7 +812,37 @@ def _location_hierarchy(client: FirestoreClient, namespace_id: str) -> dict[str,
         "line_to_uap": {l["id"]: l.get("uap_id") for l in lines},
         "station_to_line": {s["id"]: s.get("production_line_id") for s in stations},
         "uap_station_counts": uap_station_counts,
+        "type_counts_by_line": type_counts_by_line,
+        "type_counts_by_uap": type_counts_by_uap,
+        "type_counts_namespace": type_counts_namespace,
     }
+
+
+def _resolved_stations_from_ids(issue: dict[str, Any], hierarchy: dict[str, Any]) -> set[str]:
+    """Legacy fallback (§9.1 fix): the CONCRETE, real station ids resolvable
+    from the most specific of the ticket's own stored `workstation_id` /
+    `production_line_id` / `uap_id` (none of the three -> plant-wide, every
+    real station). May be EMPTY — an unresolved `workstation_id` (absent
+    from the hierarchy, e.g. a since-deleted workstation), a line/UAP with
+    no workstations under it, or (degenerate) a namespace with none at all.
+    `_weight_from_ids` derives its floored-at-1 count from this same set, so
+    the two can never disagree; `_ticket_type_weights` uses the set itself
+    to know exactly WHICH real stations (hence types) the weight belongs to,
+    falling back to the unexposed `standard` share when it's empty (§5)."""
+    if issue.get("workstation_id"):
+        wid = issue["workstation_id"]
+        return {wid} if wid in hierarchy["stations"] else set()
+    line_id = issue.get("production_line_id")
+    if line_id:
+        return {s["id"] for s in hierarchy["stations_by_line"].get(line_id, [])}
+    uap_id = issue.get("uap_id")
+    if uap_id:
+        lines = hierarchy["lines_by_uap"].get(uap_id, [])
+        ids: set[str] = set()
+        for line in lines:
+            ids.update(s["id"] for s in hierarchy["stations_by_line"].get(line["id"], []))
+        return ids
+    return set(hierarchy["stations"].keys())
 
 
 def _weight_from_ids(issue: dict[str, Any], hierarchy: dict[str, Any]) -> int:
@@ -670,18 +851,49 @@ def _weight_from_ids(issue: dict[str, Any], hierarchy: dict[str, Any]) -> int:
     (none of the three -> plant-wide); floored at 1 so a line/UAP with no
     workstations referenced under it still counts as 1, never 0. Used by
     `_ticket_weight` only when `down_time_scope` is absent/unrecognized, or
-    names a level whose id the ticket doesn't actually carry."""
-    if issue.get("workstation_id"):
-        return 1
-    line_id = issue.get("production_line_id")
-    if line_id:
-        return max(1, len(hierarchy["stations_by_line"].get(line_id, [])))
-    uap_id = issue.get("uap_id")
-    if uap_id:
-        lines = hierarchy["lines_by_uap"].get(uap_id, [])
-        total = sum(len(hierarchy["stations_by_line"].get(line["id"], [])) for line in lines)
-        return max(1, total)
-    return max(1, len(hierarchy["stations"]))
+    names a level whose id the ticket doesn't actually carry. Derived from
+    `_resolved_stations_from_ids` (§9.1 fix) so the root weight and the
+    concrete station set behind it can never disagree."""
+    return max(1, len(_resolved_stations_from_ids(issue, hierarchy)))
+
+
+def _ticket_stations(issue: dict[str, Any], hierarchy: dict[str, Any]) -> set[str]:
+    """§9.1 fix — the CONCRETE, real station ids `issue`'s scope resolves to,
+    mirroring `_ticket_weight`'s own branching on `down_time_scope` exactly
+    (same order, same fallbacks), but returning the actual station id set
+    instead of just its count. `_ticket_weight` is now `max(1,
+    len(_ticket_stations(...)))` — a plain derivation of this set, which is
+    what guarantees the root weight and the type split below always agree,
+    for every ticket shape (the defect this fix closes: the previous
+    implementation weighed the root via this function's logic but weighed
+    each type slice via an entirely separate, non-agreeing one). May be
+    EMPTY (unresolved reference / empty line-or-UAP) — `_ticket_type_weights`
+    is what turns that into the unexposed `standard` share instead of
+    silently vanishing."""
+    scope = issue.get("down_time_scope")
+    if scope == ProductionScope.WORK_STATION.value:
+        wid = issue.get("workstation_id")
+        if wid:
+            return {wid} if wid in hierarchy["stations"] else set()
+        return _resolved_stations_from_ids(issue, hierarchy)
+    if scope == ProductionScope.PRODUCTION_LINE.value:
+        line_id = issue.get("production_line_id")
+        if line_id:
+            return {s["id"] for s in hierarchy["stations_by_line"].get(line_id, [])}
+        return _resolved_stations_from_ids(issue, hierarchy)
+    if scope == ProductionScope.UAP.value:
+        uap_id = issue.get("uap_id")
+        if uap_id:
+            lines = hierarchy["lines_by_uap"].get(uap_id, [])
+            ids: set[str] = set()
+            for line in lines:
+                ids.update(s["id"] for s in hierarchy["stations_by_line"].get(line["id"], []))
+            return ids
+        return _resolved_stations_from_ids(issue, hierarchy)
+    if scope == ProductionScope.PLANT.value:
+        return set(hierarchy["stations"].keys())
+    # Absent/unrecognized `down_time_scope` (legacy document) -> infer.
+    return _resolved_stations_from_ids(issue, hierarchy)
 
 
 def _ticket_weight(issue: dict[str, Any], hierarchy: dict[str, Any]) -> int:
@@ -695,28 +907,8 @@ def _ticket_weight(issue: dict[str, Any], hierarchy: dict[str, Any]) -> int:
     from the most specific id present (`_weight_from_ids`) only for legacy
     documents with no `down_time_scope`, an unrecognized value, or a stored
     scope whose own id field is missing from the ticket. Floored at 1 in
-    every branch."""
-    scope = issue.get("down_time_scope")
-    if scope == ProductionScope.WORK_STATION.value:
-        if issue.get("workstation_id"):
-            return 1
-        return _weight_from_ids(issue, hierarchy)
-    if scope == ProductionScope.PRODUCTION_LINE.value:
-        line_id = issue.get("production_line_id")
-        if line_id:
-            return max(1, len(hierarchy["stations_by_line"].get(line_id, [])))
-        return _weight_from_ids(issue, hierarchy)
-    if scope == ProductionScope.UAP.value:
-        uap_id = issue.get("uap_id")
-        if uap_id:
-            lines = hierarchy["lines_by_uap"].get(uap_id, [])
-            total = sum(len(hierarchy["stations_by_line"].get(line["id"], [])) for line in lines)
-            return max(1, total)
-        return _weight_from_ids(issue, hierarchy)
-    if scope == ProductionScope.PLANT.value:
-        return max(1, len(hierarchy["stations"]))
-    # Absent/unrecognized `down_time_scope` (legacy document) -> infer.
-    return _weight_from_ids(issue, hierarchy)
+    every branch. A plain derivation of `_ticket_stations` (§9.1 fix)."""
+    return max(1, len(_ticket_stations(issue, hierarchy)))
 
 
 def _weight_of_builder(hierarchy: dict[str, Any]) -> Callable[[dict[str, Any]], int]:
@@ -744,6 +936,84 @@ def _flat_weight(_issue: dict[str, Any]) -> int:
     keeps every downtime-sum helper directly unit-testable without a
     hierarchy fixture."""
     return 1
+
+
+# --------------------------------------------------------------------------
+# 4bis. Workstation-type slices (kpi-workstation-type-slices contract) —
+# `bottleneck`/`critical` divisions of every `Kpis` object.
+#
+# The one invariant this section exists to guarantee: for ANY ticket shape,
+# `sum(_ticket_type_weights(issue, hierarchy).values()) ==
+# _ticket_weight(issue, hierarchy)`, by construction — both are plain
+# derivations of the SAME concrete station set (`_ticket_stations`), never
+# two independently-maintained numbers that can drift apart (the defect an
+# earlier attempt shipped: the root used `_ticket_weight`'s fallback chain,
+# the slices used a fallback-less, set-intersection-only computation, and
+# the two disagreed on any ticket shape with a missing/unresolved id).
+# --------------------------------------------------------------------------
+
+
+def _empty_type_counts() -> dict[str, int]:
+    return {t.value: 0 for t in WorkstationType}
+
+
+def _station_type(station: dict[str, Any]) -> str:
+    """A workstation's type, `standard` for a legacy document with no stored
+    `type` (or an unrecognized value) — §5 of the contract."""
+    try:
+        return WorkstationType(station.get("type")).value
+    except ValueError:
+        return WorkstationType.STANDARD.value
+
+
+def _tally_station_types(
+    station_ids: set[str], hierarchy: dict[str, Any]
+) -> dict[str, int]:
+    """`{type: count}` over the real stations in `station_ids` (a station id
+    absent from the hierarchy is never expected here — callers only ever
+    pass ids drawn from `hierarchy["stations"]` itself)."""
+    counts = _empty_type_counts()
+    for station_id in station_ids:
+        station = hierarchy["stations"].get(station_id)
+        counts[_station_type(station)] += 1 if station is not None else 0
+    return counts
+
+
+def _ticket_type_weights(issue: dict[str, Any], hierarchy: dict[str, Any]) -> dict[str, int]:
+    """§3.2/§9.1 — `issue`'s root weight (`_ticket_weight`), split by
+    workstation type. Always sums to exactly `_ticket_weight(issue,
+    hierarchy)`: when `_ticket_stations` resolves to a non-empty set, this is
+    a plain per-type tally of that SAME set (the set the root weight is
+    `len()` of); when it's empty (an unresolved `workstation_id`, or a
+    line/UAP with no workstations under it — §5's "unresolved reference"
+    rule), the whole floored-at-1 weight is attributed to the unexposed
+    `standard` share rather than vanishing or landing in a real type."""
+    stations = _ticket_stations(issue, hierarchy)
+    if not stations:
+        counts = _empty_type_counts()
+        counts[WorkstationType.STANDARD.value] = 1
+        return counts
+    return _tally_station_types(stations, hierarchy)
+
+
+def _ticket_type_weight_fn_builder(
+    hierarchy: dict[str, Any],
+) -> Callable[[dict[str, Any]], dict[str, int]]:
+    """A `type_weight_fn` closure over `hierarchy`, memoized per ticket id —
+    the type-weight analogue of `_weight_of_builder`, used wherever the
+    OBJECT's perimeter is the whole namespace (`overall`, `by_shift` rows,
+    a drill-down with a `shift` step but no location step)."""
+    cache: dict[str, dict[str, int]] = {}
+
+    def type_weight_of(issue: dict[str, Any]) -> dict[str, int]:
+        issue_id = issue.get("id")
+        if issue_id is None:
+            return _ticket_type_weights(issue, hierarchy)
+        if issue_id not in cache:
+            cache[issue_id] = _ticket_type_weights(issue, hierarchy)
+        return cache[issue_id]
+
+    return type_weight_of
 
 
 def _resolve_location(
@@ -996,6 +1266,98 @@ def _location_weight_fn(
     return weight_of
 
 
+def _row_type_weights(
+    issue: dict[str, Any], hierarchy: dict[str, Any], kind: str, loc_id: str
+) -> dict[str, int]:
+    """§3.2 — the same own-vs-spread branching as `_row_weight`, split by
+    workstation type instead of collapsed to a single count. Mirrors
+    `_row_weight` exactly:
+
+    - "own" row (this `(kind, loc_id)` IS where `issue`'s own/rolled-up
+      location lives, per `_row_weight`'s own-trust rule) -> the full
+      per-type breakdown of the ticket's own resolved stations
+      (`_ticket_type_weights`) — always sums to `_row_weight`'s own-branch
+      return value (`_ticket_weight(issue, hierarchy)`), since both are
+      derived from the same `_ticket_stations` set, which for an "own" row
+      already lives entirely inside that row's perimeter.
+    - spread row (a wider-scope ticket landing in a row it doesn't own) ->
+      that row's OWN static type composition (precomputed once in
+      `_location_hierarchy`), never the ticket's -- this is `_row_weight`'s
+      own "the row's own share, not the whole ticket" rule, applied
+      per-type; the three type shares of a spread row already sum to the
+      row's own total station count, which is exactly what `_row_weight`
+      returns in this branch.
+
+    Only ever called on a ticket already known to belong to this row (via
+    `_group_tickets_by_location`/`_locations_for_ticket`), exactly like
+    `_row_weight` -- so no explicit `own == loc_id` check is needed here
+    either."""
+    uap_id, line_id, station_id = _resolve_location(issue, hierarchy)
+    scope = issue.get("down_time_scope")
+    scope_rank = _SCOPE_RANK.get(scope) if isinstance(scope, str) else None
+    kind_rank = _KIND_RANK[kind]
+    stored_rank = _stored_id_rank(issue)
+
+    own = {"uap": uap_id, "line": line_id, "station": station_id}[kind]
+    if own is not None:
+        is_roll_up = stored_rank is not None and kind_rank > stored_rank
+        if (
+            is_roll_up
+            or scope_rank is None
+            or kind_rank >= scope_rank
+            or scope == ProductionScope.PLANT.value
+        ):
+            return _ticket_type_weights(issue, hierarchy)
+
+    if scope_rank is None or scope_rank <= kind_rank:
+        return _ticket_type_weights(issue, hierarchy)
+    if kind == "station":
+        # Never actually reached in practice — a `station`-kind row's slices
+        # are always `None` (§3.3) and this function is only wired up for
+        # `uap`/`line` rows. Kept for symmetry with `_row_weight`.
+        counts = _empty_type_counts()
+        counts[WorkstationType.STANDARD.value] = 1
+        return counts
+    if kind == "line":
+        return dict(hierarchy["type_counts_by_line"].get(loc_id, _empty_type_counts()))
+    return dict(hierarchy["type_counts_by_uap"].get(loc_id, _empty_type_counts()))
+
+
+def _row_type_weight_fn_builder(
+    hierarchy: dict[str, Any], kind: str, loc_id: str
+) -> Callable[[dict[str, Any]], dict[str, int]]:
+    """Per-row `type_weight_fn` closure — `_row_type_weights` memoized by
+    ticket id, cache scoped to THIS `(kind, loc_id)` row only, mirroring
+    `_location_weight_fn`'s own per-row cache scoping exactly (same trap it
+    fixes: a ticket-id-only cache would serve one row's type split to every
+    other row a spread ticket also appears in)."""
+    cache: dict[str, dict[str, int]] = {}
+
+    def type_weight_of(issue: dict[str, Any]) -> dict[str, int]:
+        issue_id = issue.get("id")
+        if issue_id is None:
+            return _row_type_weights(issue, hierarchy, kind, loc_id)
+        if issue_id not in cache:
+            cache[issue_id] = _row_type_weights(issue, hierarchy, kind, loc_id)
+        return cache[issue_id]
+
+    return type_weight_of
+
+
+def _row_perimeter_type_counts(
+    hierarchy: dict[str, Any], kind: str, loc_id: str
+) -> Optional[dict[str, int]]:
+    """The `(kind, loc_id)` row's OWN perimeter type composition (§3.1) —
+    `None` for a `station`-kind row (a workstation already has exactly one
+    type, splitting its own row by type is meaningless, §3.3), which is what
+    tells `_group_by_location` not to compute slices for it at all."""
+    if kind == "uap":
+        return hierarchy["type_counts_by_uap"].get(loc_id, _empty_type_counts())
+    if kind == "line":
+        return hierarchy["type_counts_by_line"].get(loc_id, _empty_type_counts())
+    return None
+
+
 def _pick_location_kind(uap_count: int, line_count: int, station_count: int) -> str:
     """§3 — UAPs when there's more than one, else lines when more than one,
     else stations."""
@@ -1121,23 +1483,35 @@ def _group_by_location(
     downtime_groups = _group_tickets_by_location(tickets, hierarchy, kind)
     count_groups = _group_tickets_by_location(count_tickets, hierarchy, kind)
 
-    rows = [
-        BreakdownRow(
-            kind=kind,
-            id=loc_id,
-            label=names.get(loc_id, ""),
-            kpis=_compute_kpis(
-                downtime_groups.get(loc_id, []),
-                period_start,
-                period_end,
-                now,
-                0.0,
-                count_tickets=count_groups.get(loc_id, []),
-                weight_of=_location_weight_fn(hierarchy, kind, loc_id),
-            ),
+    rows = []
+    for loc_id in set(downtime_groups) | set(count_groups):
+        # kpi-workstation-type-slices §4: only `uap`/`line` rows carry a
+        # `bottleneck`/`critical` division — a `station` row is always
+        # `None` (a workstation already has exactly one type, §3.3).
+        perimeter_type_counts = _row_perimeter_type_counts(hierarchy, kind, loc_id)
+        type_weight_fn = (
+            _row_type_weight_fn_builder(hierarchy, kind, loc_id)
+            if perimeter_type_counts is not None
+            else None
         )
-        for loc_id in set(downtime_groups) | set(count_groups)
-    ]
+        rows.append(
+            BreakdownRow(
+                kind=kind,
+                id=loc_id,
+                label=names.get(loc_id, ""),
+                kpis=_compute_kpis(
+                    downtime_groups.get(loc_id, []),
+                    period_start,
+                    period_end,
+                    now,
+                    0.0,
+                    count_tickets=count_groups.get(loc_id, []),
+                    weight_of=_location_weight_fn(hierarchy, kind, loc_id),
+                    type_weight_fn=type_weight_fn,
+                    perimeter_type_counts=perimeter_type_counts,
+                ),
+            )
+        )
 
     unassigned_count = _unassigned_count(hierarchy, kind)
     if unassigned_count > 0:
@@ -1175,6 +1549,8 @@ def _group_by_shift(
     period_end: datetime,
     now: datetime,
     weight_of: Optional[Callable[[dict[str, Any]], int]] = None,
+    type_weight_fn: Optional[Callable[[dict[str, Any]], dict[str, int]]] = None,
+    perimeter_type_counts: Optional[dict[str, int]] = None,
 ) -> list[BreakdownRow]:
     """§5bis.5 — empty when the namespace runs a single shift; a shift with
     no configured clock window emits no row at all (fix #3/#5 companion: a
@@ -1183,7 +1559,12 @@ def _group_by_shift(
     shift's own planned time (its own window minus its break, counted up to
     now for the in-progress day per §5bis.4bis) feeds its MTBF; downtime aggregates current + carry-over tickets
     (fix #1), weighted per ticket (§5bis.1bis) — count/mttr stay on
-    current-range only, unweighted."""
+    current-range only, unweighted.
+
+    kpi-workstation-type-slices §4 — a `by_shift` row's perimeter is the
+    whole namespace (a shift spans the whole plant), so `type_weight_fn`/
+    `perimeter_type_counts` are simply the request-wide namespace ones,
+    passed through unchanged for every shift row."""
     shift_number = settings.get("shift_number", 1)
     if shift_number <= 1:
         return []
@@ -1205,6 +1586,8 @@ def _group_by_shift(
             planned,
             count_tickets=count_tickets,
             weight_of=weight_of,
+            type_weight_fn=type_weight_fn,
+            perimeter_type_counts=perimeter_type_counts,
         )
         rows.append(BreakdownRow(kind="shift", id=sid, label=sid, kpis=kpis))
     return rows
@@ -1616,6 +1999,10 @@ def get_dashboard(query: DashboardQueryIn, namespace_id: str) -> DashboardData:
     all_tickets = current + carry_overs
     hierarchy = _location_hierarchy(client, namespace_id)
     weight_of = _weight_of_builder(hierarchy)
+    # kpi-workstation-type-slices §4 — `overall`/`by_shift`'s own perimeter
+    # is the whole namespace.
+    namespace_type_weight_fn = _ticket_type_weight_fn_builder(hierarchy)
+    namespace_type_counts = hierarchy["type_counts_namespace"]
 
     uap_count = len(hierarchy["uaps"])
     line_count = len(hierarchy["lines"])
@@ -1648,9 +2035,19 @@ def get_dashboard(query: DashboardQueryIn, namespace_id: str) -> DashboardData:
             planned,
             count_tickets=current,
             weight_of=weight_of,
+            type_weight_fn=namespace_type_weight_fn,
+            perimeter_type_counts=namespace_type_counts,
         ),
         by_shift=_group_by_shift(
-            current, carry_overs, settings, period_start, period_end, now, weight_of
+            current,
+            carry_overs,
+            settings,
+            period_start,
+            period_end,
+            now,
+            weight_of,
+            type_weight_fn=namespace_type_weight_fn,
+            perimeter_type_counts=namespace_type_counts,
         ),
         by_location=_group_by_location(
             all_tickets, hierarchy, location_kind, period_start, period_end, now, current
@@ -1712,6 +2109,26 @@ def get_drilldown(query: DrilldownQueryIn, namespace_id: str) -> DrilldownData:
         else _weight_of_builder(hierarchy)
     )
 
+    # kpi-workstation-type-slices §4/§9.3 — one populate rule for `shift`
+    # AND location: populated with the path's deepest LOCATION perimeter
+    # (`uap`/`line`; `station` is always `None`, §3.3), or — when no
+    # location step exists anywhere in the path — with the namespace
+    # perimeter whenever a `shift` step exists ANYWHERE in the path (not
+    # only as the last step). No location and no shift -> not applicable.
+    if last_location_kind in ("uap", "line"):
+        slice_perimeter_type_counts: Optional[dict[str, int]] = _row_perimeter_type_counts(
+            hierarchy, last_location_kind, last_location_id
+        )
+        slice_type_weight_fn: Optional[Callable[[dict[str, Any]], dict[str, int]]] = (
+            _row_type_weight_fn_builder(hierarchy, last_location_kind, last_location_id)
+        )
+    elif last_location_kind is None and shift_in_path is not None:
+        slice_perimeter_type_counts = hierarchy["type_counts_namespace"]
+        slice_type_weight_fn = _ticket_type_weight_fn_builder(hierarchy)
+    else:
+        slice_perimeter_type_counts = None
+        slice_type_weight_fn = None
+
     if query.process:
         current = [t for t in current if _process_for_ticket(t) == query.process]
         carry_overs = [t for t in carry_overs if _process_for_ticket(t) == query.process]
@@ -1739,7 +2156,15 @@ def get_drilldown(query: DrilldownQueryIn, namespace_id: str) -> DrilldownData:
     shift_filter = query.shift or shift_in_path
     planned = _planned_seconds(settings, period_start, period_end, now, shift_filter=shift_filter)
     kpis = _compute_kpis(
-        all_tickets, period_start, period_end, now, planned, count_tickets=current, weight_of=weight_of
+        all_tickets,
+        period_start,
+        period_end,
+        now,
+        planned,
+        count_tickets=current,
+        weight_of=weight_of,
+        type_weight_fn=slice_type_weight_fn,
+        perimeter_type_counts=slice_perimeter_type_counts,
     )
 
     last_kind, _last_id = steps[-1]

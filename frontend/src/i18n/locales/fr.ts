@@ -273,6 +273,24 @@ const fr = {
           "Cumulé par poste de travail : un arrêt déclaré sur un ensemble (ligne, UAP, usine) compte pour chacun des postes qu'il immobilise.",
         mttrHint: "temps moyen de réparation",
         mtbfHint: "temps moyen entre pannes",
+        division: {
+          general: "Général",
+          bottleneck: "Goulot",
+          critical: "Critique",
+        },
+        severity: {
+          rank1: "Gravité la plus forte",
+          rank2: "Gravité moindre",
+        },
+        shareOfTotal: "part du temps d'arrêt total",
+        downtimeRemainder:
+          "Parts du temps d'arrêt total ; le reste est sur des postes standards.",
+        countSliceHint:
+          "Un arrêt touchant plusieurs types de postes compte une fois dans chaque division.",
+        mttrSliceHint:
+          "Trois moyennes indépendantes — elles ne s'additionnent pas.",
+        mtbfSliceHint:
+          "Trois moyennes indépendantes — elles ne s'additionnent pas.",
       },
       period: {
         today: "Aujourd'hui",

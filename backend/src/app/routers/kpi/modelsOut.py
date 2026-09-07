@@ -3,11 +3,15 @@ from typing import Optional
 from pydantic import BaseModel, Field
 
 
-class Kpis(BaseModel):
+class BaseKpis(BaseModel):
     """The 4 headline KPIs, computed the same way for any ticket slice (plant,
     a breakdown row, a drill-down, ...) — see `.claude/specs/kpi-dashboard.md`
     §5bis for the exact definitions. Availability was removed in revision 2
-    (no reliable planned-resources denominator)."""
+    (no reliable planned-resources denominator).
+
+    This is also the shape of a `Kpis.bottleneck`/`Kpis.critical` division —
+    each type slice carries exactly these 4 fields, never a nested division
+    of its own (a workstation has exactly one type)."""
 
     downtime_seconds: int = Field(
         ...,
@@ -31,6 +35,43 @@ class Kpis(BaseModel):
             "slice has no meaningful planned-time denominator (unconfigured "
             "namespace planned time, or a breakdown row that doesn't carry "
             "its own planned time — e.g. by_location/by_type)."
+        ),
+    )
+
+
+class Kpis(BaseKpis):
+    """`BaseKpis` plus the two workstation-type divisions the dashboard cards
+    split by (`WorkstationType`: standard/bottleneck/critical). The 4
+    headline fields stay at the ROOT (unchanged consumers keep reading
+    `kpis.downtime_seconds` etc.) — `standard` is never exposed as its own
+    division, it is simply "the rest" of the root not covered by the other
+    two.
+
+    `bottleneck`/`critical` are `None` when the object's OWN perimeter
+    (namespace for `overall`/`by_shift`, the UAP for a `uap` row, the line
+    for a `line` row, the path's deepest location for a drill-down) holds NO
+    workstation of that type at all — never rendered as a zeroed division in
+    that case. They are present WITH ZEROS when the perimeter does hold
+    workstations of that type but none had downtime in the period — `0`
+    there genuinely means "no downtime", not "not applicable". Always
+    `None` on a `station`-kind row/path (a workstation already has exactly
+    one type, so splitting its own row by type is meaningless) and on
+    `by_type`/`pareto_by_process`/`repair_by_process`."""
+
+    bottleneck: Optional[BaseKpis] = Field(
+        default=None,
+        description=(
+            "This slice's own KPIs for BOTTLENECK-typed workstations in the "
+            "object's own perimeter, or `None` when that perimeter holds no "
+            "bottleneck workstation at all."
+        ),
+    )
+    critical: Optional[BaseKpis] = Field(
+        default=None,
+        description=(
+            "This slice's own KPIs for CRITICAL-typed workstations in the "
+            "object's own perimeter, or `None` when that perimeter holds no "
+            "critical workstation at all."
         ),
     )
 

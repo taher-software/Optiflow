@@ -5,13 +5,25 @@
 
 /** Les 4 KPIs de tête, calculés pour n'importe quelle tranche.
  * La disponibilité a été supprimée en révision 2 (spec §5bis.3). */
-export interface Kpis {
+export interface BaseKpis {
   /** Somme pondérée par poste de travail (spec §5bis.1bis). */
   downtime_seconds: number;
   count: number;
   mttr_seconds: number;
   /** `null` quand le temps planifié est inconnu (pas de dénominateur). */
   mtbf_seconds: number | null;
+}
+
+/** Les 4 KPIs, plus les tranches par type de poste de travail.
+ *
+ * Les 4 champs de tête restent À LA RACINE : tout ce qui lit `kpis.downtime_seconds`
+ * continue de fonctionner. `bottleneck` / `critical` sont `null` ou absents quand le
+ * périmètre ne contient aucun poste de ce type, ou quand la découpe n'a pas de sens
+ * pour l'objet (rangée d'un poste, drill-down d'un poste). Une tranche présente mais
+ * à zéro est une information réelle — ce n'est PAS une absence. */
+export interface Kpis extends BaseKpis {
+  bottleneck?: BaseKpis | null;
+  critical?: BaseKpis | null;
 }
 
 /** Dimensions d'analyse. Une sélection n'est jamais décortiquée par la sienne. */

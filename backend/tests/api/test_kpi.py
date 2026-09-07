@@ -99,6 +99,10 @@ class TestDashboard:
             "count": 0,
             "mttr_seconds": 0,
             "mtbf_seconds": data["overall"]["mtbf_seconds"],
+            # An empty namespace holds no bottleneck/critical workstation, so
+            # both slices are `None` (not a zeroed slice).
+            "bottleneck": None,
+            "critical": None,
         }
         assert data["by_shift"] == []
         assert data["by_location"] == []

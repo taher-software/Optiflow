@@ -125,3 +125,18 @@ export function compareEpisodes(
     gapPct: reference === 0 ? null : ((latest - reference) / reference) * 100,
   };
 }
+
+/** Part d'une tranche dans son total, 0..1. `null` quand le total est nul ou
+ * illisible : la part est alors indéfinie, jamais « 0 % ». Pure. */
+export function shareOf(part: number, total: number): number | null {
+  if (!Number.isFinite(part) || !Number.isFinite(total) || total <= 0) {
+    return null;
+  }
+  return part / total;
+}
+
+/** Part 0..1 → pourcentage lisible et borné : "45 %". "–" si indéfinie. Pure. */
+export function formatShare(share: number | null): string {
+  if (share === null) return "–";
+  return `${Math.round(Math.min(1, Math.max(0, share)) * 100)} %`;
+}

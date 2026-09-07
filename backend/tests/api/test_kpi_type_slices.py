@@ -1174,27 +1174,47 @@ class TestRootAndSliceWeightReconcileAcrossTicketShapes:
             overall["bottleneck"]["downtime_seconds"] + overall["critical"]["downtime_seconds"]
         )
 
-    def test_ticket_referencing_a_workstation_absent_from_the_hierarchy_reconciles(
+    def test_ghost_workstation_reference_lands_in_the_unexposed_standard_share(
         self, client, seed_user, auth_headers, fake_db, seed_uap, seed_production_line, seed_workstation
     ):
-        """Scenario 29. `_ticket_weight` floors a `work station`-scope
-        ticket with a stored `workstation_id` at 1 regardless of whether
-        that id resolves to a real document; `_locations_for_ticket` returns
-        `{that ghost id}`, which no real type-station set will ever contain
-        -- the floor never lands in `bottleneck` or `critical`, currently
-        `0 + 0 = 0 != root (1)`."""
+        """Scenario 29, developer decision 2026-09-06: a ticket carrying a
+        `workstation_id` absent from the hierarchy (the workstation was
+        deleted from the configuration after the downtime was declared) is
+        an unresolved reference. Per the developer's ruling, that counts as
+        exactly ONE `standard` workstation -- the root keeps its existing
+        floor-at-1 weight (`_weight_from_ids`, frozen by
+        `tests/api/test_kpi_weighting.py`), and the whole weight lands in
+        the unexposed `standard` share, never in `bottleneck` or `critical`.
+
+        Two readings of the same ticket:
+        - on `overall`, whose perimeter is the whole namespace and DOES
+          hold a bottleneck/critical workstation elsewhere: both slices are
+          PRESENT WITH ZEROS, and (since no other ticket exists) `root ==
+          bottleneck(0) + critical(0) + standard`, with `standard` known by
+          construction to equal the full root downtime.
+        - on the referenced line's OWN `by_location` row: that line's own
+          perimeter holds only a standard workstation, no bottleneck/
+          critical one -- both slices are `None` there, even though the
+          line's own root downtime is the full 3600s.
+        """
         owner = _owner(seed_user)
         _seed_settings(fake_db)
         uap = seed_uap(namespace_id=NS)
-        line = seed_production_line(namespace_id=NS, uap_id=uap["id"])
-        # Real bottleneck/critical workstations exist (so both slices are a
-        # populated, non-`None` perimeter) but are untouched by any ticket.
-        seed_workstation(namespace_id=NS, production_line_id=line["id"], type=BOTTLENECK)
-        seed_workstation(namespace_id=NS, production_line_id=line["id"], type=CRITICAL)
+        line_with_types = seed_production_line(namespace_id=NS, uap_id=uap["id"])
+        line_ghost = seed_production_line(namespace_id=NS, uap_id=uap["id"])
+        # Elsewhere in the namespace: real bottleneck/critical workstations,
+        # untouched by any ticket -- so `overall`'s slices are populated,
+        # non-`None` perimeters.
+        seed_workstation(namespace_id=NS, production_line_id=line_with_types["id"], type=BOTTLENECK)
+        seed_workstation(namespace_id=NS, production_line_id=line_with_types["id"], type=CRITICAL)
+        # The referenced line itself holds only a standard workstation --
+        # its own perimeter has no bottleneck/critical workstation at all.
+        seed_workstation(namespace_id=NS, production_line_id=line_ghost["id"], type=STANDARD)
         _seed_issue(
             fake_db,
             down_time_scope="work station",
             workstation_id="ghost-workstation-not-in-hierarchy",
+            production_line_id=line_ghost["id"],
             status=DownTimeStatus.CLOSED.value,
             created_at=_utc(7),
             resolved_at=_utc(8),
@@ -1206,25 +1226,47 @@ class TestRootAndSliceWeightReconcileAcrossTicketShapes:
 
         # Root: floored at 1 regardless of the id's existence.
         assert overall["downtime_seconds"] == 1 * 3600
+        # The namespace holds bottleneck/critical workstations elsewhere --
+        # both slices are present, but the ghost weight reaches neither: it
+        # is entirely absorbed by the unexposed `standard` share.
         assert overall["bottleneck"] is not None
+        assert overall["bottleneck"]["downtime_seconds"] == 0
         assert overall["critical"] is not None
-        assert overall["downtime_seconds"] == (
-            overall["bottleneck"]["downtime_seconds"] + overall["critical"]["downtime_seconds"]
-        )
+        assert overall["critical"]["downtime_seconds"] == 0
 
-    def test_line_with_no_workstations_under_it_floors_into_a_slice_not_nowhere(
+        rows = {row["id"]: row for row in res.json()["data"]["by_location"]}
+        ghost_line_row = rows[line_ghost["id"]]
+        # The referenced line's own root does carry the downtime...
+        assert ghost_line_row["kpis"]["downtime_seconds"] == 1 * 3600
+        # ...but its own perimeter holds no bottleneck/critical workstation
+        # at all -- both slices are `None` there, not zeroed.
+        assert ghost_line_row["kpis"]["bottleneck"] is None
+        assert ghost_line_row["kpis"]["critical"] is None
+
+    def test_line_with_no_workstations_under_it_lands_in_the_unexposed_standard_share(
         self, client, seed_user, auth_headers, fake_db, seed_uap, seed_production_line, seed_workstation
     ):
-        """Scenario 30. A `production line`-scope ticket declared on a line
-        with ZERO workstations under it is floored at 1 by `_ticket_weight`
-        (root); `_locations_for_ticket` returns the empty
-        `stations_by_line[line]` set as-is (no floor), so the weight enters
-        no slice at all -- currently `0 + 0 = 0 != root (1)`. The sibling
-        line's real bottleneck/critical workstations exist (populated,
-        non-`None` perimeter) but are untouched, so this is exactly §9.2's
-        own trap: `bottleneck`/`critical` would read "present with zero
-        downtime" while the root actually carries 3600s nobody accounts
-        for."""
+        """Scenario 30, developer decision 2026-09-06: a `production
+        line`-scope ticket declared on a line with ZERO workstations under
+        it is the same shape as an unresolved reference -- a ticket
+        declared against a perimeter that resolves to no real workstation.
+        Per the developer's ruling it counts as exactly ONE `standard`
+        workstation -- the root keeps its existing floor-at-1 weight
+        (`_ticket_weight`, frozen by `tests/api/test_kpi_weighting.py`), and
+        the whole weight lands in the unexposed `standard` share, never in
+        `bottleneck` or `critical`.
+
+        Two readings of the same ticket:
+        - on `overall`, whose perimeter is the whole namespace and DOES
+          hold a bottleneck/critical workstation on the SIBLING line: both
+          slices are PRESENT WITH ZEROS, and (since no other ticket exists)
+          `root == bottleneck(0) + critical(0) + standard`, with `standard`
+          known by construction to equal the full root downtime.
+        - on the empty line's OWN `by_location` row: that line's own
+          perimeter holds no workstation at all -- both slices are `None`
+          there, even though the line's own root downtime is the full
+          3600s.
+        """
         owner = _owner(seed_user)
         _seed_settings(fake_db)
         uap = seed_uap(namespace_id=NS)
@@ -1251,11 +1293,23 @@ class TestRootAndSliceWeightReconcileAcrossTicketShapes:
 
         # Root: floored at 1 (the referenced line has 0 workstations).
         assert overall["downtime_seconds"] == 1 * 3600
+        # The namespace holds bottleneck/critical workstations on the
+        # sibling line -- both slices are present, but the floored weight
+        # reaches neither: it is entirely absorbed by the unexposed
+        # `standard` share.
         assert overall["bottleneck"] is not None
+        assert overall["bottleneck"]["downtime_seconds"] == 0
         assert overall["critical"] is not None
-        assert overall["downtime_seconds"] == (
-            overall["bottleneck"]["downtime_seconds"] + overall["critical"]["downtime_seconds"]
-        )
+        assert overall["critical"]["downtime_seconds"] == 0
+
+        rows = {row["id"]: row for row in res.json()["data"]["by_location"]}
+        empty_line_row = rows[line_empty["id"]]
+        # The empty line's own root does carry the downtime...
+        assert empty_line_row["kpis"]["downtime_seconds"] == 1 * 3600
+        # ...but its own perimeter holds no workstation at all -- both
+        # slices are `None` there, not zeroed.
+        assert empty_line_row["kpis"]["bottleneck"] is None
+        assert empty_line_row["kpis"]["critical"] is None
 
 
 # --------------------------------------------------------------------------

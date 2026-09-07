@@ -272,6 +272,22 @@ const en = {
           "Totalled per workstation: downtime declared on a group (line, UAP, plant) counts once for every workstation it halts.",
         mttrHint: "mean time to repair",
         mtbfHint: "mean time between failures",
+        division: {
+          general: "Overall",
+          bottleneck: "Bottleneck",
+          critical: "Critical",
+        },
+        severity: {
+          rank1: "Highest severity",
+          rank2: "Lower severity",
+        },
+        shareOfTotal: "share of total downtime",
+        downtimeRemainder:
+          "Shares are of total downtime; the remainder is on standard workstations.",
+        countSliceHint:
+          "A downtime hitting several workstation types counts once in each division.",
+        mttrSliceHint: "Three independent averages — they do not add up.",
+        mtbfSliceHint: "Three independent averages — they do not add up.",
       },
       period: {
         today: "Today",
