@@ -152,6 +152,7 @@ def _notify_production_agents_awaiting_confirmation(
         title=title,
         body=body,
         data={"down_time_id": down_time_id, "event": "resolution_reminder"},
+        notif_level="standard"
     )
 
 
