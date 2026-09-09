@@ -1,5 +1,5 @@
 import uuid
-from typing import Any
+from typing import Any, Optional
 
 from fastapi import HTTPException, status
 
@@ -20,7 +20,7 @@ def _to_out(line: dict[str, Any]) -> ProductionLineOut:
         id=line["id"],
         name=line.get("name", ""),
         description=line.get("description", ""),
-        uap_id=line.get("uap_id", ""),
+        uap_id=line.get("uap_id"),
         namespace_id=line.get("namespace_id", ""),
     )
 
@@ -28,7 +28,9 @@ def _to_out(line: dict[str, Any]) -> ProductionLineOut:
 def _validate_uap_id(client: FirestoreClient, namespace_id: str, uap_id: str) -> None:
     """Ensure `uap_id` refers to an existing UAP in the caller's namespace.
     Raises HTTPException(422) otherwise. Never lets a blank id reach the
-    Firestore SDK (`.document("")` would otherwise blow up unhandled)."""
+    Firestore SDK (`.document("")` would otherwise blow up unhandled).
+    Called only when a non-None value is supplied — `None` means
+    independent production line and is always valid."""
     if not uap_id or not uap_id.strip():
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -47,7 +49,8 @@ def create_production_line(
     payload: CreateProductionLineIn, namespace_id: str
 ) -> ProductionLineOut:
     client = get_firestore_client()
-    _validate_uap_id(client, namespace_id, payload.uap_id)
+    if payload.uap_id is not None:
+        _validate_uap_id(client, namespace_id, payload.uap_id)
     assert_name_unique(
         client,
         PRODUCTION_LINE_COLLECTION,
@@ -97,9 +100,10 @@ def update_production_line(
     client = get_firestore_client()
     line = _load_scoped(client, line_id, namespace_id)
 
-    if payload.uap_id is not None:
-        _validate_uap_id(client, namespace_id, payload.uap_id)
-    if payload.name is not None:
+    fields_set = payload.model_fields_set
+    updates: dict[str, Any] = {}
+
+    if "name" in fields_set and payload.name is not None:
         assert_name_unique(
             client,
             PRODUCTION_LINE_COLLECTION,
@@ -108,14 +112,14 @@ def update_production_line(
             exclude_id=line_id,
             resource_label="production line",
         )
-
-    updates: dict[str, Any] = {}
-    if payload.name is not None:
         updates["name"] = payload.name
-    if payload.description is not None:
+    if "description" in fields_set and payload.description is not None:
         updates["description"] = payload.description
-    if payload.uap_id is not None:
-        updates["uap_id"] = payload.uap_id
+    if "uap_id" in fields_set:
+        new_uap_id: Optional[str] = payload.uap_id
+        if new_uap_id is not None:
+            _validate_uap_id(client, namespace_id, new_uap_id)
+        updates["uap_id"] = new_uap_id
 
     if updates:
         client.update_document(PRODUCTION_LINE_COLLECTION, line_id, updates)

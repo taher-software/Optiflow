@@ -1358,12 +1358,27 @@ def _row_perimeter_type_counts(
     return None
 
 
-def _pick_location_kind(uap_count: int, line_count: int, station_count: int) -> str:
+def _pick_location_kind(hierarchy: dict[str, Any]) -> str:
     """§3 — UAPs when there's more than one, else lines when more than one,
-    else stations."""
-    if uap_count > 1:
+    else stations.
+
+    A UAP-less production line (production_line/optional_uap) is a top-level
+    group in its own right — its workstations roll up into the `unassigned`
+    row of a `uap` breakdown (`_unassigned_count`), never into any real UAP
+    row — so it counts as one extra distinguishable group alongside the real
+    UAPs when deciding whether "uap" is a meaningful granularity. Same
+    reasoning one level down: a workstation with no `production_line_id` at
+    all counts as one extra group alongside the real lines. Without this, a
+    namespace with exactly one UAP plus one independent line would fall
+    through to `line` and never surface the UAP-less line's stations under
+    the `unassigned` row a `uap` breakdown would give them."""
+    uap_count = len(hierarchy["uaps"])
+    line_count = len(hierarchy["lines"])
+    uap_groups = uap_count + (1 if _unassigned_count(hierarchy, "uap") > 0 else 0)
+    if uap_groups > 1:
         return "uap"
-    if line_count > 1:
+    line_groups = line_count + (1 if _unassigned_count(hierarchy, "line") > 0 else 0)
+    if line_groups > 1:
         return "line"
     return "station"
 
@@ -2007,7 +2022,7 @@ def get_dashboard(query: DashboardQueryIn, namespace_id: str) -> DashboardData:
     uap_count = len(hierarchy["uaps"])
     line_count = len(hierarchy["lines"])
     station_count = len(hierarchy["stations"])
-    location_kind = _pick_location_kind(uap_count, line_count, station_count)
+    location_kind = _pick_location_kind(hierarchy)
 
     planned = _planned_seconds(settings, period_start, period_end, now)
 
@@ -2241,9 +2256,7 @@ def get_drilldown(query: DrilldownQueryIn, namespace_id: str) -> DrilldownData:
     elif last_kind in ("shift", "type", "process"):
         # No location step anywhere in the path — fall back to the
         # dashboard's plant-wide top location level.
-        top_kind = _pick_location_kind(
-            len(hierarchy["uaps"]), len(hierarchy["lines"]), len(hierarchy["stations"])
-        )
+        top_kind = _pick_location_kind(hierarchy)
         children = _group_by_location(
             all_tickets, hierarchy, top_kind, period_start, period_end, now, current
         )

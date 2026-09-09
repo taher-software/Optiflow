@@ -46,8 +46,14 @@ async def set_own_online(
     summary="Create a new user",
     description=(
         "Creates a user in the caller's namespace and allocates a unique 4-digit "
-        "security code. Restricted to owner/admin. The owner role cannot be assigned; "
-        "email is required for admin, manager, and supervisor roles."
+        "security code. Restricted to owner/admin. The owner role cannot be "
+        "assigned; email is required for admin, manager, and supervisor roles.\n\n"
+        "`password` is required whenever `email` is set (directly, or "
+        "transitively because the role requires an email) and optional "
+        "otherwise. A user created with no email and no password cannot sign "
+        "in via `POST /auth/login` (which requires a password hash); the "
+        "mobile app is the only way in for that user, pairing a device with "
+        "the allocated security code via `POST /auth/check-user-code`."
     ),
 )
 async def create_user(

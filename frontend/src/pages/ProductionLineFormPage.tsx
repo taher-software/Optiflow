@@ -41,7 +41,7 @@ export function ProductionLineFormPage() {
       if (res.ok && res.data) {
         setName(res.data.name);
         setDescription(res.data.description);
-        setUapId(res.data.uap_id);
+        setUapId(res.data.uap_id ?? "");
       } else {
         setError(res.error ?? t("lines.form.loadError"));
       }
@@ -49,7 +49,7 @@ export function ProductionLineFormPage() {
     });
   }, [id, getLine, t]);
 
-  const valid = name.trim() !== "" && uapId !== "";
+  const valid = name.trim() !== "";
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -57,10 +57,13 @@ export function ProductionLineFormPage() {
     setSubmitting(true);
     setError(null);
 
+    // `uap_id` is always present in the payload: the API distinguishes an
+    // omitted key ("leave untouched") from an explicit null ("detach"), so
+    // picking the independent option must serialize to `"uap_id": null`.
     const payload: CreateProductionLinePayload = {
       name: name.trim(),
       description: description.trim(),
-      uap_id: uapId,
+      uap_id: uapId === "" ? null : uapId,
     };
     const res =
       isEdit && id ? await updateLine(id, payload) : await createLine(payload);
@@ -119,10 +122,9 @@ export function ProductionLineFormPage() {
           <SelectField
             id="uap_id"
             label={t("lines.form.zoneArea")}
-            required
             value={uapId}
             onChange={setUapId}
-            placeholder={t("lines.form.zoneAreaPlaceholder")}
+            placeholder={t("lines.form.independent")}
             options={uaps.map((u) => ({ value: u.id, label: u.name }))}
           />
 

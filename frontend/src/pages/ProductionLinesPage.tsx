@@ -1,10 +1,17 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router-dom";
 
+import { FiltersBar } from "../components/FiltersBar";
+import { SelectField } from "../components/SelectField";
+import { TextField } from "../components/TextField";
 import { ROUTES } from "../constants/routes";
 import { useProductionLinesStore } from "../stores/useProductionLinesStore";
 import { useUapsStore } from "../stores/useUapsStore";
+import { matchesQuery } from "../utils/textSearch";
+
+/** Zone-area-filter value selecting the lines that belong to no zone area. */
+const INDEPENDENT = "__independent__";
 
 /** Lists the namespace's production lines. Owner/admin/production-supervisor. */
 export function ProductionLinesPage() {
@@ -15,6 +22,8 @@ export function ProductionLinesPage() {
   const fetchLines = useProductionLinesStore((s) => s.fetchLines);
   const uaps = useUapsStore((s) => s.uaps);
   const fetchUaps = useUapsStore((s) => s.fetchUaps);
+  const [search, setSearch] = useState("");
+  const [uapId, setUapId] = useState("");
 
   useEffect(() => {
     void fetchLines();
@@ -23,8 +32,31 @@ export function ProductionLinesPage() {
 
   const uapName = useMemo(() => {
     const map = new Map(uaps.map((u) => [u.id, u.name]));
-    return (id: string) => map.get(id) ?? "—";
+    // `null` marks an intentionally independent line; "—" marks a dangling
+    // uap_id whose zone area no longer exists. They are not the same state.
+    return (id: string | null) => (id === null ? null : (map.get(id) ?? "—"));
   }, [uaps]);
+
+  const uapOptions = useMemo(
+    () => [
+      ...uaps.map((u) => ({ value: u.id, label: u.name })),
+      { value: INDEPENDENT, label: t("lines.independent") },
+    ],
+    [uaps, t],
+  );
+
+  const visibleLines = useMemo(
+    () =>
+      lines.filter((l) => {
+        if (!matchesQuery(search, l.name)) return false;
+        if (uapId === "") return true;
+        if (uapId === INDEPENDENT) return l.uap_id === null;
+        return l.uap_id === uapId;
+      }),
+    [lines, search, uapId],
+  );
+
+  const hasLines = !loading && !error && lines.length > 0;
 
   return (
     <div className="mx-auto max-w-6xl px-6 py-10">
@@ -48,7 +80,31 @@ export function ProductionLinesPage() {
         <p className="mt-8 text-sm text-slate-400">{t("lines.empty")}</p>
       )}
 
-      {!loading && lines.length > 0 && (
+      {hasLines && (
+        <FiltersBar>
+          <TextField
+            id="lines-search"
+            label={t("lines.filters.search")}
+            value={search}
+            onChange={setSearch}
+            placeholder={t("lines.filters.searchPlaceholder")}
+          />
+          <SelectField
+            id="lines-uap"
+            label={t("lines.filters.zoneArea")}
+            value={uapId}
+            onChange={setUapId}
+            options={uapOptions}
+            placeholder={t("lines.filters.allZoneAreas")}
+          />
+        </FiltersBar>
+      )}
+
+      {hasLines && visibleLines.length === 0 && (
+        <p className="mt-8 text-sm text-slate-400">{t("lines.noResults")}</p>
+      )}
+
+      {hasLines && visibleLines.length > 0 && (
         <div className="mt-8 overflow-x-auto rounded-2xl border border-slate-800">
           <table className="w-full text-left text-sm">
             <thead className="bg-slate-900/60 text-xs uppercase text-slate-400">
@@ -62,25 +118,34 @@ export function ProductionLinesPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-800">
-              {lines.map((l) => (
-                <tr key={l.id} className="hover:bg-slate-900/40">
-                  <td className="px-4 py-3 font-medium text-white">{l.name}</td>
-                  <td className="px-4 py-3 text-teal-300">
-                    {uapName(l.uap_id)}
-                  </td>
-                  <td className="px-4 py-3 text-slate-400">
-                    {l.description || "—"}
-                  </td>
-                  <td className="px-4 py-3 text-right">
-                    <Link
-                      to={`${ROUTES.lines}/${l.id}`}
-                      className="text-sm font-medium text-teal-400 hover:text-teal-300"
-                    >
-                      {t("lines.edit")}
-                    </Link>
-                  </td>
-                </tr>
-              ))}
+              {visibleLines.map((l) => {
+                const uap = uapName(l.uap_id);
+                return (
+                  <tr key={l.id} className="hover:bg-slate-900/40">
+                    <td className="px-4 py-3 font-medium text-white">
+                      {l.name}
+                    </td>
+                    <td className="px-4 py-3 text-teal-300">
+                      {uap ?? (
+                        <span className="text-slate-500">
+                          {t("lines.independent")}
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3 text-slate-400">
+                      {l.description || "—"}
+                    </td>
+                    <td className="px-4 py-3 text-right">
+                      <Link
+                        to={`${ROUTES.lines}/${l.id}`}
+                        className="text-sm font-medium text-teal-400 hover:text-teal-300"
+                      >
+                        {t("lines.edit")}
+                      </Link>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>

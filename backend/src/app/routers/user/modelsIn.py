@@ -8,14 +8,34 @@ from src.app.globals.enum import EMAIL_REQUIRED_ROLES, Role
 class CreateUserIn(BaseModel):
     """Payload to create a new user within the caller's namespace."""
 
-    first_name: str = Field(..., min_length=1, description="User first name.")
-    last_name: str = Field(..., min_length=1, description="User last name.")
-    role: Role = Field(..., description="Role to assign (owner is not assignable).")
+    first_name: str = Field(
+        ..., min_length=1, description="User first name.", examples=["Alex"]
+    )
+    last_name: str = Field(
+        ..., min_length=1, description="User last name.", examples=["Martin"]
+    )
+    role: Role = Field(
+        ...,
+        description="Role to assign (owner is not assignable).",
+        examples=["supervisor"],
+    )
     email: Optional[EmailStr] = Field(
         default=None,
         description="Required for admin, manager, and supervisor roles.",
+        examples=["alex.martin@example.com"],
     )
-    password: str = Field(..., min_length=6, description="Initial password.")
+    password: Optional[str] = Field(
+        default=None,
+        min_length=6,
+        description=(
+            "Initial password. Required when `email` is set (including "
+            "implicitly, for admin/manager/supervisor roles); optional "
+            "otherwise. A user created without a password (and without an "
+            "email) signs in from mobile with a security code via `POST "
+            "/auth/check-user-code`, never with `POST /auth/login`."
+        ),
+        examples=["s3cret-init"],
+    )
 
     @model_validator(mode="after")
     def _validate(self) -> "CreateUserIn":
@@ -25,6 +45,8 @@ class CreateUserIn(BaseModel):
             raise ValueError(
                 "Email is required for admin, manager, and supervisor roles."
             )
+        if self.email and not self.password:
+            raise ValueError("Password is required when an email is set.")
         return self
 
 

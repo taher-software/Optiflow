@@ -50,7 +50,7 @@ def create_user(payload: CreateUserIn, namespace_id: str) -> UserOut:
         "last_name": payload.last_name,
         "role": payload.role.value,
         "email": str(payload.email) if payload.email else None,
-        "password": hash_password(payload.password),
+        "password": hash_password(payload.password) if payload.password else None,
         "security_code": code,
         "namespace_id": namespace_id,
     }

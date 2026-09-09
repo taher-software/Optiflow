@@ -1004,3 +1004,177 @@ class TestMixedSetReconciliation:
             by_location[uap_c_id]["kpis"]["downtime_seconds"] == 7200 + 259200
         )  # ticket 1 + ticket 3
         assert header_downtime == 36000 + 3600 + 259200
+
+
+# --------------------------------------------------------------------------
+# Work Unit test.optional_uap_and_password, CHANGE 1 — a production line may
+# now be created with no `uap_id` (POST /production-lines). This class
+# proves that `_unassigned_count`'s existing "uap" branch
+# (`if not line_id or not hierarchy["line_to_uap"].get(line_id)`, services.py
+# ~:1423) already treats such a line exactly like a line-less workstation --
+# no dashboard change needed there, only the production-line create path
+# needs to start accepting the missing `uap_id`.
+#
+# Written test-first: as of this revision `POST /production-lines` still
+# rejects a missing `uap_id` with 422, so the `create_response.status_code
+# == 201` assertion is expected to fail right there -- before the dashboard
+# is even exercised -- never on a broken fixture.
+# --------------------------------------------------------------------------
+
+
+class TestUapLessLineLandsInUnassignedRow:
+    def test_workstations_on_an_uap_less_line_land_in_the_unassigned_row(
+        self,
+        client,
+        seed_user,
+        auth_headers,
+        fake_db,
+        seed_uap,
+        seed_production_line,
+        seed_workstation,
+    ):
+        owner = _owner(seed_user)
+        _seed_settings(fake_db)
+        uap_a = seed_uap(namespace_id=NS, name="UAP A")
+        line_a = seed_production_line(namespace_id=NS, uap_id=uap_a["id"])
+        for _ in range(2):
+            seed_workstation(namespace_id=NS, production_line_id=line_a["id"])
+
+        create_response = client.post(
+            "/production-lines",
+            json={"name": "Independent Line", "description": "", "uap_id": None},
+            headers=auth_headers(owner),
+        )
+        assert create_response.status_code == 201
+        independent_line = create_response.json()["data"]
+        assert independent_line["uap_id"] is None
+
+        for _ in range(3):
+            seed_workstation(
+                namespace_id=NS, production_line_id=independent_line["id"]
+            )
+
+        _seed_issue(
+            fake_db,
+            down_time_scope="plant",
+            status=DownTimeStatus.CLOSED.value,
+            created_at=_utc(7),
+            resolved_at=_utc(7, 30),
+        )
+
+        res = client.get("/kpi/dashboard", params=_period(), headers=auth_headers(owner))
+        assert res.status_code == 200, res.text
+        data = res.json()["data"]
+        by_location = _by_location(res)
+
+        assert by_location[uap_a["id"]]["kpis"]["downtime_seconds"] == 3600  # 2 stations
+
+        assert "unassigned" in by_location
+        # 3 stations on the UAP-less line, 30min -> 5400s.
+        assert by_location["unassigned"]["kpis"]["downtime_seconds"] == 5400
+
+        header_downtime = data["overall"]["downtime_seconds"]
+        row_sum = sum(row["kpis"]["downtime_seconds"] for row in by_location.values())
+        assert row_sum == header_downtime
+
+
+# --------------------------------------------------------------------------
+# Work Unit test.review_fixes, FIX 2 — `_unassigned_count(hierarchy, "uap")`
+# (services.py:1420) must count ONLY workstations sitting under a line that
+# itself has no `uap_id`, never a workstation with no line at all. Today it
+# also counts line-less workstations, so a single stray line-less station in
+# an otherwise plain "1 UAP / several lines" plant wrongly collapses the
+# breakdown from three informative line rows down to one UAP row +
+# unassigned -- and that stray station was already visible in the `line`
+# breakdown's own unassigned row, so nothing was gained by the collapse.
+#
+# `TestUapLessLineLandsInUnassignedRow` above already pins the case this
+# extra group IS meant for (a UAP-less LINE carrying workstations); these
+# scenarios pin the regression shape it must NOT trigger for, and a
+# multi-UAP shape where the distinction cannot matter either way.
+# --------------------------------------------------------------------------
+
+
+class TestStrayLineLessStationDoesNotCollapseLineBreakdown:
+    def test_one_uap_three_lines_and_a_stray_line_less_station_stays_kind_line(
+        self,
+        client,
+        seed_user,
+        auth_headers,
+        fake_db,
+        seed_uap,
+        seed_production_line,
+        seed_workstation,
+    ):
+        """The regression shape: 1 UAP, 3 lines under it (9 stations total),
+        plus 1 stray station with no `production_line_id` at all. The stray
+        station's own line is *undefined*, not UAP-less, so it must not add
+        a second UAP group -- `by_location` must stay at kind `line` with
+        the three named line rows, not collapse to kind `uap`."""
+        owner = _owner(seed_user)
+        _seed_settings(fake_db)
+        uap_a = seed_uap(namespace_id=NS, name="UAP A")
+        line_1 = seed_production_line(namespace_id=NS, uap_id=uap_a["id"], name="Line 1")
+        line_2 = seed_production_line(namespace_id=NS, uap_id=uap_a["id"], name="Line 2")
+        line_3 = seed_production_line(namespace_id=NS, uap_id=uap_a["id"], name="Line 3")
+        for line in (line_1, line_2, line_3):
+            for _ in range(3):
+                seed_workstation(namespace_id=NS, production_line_id=line["id"])
+        # The stray station: no production line at all.
+        seed_workstation(namespace_id=NS, production_line_id=None)
+
+        _seed_issue(
+            fake_db,
+            down_time_scope="plant",
+            status=DownTimeStatus.CLOSED.value,
+            created_at=_utc(7),
+            resolved_at=_utc(7, 30),
+        )
+
+        res = client.get("/kpi/dashboard", params=_period(), headers=auth_headers(owner))
+        assert res.status_code == 200, res.text
+        by_location = _by_location(res)
+
+        # kind == "line": the three named lines are present as rows, and no
+        # UAP row (`uap_a["id"]`) appears at all -- a `uap`-kind breakdown
+        # would key rows by UAP id, not line id.
+        assert {line_1["id"], line_2["id"], line_3["id"]} <= set(by_location)
+        assert uap_a["id"] not in by_location
+
+    def test_several_real_uaps_stay_kind_uap_regardless_of_a_stray_station(
+        self,
+        client,
+        seed_user,
+        auth_headers,
+        fake_db,
+        three_uap_hierarchy,
+        seed_workstation,
+    ):
+        """Already passes today: with more than one REAL UAP, `uap_groups`
+        is > 1 from the real UAPs alone, so whether the stray-station count
+        is right or wrong changes nothing about the picked kind. Pinned as a
+        non-regression guard, not as new behavior."""
+        owner = _owner(seed_user)
+        # A stray station with no line at all, on top of the fixture's 3
+        # UAPs / 3 lines / 20 stations.
+        seed_workstation(namespace_id=NS, production_line_id=None)
+
+        _seed_issue(
+            fake_db,
+            down_time_scope="plant",
+            status=DownTimeStatus.CLOSED.value,
+            created_at=_utc(7),
+            resolved_at=_utc(7, 30),
+        )
+
+        res = client.get("/kpi/dashboard", params=_period(), headers=auth_headers(owner))
+        assert res.status_code == 200, res.text
+        by_location = _by_location(res)
+
+        assert set(by_location) >= {
+            three_uap_hierarchy["uap_a"]["id"],
+            three_uap_hierarchy["uap_b"]["id"],
+            three_uap_hierarchy["uap_c"]["id"],
+        }
+        assert "unassigned" in by_location
+        assert by_location["unassigned"]["kind"] == "uap"

@@ -13,7 +13,9 @@ export interface CreateUserPayload {
   last_name: string;
   role: string;
   email?: string;
-  password: string;
+  /** Required only when an email is set. A user without an email signs in from
+   * the mobile app with their security code, so no password is needed. */
+  password?: string;
 }
 
 export type UpdateUserPayload = {
