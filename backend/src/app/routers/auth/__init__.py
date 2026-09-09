@@ -1,7 +1,6 @@
 from fastapi import APIRouter
 
 from src.app.core.api_response import ApiResponse
-
 from src.app.routers.auth import services
 from src.app.routers.auth.modelsIn import CheckUserCodeIn, LoginIn, MobileLoginIn
 from src.app.routers.auth.modelsOut import LoginOut
@@ -51,16 +50,25 @@ async def mobile_login(payload: MobileLoginIn) -> ApiResponse[LoginOut]:
     response_model=ApiResponse[LoginOut],
     summary="Pair a mobile device using a user's security code",
     description=(
-        "Looks up a user by their current 4-digit `security_code`, pairs the given "
-        "`device_id` (and optional `push_token`) with that account, and rotates the "
-        "security code to a new unique value so the one just used cannot be reused. "
-        "On success returns a bearer access token to be sent as "
-        "`Authorization: Bearer <token>` on subsequent requests, and the paired "
-        "device can subsequently use `/auth/mobile-login`. Returns 404 if no user "
-        "matches the given security code."
+        "Looks up a user by their current 4-character `security_code` (case-"
+        "insensitive), pairs the given `device_id` (and optional `push_token`) "
+        "with that account, and rotates the security code to a new unique value "
+        "so the one just used cannot be reused. On success returns a bearer "
+        "access token to be sent as `Authorization: Bearer <token>` on "
+        "subsequent requests, and the paired device can subsequently use "
+        "`/auth/mobile-login`. Returns 404 if no user matches the given "
+        "security code. To slow down brute-force guessing, a device is "
+        "temporarily locked out after 3 consecutive failed attempts and "
+        "returns 429 until the lockout expires."
     ),
     responses={
         404: {"description": "No user matches this security code."},
+        429: {
+            "description": (
+                "This device is temporarily locked out after too many failed "
+                "attempts. Returned before the security code is even looked up."
+            )
+        },
     },
 )
 async def check_user_code(payload: CheckUserCodeIn) -> ApiResponse[LoginOut]:

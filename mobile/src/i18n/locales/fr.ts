@@ -16,11 +16,13 @@ const fr = {
     securityCode: {
       title: "Saisissez votre code de sécurité",
       subtitle:
-        "Entrez le code de sécurité à 4 chiffres qui vous a été attribué pour associer cet appareil.",
+        "Entrez le code de sécurité à 4 caractères qui vous a été attribué pour associer cet appareil.",
       label: "Code de sécurité",
       save: "Enregistrer",
       saving: "Association…",
-      invalid: "Saisissez votre code à 4 chiffres.",
+      invalid: "Saisissez votre code à 4 caractères.",
+      invalidChars:
+        "Vérifiez votre code : il ne contient que des chiffres et des lettres, sans I, L, O ni U.",
     },
     home: {
       greeting: "Bienvenue",
@@ -115,6 +117,8 @@ const fr = {
     },
     errors: {
       codeNotFound: "Aucun utilisateur n'est disponible pour ce code.",
+      deviceLocked:
+        "Cet appareil est temporairement bloqué après trop de tentatives d'association échouées. Patientez environ une heure avant de réessayer.",
       generic: "Une erreur est survenue. Veuillez réessayer.",
       network: "Impossible de contacter le serveur. Vérifiez votre connexion.",
     },

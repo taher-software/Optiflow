@@ -16,11 +16,13 @@ const en = {
     securityCode: {
       title: "Enter your security code",
       subtitle:
-        "Type the 4-digit security code assigned to you to pair this device.",
+        "Type the 4-character security code assigned to you to pair this device.",
       label: "Security code",
       save: "Save",
       saving: "Pairing…",
-      invalid: "Enter your 4-digit code.",
+      invalid: "Enter your 4-character code.",
+      invalidChars:
+        "Check your code: it only uses digits and letters, without I, L, O or U.",
     },
     home: {
       greeting: "Welcome",
@@ -115,6 +117,8 @@ const en = {
     },
     errors: {
       codeNotFound: "No user is available for this code.",
+      deviceLocked:
+        "This device has been temporarily locked out after too many failed pairing attempts. Please wait about an hour before trying again.",
       generic: "Something went wrong. Please try again.",
       network: "Cannot reach the server. Check your connection.",
     },

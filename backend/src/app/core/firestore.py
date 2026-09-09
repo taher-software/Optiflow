@@ -4,6 +4,9 @@ UAP_COLLECTION = "uap"
 PRODUCTION_LINE_COLLECTION = "production_line"
 WORKSTATION_COLLECTION = "workstation"
 
+# Failed mobile-pairing attempts per device (`/auth/check-user-code` lockout).
+TEMPORARY_CONNECTION_COLLECTION = "temporary_connection"
+
 # Per-namespace plant settings (shift schedule + escalation delay). Stored as a
 # single document, keyed by the namespace id, in the `settings` subcollection of
 # the namespace's `NamespaceSettings` parent doc:
