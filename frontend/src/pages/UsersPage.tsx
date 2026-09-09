@@ -1,10 +1,13 @@
-import { useEffect } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router-dom";
 
+import { FiltersBar } from "../components/FiltersBar";
+import { TextField } from "../components/TextField";
 import { ROUTES } from "../constants/routes";
 import { roleSlug } from "../constants/users";
 import { useUsersStore } from "../stores/useUsersStore";
+import { matchesQuery } from "../utils/textSearch";
 
 /** Lists the namespace's users with their security codes. Owner/admin only. */
 export function UsersPage() {
@@ -13,10 +16,18 @@ export function UsersPage() {
   const loading = useUsersStore((s) => s.loading);
   const error = useUsersStore((s) => s.error);
   const fetchUsers = useUsersStore((s) => s.fetchUsers);
+  const [search, setSearch] = useState("");
 
   useEffect(() => {
     void fetchUsers();
   }, [fetchUsers]);
+
+  const visibleUsers = useMemo(
+    () => users.filter((u) => matchesQuery(search, u.first_name, u.last_name)),
+    [users, search],
+  );
+
+  const hasUsers = !loading && !error && users.length > 0;
 
   return (
     <div className="mx-auto max-w-6xl px-6 py-10">
@@ -40,7 +51,23 @@ export function UsersPage() {
         <p className="mt-8 text-sm text-slate-400">{t("users.empty")}</p>
       )}
 
-      {!loading && users.length > 0 && (
+      {hasUsers && (
+        <FiltersBar>
+          <TextField
+            id="users-search"
+            label={t("users.filters.search")}
+            value={search}
+            onChange={setSearch}
+            placeholder={t("users.filters.searchPlaceholder")}
+          />
+        </FiltersBar>
+      )}
+
+      {hasUsers && visibleUsers.length === 0 && (
+        <p className="mt-8 text-sm text-slate-400">{t("users.noResults")}</p>
+      )}
+
+      {hasUsers && visibleUsers.length > 0 && (
         <div className="mt-8 overflow-x-auto rounded-2xl border border-slate-800">
           <table className="w-full text-left text-sm">
             <thead className="bg-slate-900/60 text-xs uppercase text-slate-400">
@@ -55,7 +82,7 @@ export function UsersPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-800">
-              {users.map((u) => (
+              {visibleUsers.map((u) => (
                 <tr key={u.id} className="hover:bg-slate-900/40">
                   <td className="px-4 py-3 text-white">
                     {u.first_name} {u.last_name}

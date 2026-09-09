@@ -40,8 +40,16 @@ def _wire_firestore(fake_db, monkeypatch):
 def push_spy(monkeypatch):
     calls: list[dict] = []
 
-    def _spy(tokens, title, body, data=None):
-        calls.append({"tokens": list(tokens), "title": title, "body": body, "data": data})
+    def _spy(tokens, title, body, data=None, notif_level="urgent"):
+        calls.append(
+            {
+                "tokens": list(tokens),
+                "title": title,
+                "body": body,
+                "data": data,
+                "notif_level": notif_level,
+            }
+        )
 
     monkeypatch.setattr(escalate_module, "send_push_notifications", _spy)
     return calls

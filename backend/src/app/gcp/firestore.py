@@ -15,6 +15,22 @@ _ALLOWED_OPERATORS = frozenset(
     {"==", "!=", "<", "<=", ">", ">=", "in", "not-in", "array-contains", "array-contains-any"}
 )
 
+# Param field names whose VALUE must never reach the logs (a mobile pairing
+# `security_code`, a `password`, a `device_id`). The field NAME is still
+# logged so operators can tell which lookup ran.
+_SENSITIVE_PARAM_FIELDS = frozenset({"security_code", "password", "device_id"})
+_REDACTED_VALUE = "***REDACTED***"
+
+
+def _redact_sensitive_params(params: dict) -> dict:
+    """Returns a copy of `params` with sensitive field values replaced by a
+    redaction placeholder, safe to interpolate into a log message. Field
+    names are preserved so the log line stays useful for debugging."""
+    return {
+        field: (_REDACTED_VALUE if field in _SENSITIVE_PARAM_FIELDS else value)
+        for field, value in params.items()
+    }
+
 
 class FirestoreClient:
     """
@@ -186,7 +202,8 @@ class FirestoreClient:
 
         try:
             logger.info(
-                f"Searching for document in collection '{collection_name}' with params: {params}"
+                f"Searching for document in collection '{collection_name}' with params: "
+                f"{_redact_sensitive_params(params)}"
             )
 
             # Get collection reference
@@ -212,7 +229,8 @@ class FirestoreClient:
 
             # No matching document found
             logger.info(
-                f"No matching document found in collection '{collection_name}' for params: {params}"
+                f"No matching document found in collection '{collection_name}' for params: "
+                f"{_redact_sensitive_params(params)}"
             )
             return None
 

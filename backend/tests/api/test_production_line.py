@@ -542,3 +542,251 @@ class TestDeleteProductionLine:
         )
 
         assert response.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# Work Unit test.optional_uap_and_password, CHANGE 1: `uap_id` becomes
+# OPTIONAL on `CreateProductionLineIn` -- a production line may be
+# "independent", belonging to no UAP, mirroring `Workstation.production_line_id`
+# already being optional. Written test-first: as of this revision
+# `CreateProductionLineIn.uap_id` is still `str = Field(..., min_length=1)`,
+# so every "omit it / send it null" case below is expected to fail on that
+# mandatory-field `422`, never on a broken fixture.
+#
+# The existing blank-string case
+# (`TestCreateProductionLine.test_create_production_line_blank_uap_id_returns_422`,
+# frozen, not touched) already proves `""` is rejected; this class adds the
+# still-missing whitespace-only case and the new "no UAP at all" cases.
+# ---------------------------------------------------------------------------
+
+
+class TestOptionalUap:
+    """POST /production-lines -- `uap_id` is now optional."""
+
+    def test_create_production_line_without_uap_id_key_returns_201(
+        self, client, seed_user, auth_headers
+    ):
+        owner = seed_user(role=Role.OWNER.value)
+        payload = ProductionLinePayloadFactory(name="Independent Line")
+        del payload["uap_id"]
+
+        response = client.post(
+            PRODUCTION_LINES_URL, json=payload, headers=auth_headers(owner)
+        )
+
+        assert response.status_code == 201
+        data = response.json()["data"]
+        assert data["uap_id"] is None
+        assert data["namespace_id"] == owner["namespace_id"]
+
+    def test_create_production_line_explicit_null_uap_id_returns_201(
+        self, client, seed_user, auth_headers
+    ):
+        owner = seed_user(role=Role.OWNER.value)
+        payload = ProductionLinePayloadFactory(name="Independent Line 2")
+        payload["uap_id"] = None
+
+        response = client.post(
+            PRODUCTION_LINES_URL, json=payload, headers=auth_headers(owner)
+        )
+
+        assert response.status_code == 201
+        assert response.json()["data"]["uap_id"] is None
+
+    def test_create_production_line_whitespace_only_uap_id_returns_422(
+        self, client, seed_user, auth_headers
+    ):
+        """Whitespace-only must not sneak through as a valid value, same
+        emptiness semantics as the existing blank-string (`""`) case."""
+        owner = seed_user(role=Role.OWNER.value)
+        payload = ProductionLinePayloadFactory(uap_id="   ")
+
+        response = client.post(
+            PRODUCTION_LINES_URL, json=payload, headers=auth_headers(owner)
+        )
+
+        assert response.status_code == 422
+
+    def test_update_production_line_omitting_uap_id_still_leaves_it_untouched(
+        self, client, seed_user, seed_uap, auth_headers
+    ):
+        """Non-regression: optional-on-create must not change update's
+        existing "omitted field = leave untouched" semantics. Duplicates the
+        spirit of the frozen
+        `test_update_production_line_name_only_leaves_uap_id_untouched` on
+        purpose, as a guard specific to this Work Unit's change."""
+        owner = seed_user(role=Role.OWNER.value)
+        uap = seed_uap(namespace_id=owner["namespace_id"])
+        created = client.post(
+            PRODUCTION_LINES_URL,
+            json=ProductionLinePayloadFactory(name="Has a UAP", uap_id=uap["id"]),
+            headers=auth_headers(owner),
+        ).json()["data"]
+
+        response = client.put(
+            f"{PRODUCTION_LINES_URL}/{created['id']}",
+            json={"description": "updated description only"},
+            headers=auth_headers(owner),
+        )
+
+        assert response.status_code == 200
+        assert response.json()["data"]["uap_id"] == uap["id"]
+
+    # RESOLVED (was an open anomaly): how a caller DETACHES an already-UAP'd
+    # line follows the exact precedent already established for
+    # `UpdateWorkstationIn.production_line_id` (`src/app/routers/workstation
+    # /modelsIn.py`): omitted == leave untouched, explicit JSON `null` ==
+    # detach, via `model_fields_set` rather than the value alone. See
+    # `TestUpdateProductionLineUapDetach` below.
+
+
+class TestUpdateProductionLineUapDetach:
+    """PUT /production-lines/{line_id} -- `uap_id` follows the same
+    `model_fields_set` partial-update semantics already used by
+    `UpdateWorkstationIn.production_line_id`: omitted = leave untouched,
+    explicit `null` = detach (the line becomes independent), a non-empty
+    value = attach/reattach (still existence-checked).
+
+    Written test-first: `UpdateProductionLineIn.uap_id` is still a plain
+    `Optional[str] = Field(default=None, min_length=1)` read with `if
+    payload.uap_id is not None`, with no `model_fields_set` branching at
+    all -- so every "explicit null detaches" case below is expected to fail
+    because the service reads an explicit `null` exactly like an omitted
+    field (no-op), never on a broken fixture.
+    """
+
+    def test_update_production_line_omitting_uap_id_vs_explicit_null_diverge(
+        self, client, seed_user, seed_uap, auth_headers
+    ):
+        """The whole point of `model_fields_set`: two PUTs on the same
+        starting line, one omitting `uap_id` and one sending it explicitly
+        as `null`, must produce DIFFERENT outcomes."""
+        owner = seed_user(role=Role.OWNER.value)
+        uap = seed_uap(namespace_id=owner["namespace_id"])
+        line_1 = client.post(
+            PRODUCTION_LINES_URL,
+            json=ProductionLinePayloadFactory(name="Line Omit", uap_id=uap["id"]),
+            headers=auth_headers(owner),
+        ).json()["data"]
+        line_2 = client.post(
+            PRODUCTION_LINES_URL,
+            json=ProductionLinePayloadFactory(name="Line Null", uap_id=uap["id"]),
+            headers=auth_headers(owner),
+        ).json()["data"]
+
+        omit_response = client.put(
+            f"{PRODUCTION_LINES_URL}/{line_1['id']}",
+            json={"description": "touched, uap_id omitted"},
+            headers=auth_headers(owner),
+        )
+        null_response = client.put(
+            f"{PRODUCTION_LINES_URL}/{line_2['id']}",
+            json={"uap_id": None},
+            headers=auth_headers(owner),
+        )
+
+        assert omit_response.status_code == 200
+        assert omit_response.json()["data"]["uap_id"] == uap["id"]
+
+        assert null_response.status_code == 200
+        assert null_response.json()["data"]["uap_id"] is None
+
+    def test_update_production_line_explicit_null_uap_id_detaches_to_independent(
+        self, client, seed_user, seed_uap, auth_headers
+    ):
+        owner = seed_user(role=Role.OWNER.value)
+        uap = seed_uap(namespace_id=owner["namespace_id"])
+        created = client.post(
+            PRODUCTION_LINES_URL,
+            json=ProductionLinePayloadFactory(uap_id=uap["id"]),
+            headers=auth_headers(owner),
+        ).json()["data"]
+
+        response = client.put(
+            f"{PRODUCTION_LINES_URL}/{created['id']}",
+            json={"uap_id": None},
+            headers=auth_headers(owner),
+        )
+
+        assert response.status_code == 200
+        assert response.json()["data"]["uap_id"] is None
+
+        get_response = client.get(
+            f"{PRODUCTION_LINES_URL}/{created['id']}", headers=auth_headers(owner)
+        )
+        assert get_response.json()["data"]["uap_id"] is None
+
+    def test_update_production_line_sets_uap_id_on_an_independent_line(
+        self, client, seed_user, seed_uap, seed_production_line, auth_headers
+    ):
+        """The starting independent line is seeded directly into `fake_db`
+        (bypassing `POST /production-lines`) so this test is isolated to the
+        update-side detach/attach logic, and does not also depend on
+        Change 1's create-time `uap_id` becoming optional."""
+        owner = seed_user(role=Role.OWNER.value)
+        uap = seed_uap(namespace_id=owner["namespace_id"])
+        created = seed_production_line(
+            namespace_id=owner["namespace_id"], uap_id=None
+        )
+
+        response = client.put(
+            f"{PRODUCTION_LINES_URL}/{created['id']}",
+            json={"uap_id": uap["id"]},
+            headers=auth_headers(owner),
+        )
+
+        assert response.status_code == 200
+        assert response.json()["data"]["uap_id"] == uap["id"]
+
+    def test_update_production_line_nonexistent_uap_id_still_returns_422(
+        self, client, seed_user, seed_uap, seed_production_line, auth_headers
+    ):
+        """The existence check is not weakened by the detach semantics."""
+        owner = seed_user(role=Role.OWNER.value)
+        uap = seed_uap(namespace_id=owner["namespace_id"])
+        created = seed_production_line(namespace_id=owner["namespace_id"], uap_id=uap["id"])
+
+        response = client.put(
+            f"{PRODUCTION_LINES_URL}/{created['id']}",
+            json={"uap_id": "does-not-exist"},
+            headers=auth_headers(owner),
+        )
+
+        assert response.status_code == 422
+
+    def test_update_production_line_cross_namespace_uap_id_still_returns_422(
+        self, client, seed_user, seed_uap, seed_production_line, auth_headers
+    ):
+        owner = seed_user(role=Role.OWNER.value)
+        uap = seed_uap(namespace_id=owner["namespace_id"])
+        other_namespace_uap = seed_uap()
+        created = seed_production_line(namespace_id=owner["namespace_id"], uap_id=uap["id"])
+
+        response = client.put(
+            f"{PRODUCTION_LINES_URL}/{created['id']}",
+            json={"uap_id": other_namespace_uap["id"]},
+            headers=auth_headers(owner),
+        )
+
+        assert response.status_code == 422
+
+    def test_update_production_line_whitespace_only_uap_id_still_returns_422(
+        self, client, seed_user, seed_uap, auth_headers
+    ):
+        """Same emptiness rule as creation -- whitespace-only must not sneak
+        through as a valid value here either."""
+        owner = seed_user(role=Role.OWNER.value)
+        uap = seed_uap(namespace_id=owner["namespace_id"])
+        created = client.post(
+            PRODUCTION_LINES_URL,
+            json=ProductionLinePayloadFactory(uap_id=uap["id"]),
+            headers=auth_headers(owner),
+        ).json()["data"]
+
+        response = client.put(
+            f"{PRODUCTION_LINES_URL}/{created['id']}",
+            json={"uap_id": "   "},
+            headers=auth_headers(owner),
+        )
+
+        assert response.status_code == 422

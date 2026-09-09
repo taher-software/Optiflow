@@ -50,12 +50,18 @@ export function UserFormPage() {
 
   const isOwner = role === "owner";
   const needsEmail = role !== "" && roleNeedsEmail(role);
+  const hasEmail = email.trim() !== "";
+  // A password is only usable with an email; without one the account signs in
+  // by security code. Roles in needsEmail force an email, so they stay covered.
+  const needsPassword = !isEdit && hasEmail;
+  const passwordOk =
+    password === "" ? !needsPassword : password.trim().length >= 6;
   const valid =
     firstName.trim() !== "" &&
     lastName.trim() !== "" &&
     role !== "" &&
-    (!needsEmail || email.trim() !== "") &&
-    (isEdit || password.length >= 6);
+    (!needsEmail || hasEmail) &&
+    passwordOk;
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -64,6 +70,7 @@ export function UserFormPage() {
     setError(null);
 
     const emailPart = email.trim() ? { email: email.trim() } : {};
+    const passwordPart = password.trim() ? { password: password.trim() } : {};
     const res =
       isEdit && id
         ? await updateUser(id, {
@@ -71,14 +78,14 @@ export function UserFormPage() {
             last_name: lastName,
             ...(isOwner ? {} : { role }),
             ...emailPart,
-            ...(password.trim() ? { password: password.trim() } : {}),
+            ...passwordPart,
           } satisfies UpdateUserPayload)
         : await createUser({
             first_name: firstName,
             last_name: lastName,
             role,
-            password,
             ...emailPart,
+            ...passwordPart,
           } satisfies CreateUserPayload);
 
     setSubmitting(false);
@@ -139,16 +146,28 @@ export function UserFormPage() {
             placeholder="user@company.com"
           />
 
-          <PasswordField
-            id="password"
-            label={
-              isEdit ? t("users.form.passwordEdit") : t("users.form.password")
-            }
-            required={!isEdit}
-            value={password}
-            onChange={setPassword}
-            placeholder={isEdit ? t("users.form.passwordEditHint") : "••••••"}
-          />
+          <div className="space-y-2">
+            <PasswordField
+              id="password"
+              label={
+                (isEdit
+                  ? t("users.form.passwordEdit")
+                  : t("users.form.password")) +
+                (needsPassword || hasEmail
+                  ? ""
+                  : ` (${t("users.form.optional")})`)
+              }
+              required={needsPassword}
+              value={password}
+              onChange={setPassword}
+              placeholder={isEdit ? t("users.form.passwordEditHint") : "••••••"}
+            />
+            {!hasEmail && (
+              <p className="text-xs text-slate-400">
+                {t("users.form.passwordNoEmailHint")}
+              </p>
+            )}
+          </div>
 
           {error && <p className="text-sm text-red-400">{error}</p>}
 

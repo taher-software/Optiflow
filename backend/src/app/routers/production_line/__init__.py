@@ -33,7 +33,9 @@ _production_line_read_scope = require_roles(
     description=(
         "Creates a production line in the caller's namespace. `name` must be "
         "unique within the namespace (comparison ignores leading/trailing "
-        "whitespace and case). `uap_id` must reference an existing UAP "
+        "whitespace and case). `uap_id` is optional: omit it (or send `null`) "
+        "to create an independent production line, not attached to any UAP. "
+        "When supplied, it must be non-blank and reference an existing UAP "
         "(production area) in the same namespace. Restricted to owner/admin/"
         "production supervisor."
     ),
@@ -99,14 +101,18 @@ async def get_production_line(
     response_model=ApiResponse[ProductionLineOut],
     summary="Update a production line",
     description=(
-        "Partially updates a production line in the caller's namespace. If "
-        "`name` is provided it must be unique within the namespace "
-        "(comparison ignores leading/trailing whitespace and case; the line "
-        "being updated is excluded from the comparison, so keeping the same "
-        "name, even with a different case, never conflicts). Any field "
-        "omitted (`None`) is left untouched. If `uap_id` is provided it is "
-        "re-validated against the caller's namespace. Restricted to owner/"
-        "admin/production supervisor."
+        "Partially updates a production line in the caller's namespace. Any "
+        "field omitted from the payload is left untouched. If `name` is "
+        "provided it must be unique within the namespace (comparison ignores "
+        "leading/trailing whitespace and case; the line being updated is "
+        "excluded from the comparison, so keeping the same name, even with a "
+        "different case, never conflicts).\n\n"
+        "`uap_id` follows an omitted-vs-`null` distinction rather than the "
+        "value alone: omit it to leave the current UAP unchanged, send it "
+        "explicitly as `null` to detach the line and make it independent, or "
+        "send a non-blank id to attach/reattach it (re-validated against the "
+        "caller's namespace; a whitespace-only id is rejected). Restricted "
+        "to owner/admin/production supervisor."
     ),
     responses={
         404: {"description": "Production line not found in the caller's namespace."},
