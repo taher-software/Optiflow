@@ -1358,27 +1358,42 @@ def _row_perimeter_type_counts(
     return None
 
 
-def _pick_location_kind(hierarchy: dict[str, Any]) -> str:
-    """§3 — UAPs when there's more than one, else lines when more than one,
-    else stations.
+def _has_orphan_child(hierarchy: dict[str, Any], kind: str) -> bool:
+    """True when at least one entity of the level BELOW `kind` has no parent
+    at `kind`'s level, and so cannot roll up into any real row of a `kind`
+    breakdown: a production line with no `uap_id` for "uap", a workstation
+    with no `production_line_id` for "line". Such an orphan is a group in
+    its own right (it lands in the breakdown's `unassigned` row), so it
+    counts alongside the real rows when deciding whether `kind` is a
+    meaningful granularity.
 
-    A UAP-less production line (production_line/optional_uap) is a top-level
-    group in its own right — its workstations roll up into the `unassigned`
-    row of a `uap` breakdown (`_unassigned_count`), never into any real UAP
-    row — so it counts as one extra distinguishable group alongside the real
-    UAPs when deciding whether "uap" is a meaningful granularity. Same
-    reasoning one level down: a workstation with no `production_line_id` at
-    all counts as one extra group alongside the real lines. Without this, a
-    namespace with exactly one UAP plus one independent line would fall
-    through to `line` and never surface the UAP-less line's stations under
-    the `unassigned` row a `uap` breakdown would give them."""
+    Always exactly ONE level down. `_unassigned_count` answers a different
+    question -- how many WORKSTATIONS a `kind` breakdown cannot reach, at
+    any depth -- which is right for sizing the `unassigned` row but wrong
+    here: at the "uap" level it also counts line-less workstations, whose
+    line is *undefined* rather than UAP-less, and one stray line-less
+    station would then collapse an informative `line` breakdown down to a
+    single UAP row plus `unassigned`."""
+    if kind == "uap":
+        return any(not uap_id for uap_id in hierarchy["line_to_uap"].values())
+    # kind == "line"
+    return any(
+        not s.get("production_line_id") for s in hierarchy["stations"].values()
+    )
+
+
+def _pick_location_kind(hierarchy: dict[str, Any]) -> str:
+    """UAPs when there's more than one distinguishable top-level group, else
+    lines when more than one, else stations. At each level the real rows are
+    counted alongside one extra group for the orphans of the level just
+    below (`_has_orphan_child`) -- a UAP-less line for "uap", a line-less
+    workstation for "line" -- since those cannot roll up into any real row
+    and would otherwise be invisible."""
     uap_count = len(hierarchy["uaps"])
     line_count = len(hierarchy["lines"])
-    uap_groups = uap_count + (1 if _unassigned_count(hierarchy, "uap") > 0 else 0)
-    if uap_groups > 1:
+    if uap_count + (1 if _has_orphan_child(hierarchy, "uap") else 0) > 1:
         return "uap"
-    line_groups = line_count + (1 if _unassigned_count(hierarchy, "line") > 0 else 0)
-    if line_groups > 1:
+    if line_count + (1 if _has_orphan_child(hierarchy, "line") else 0) > 1:
         return "line"
     return "station"
 

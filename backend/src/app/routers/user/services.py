@@ -112,6 +112,19 @@ def update_user(user_id: str, payload: UpdateUserIn, namespace_id: str) -> UserO
             detail="Email is required for admin, manager, and supervisor roles.",
         )
 
+    # Enforce the password requirement against the resulting state too: an
+    # email set with no password is a state `POST /users` already forbids
+    # (`CreateUserIn`'s validator), so `PUT` must not be able to create it
+    # either. Checked against the MERGED state (updates.get(...) or
+    # user.get(...)), not the payload alone — a user who already has a
+    # stored password must still be updatable with only a new email.
+    final_password = updates.get("password", user.get("password"))
+    if final_email and not final_password:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Password is required when an email is set.",
+        )
+
     if updates:
         client.update_document(USERS_COLLECTION, user_id, updates)
     return _to_out({**user, **updates})
