@@ -15,11 +15,18 @@ import type { RootStackParamList } from "../constants/routes";
 import { useAuthStore } from "../stores/useAuthStore";
 import { useDeviceStore } from "../stores/useDeviceStore";
 import { useToastStore } from "../stores/useToastStore";
+import {
+  isSecurityCode,
+  normalizeSecurityCode,
+  SECURITY_CODE_LENGTH,
+} from "../utils/securityCode";
 
 type Props = NativeStackScreenProps<RootStackParamList, "SecurityCode">;
 
-/** Pairing screen: the user enters their 4-digit security code to bind this
- * device. On success the device id is cached and the app opens. */
+/** Pairing screen: the user enters their 4-character security code to bind
+ * this device. On success the device id is cached and the app opens. After
+ * three failed attempts the backend locks the device out for an hour and
+ * answers 429; the form then freezes for the rest of the screen's life. */
 export function SecurityCodeScreen({ navigation }: Props) {
   const { t } = useTranslation();
   const insets = useSafeAreaInsets();
@@ -29,11 +36,16 @@ export function SecurityCodeScreen({ navigation }: Props) {
 
   const [code, setCode] = useState("");
   const [busy, setBusy] = useState(false);
+  const [lockedOut, setLockedOut] = useState(false);
 
   const onSave = async () => {
-    const value = code.trim();
-    if (value.length !== 4) {
+    const value = normalizeSecurityCode(code);
+    if (value.length !== SECURITY_CODE_LENGTH) {
       showToast(t("securityCode.invalid"));
+      return;
+    }
+    if (!isSecurityCode(value)) {
+      showToast(t("securityCode.invalidChars"));
       return;
     }
     setBusy(true);
@@ -44,6 +56,11 @@ export function SecurityCodeScreen({ navigation }: Props) {
         navigation.replace("Home");
       } else if (res.status === 404) {
         showToast(t("errors.codeNotFound"));
+      } else if (res.status === 429) {
+        // The device is blocked server-side, so no further attempt can
+        // succeed: take the action away instead of only saying so.
+        setLockedOut(true);
+        showToast(t("errors.deviceLocked"));
       } else {
         showToast(res.status === 0 ? t("errors.network") : t("errors.generic"));
       }
@@ -71,22 +88,37 @@ export function SecurityCodeScreen({ navigation }: Props) {
       </Text>
       <TextInput
         value={code}
-        onChangeText={(v) => setCode(v.replace(/[^0-9]/g, "").slice(0, 4))}
-        keyboardType="number-pad"
+        onChangeText={(v) => setCode(normalizeSecurityCode(v))}
+        keyboardType="ascii-capable"
+        autoCapitalize="characters"
+        autoCorrect={false}
+        autoComplete="off"
+        spellCheck={false}
+        textContentType="none"
         maxLength={4}
         autoFocus
+        editable={!lockedOut}
         accessibilityLabel={t("securityCode.label")}
         placeholder="••••"
         placeholderTextColor="#475569"
-        className="rounded-2xl border border-slate-700 bg-slate-900 px-4 py-4 text-center text-2xl tracking-[16px] text-white"
+        className={`rounded-2xl border border-slate-700 bg-slate-900 px-4 py-4 text-center text-2xl tracking-[16px] text-white ${
+          lockedOut ? "opacity-60" : ""
+        }`}
       />
+
+      {lockedOut ? (
+        <Text className="mt-4 text-sm leading-relaxed text-rose-300">
+          {t("errors.deviceLocked")}
+        </Text>
+      ) : null}
 
       <Pressable
         onPress={onSave}
-        disabled={busy}
+        disabled={busy || lockedOut}
         accessibilityRole="button"
+        accessibilityState={{ disabled: busy || lockedOut }}
         className={`mt-8 h-14 flex-row items-center justify-center rounded-2xl bg-teal-400 ${
-          busy ? "opacity-60" : ""
+          busy || lockedOut ? "opacity-60" : ""
         }`}
       >
         {busy ? (
