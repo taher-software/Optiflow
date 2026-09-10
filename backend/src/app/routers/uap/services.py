@@ -3,14 +3,20 @@ from typing import Any
 
 from fastapi import HTTPException, status
 
-from src.app.core.firestore import UAP_COLLECTION, USERS_COLLECTION
+from src.app.core.archiving import is_active, now_iso_for_namespace
+from src.app.core.firestore import (
+    PRODUCTION_LINE_COLLECTION,
+    UAP_COLLECTION,
+    USERS_COLLECTION,
+    WORKSTATION_COLLECTION,
+)
 from src.app.core.naming import assert_name_unique
 from src.app.gcp import get_firestore_client
 from src.app.gcp.firestore import FirestoreClient
 from src.app.globals.enum import Role
 
 from src.app.routers.uap.modelsIn import CreateUapIn, UpdateUapIn
-from src.app.routers.uap.modelsOut import UapOut
+from src.app.routers.uap.modelsOut import UapArchiveOut, UapOut
 
 # Maps each UAP id-list field to the role its members must hold. Sourced from
 # the single Role enum (globals/enum/roles.py) rather than hardcoded strings.
@@ -40,6 +46,7 @@ def _to_out(uap: dict[str, Any]) -> UapOut:
         maintenance_supervisor_ids=uap.get("maintenance_supervisor_ids", []),
         quality_supervisor_ids=uap.get("quality_supervisor_ids", []),
         production_supervisor_ids=uap.get("production_supervisor_ids", []),
+        archived=not is_active(uap),
     )
 
 
@@ -135,14 +142,29 @@ def create_uap(payload: CreateUapIn, namespace_id: str) -> UapOut:
 def list_uaps(namespace_id: str) -> list[UapOut]:
     client = get_firestore_client()
     rows = client.find_documents(UAP_COLLECTION, {"namespace_id": namespace_id})
-    return [_to_out(r) for r in rows]
+    # Archived filter happens here, in Python — never as a Firestore `where`
+    # (every pre-existing document has no `archived_at` key at all; see
+    # `core.archiving`).
+    return [_to_out(r) for r in rows if is_active(r)]
 
 
 def _load_scoped(
-    client: FirestoreClient, uap_id: str, namespace_id: str
+    client: FirestoreClient,
+    uap_id: str,
+    namespace_id: str,
+    *,
+    allow_archived: bool = False,
 ) -> dict[str, Any]:
+    """Load a UAP scoped to `namespace_id`, 404ing on a missing id, a
+    cross-namespace id, or (unless `allow_archived`) an archived one — an
+    archived UAP behaves as not found from every angle except the archive
+    endpoint itself, which needs to re-load it to stay idempotent."""
     uap = client.get_document(UAP_COLLECTION, uap_id)
     if not uap or uap.get("namespace_id") != namespace_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="UAP not found."
+        )
+    if not allow_archived and not is_active(uap):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="UAP not found."
         )
@@ -186,8 +208,52 @@ def update_uap(uap_id: str, payload: UpdateUapIn, namespace_id: str) -> UapOut:
     return _to_out({**uap, **updates})
 
 
-def delete_uap(uap_id: str, namespace_id: str) -> UapOut:
+def delete_uap(uap_id: str, namespace_id: str) -> UapArchiveOut:
+    """Archives the UAP (irreversibly; there is no unarchive) and cascades:
+    every production line whose `uap_id` is this UAP, and every workstation
+    whose `production_line_id` is one of those lines, is archived with it.
+    An independent line/workstation is never swept in. The whole cascade
+    shares one `archived_at` timestamp, computed once. Idempotent: archiving
+    an already-archived UAP returns 200 without touching its original
+    `archived_at` — the cascade is still (re-)walked so any child that
+    somehow escaped the first pass is still swept in, using that same
+    original timestamp rather than a fresh one."""
     client = get_firestore_client()
-    uap = _load_scoped(client, uap_id, namespace_id)
-    client.delete_document(UAP_COLLECTION, uap_id)
-    return _to_out(uap)
+    uap = _load_scoped(client, uap_id, namespace_id, allow_archived=True)
+
+    timestamp = uap.get("archived_at") or now_iso_for_namespace(client, namespace_id)
+    if not uap.get("archived_at"):
+        client.update_document(UAP_COLLECTION, uap_id, {"archived_at": timestamp})
+        uap = {**uap, "archived_at": timestamp}
+
+    lines = client.find_documents(
+        PRODUCTION_LINE_COLLECTION, {"namespace_id": namespace_id}
+    )
+    stations = client.find_documents(
+        WORKSTATION_COLLECTION, {"namespace_id": namespace_id}
+    )
+    archived_line_ids: list[str] = []
+    archived_station_ids: list[str] = []
+    for line in lines:
+        if line.get("uap_id") != uap_id:
+            continue
+        archived_line_ids.append(line["id"])
+        if is_active(line):
+            client.update_document(
+                PRODUCTION_LINE_COLLECTION, line["id"], {"archived_at": timestamp}
+            )
+
+        for station in stations:
+            if station.get("production_line_id") != line["id"]:
+                continue
+            archived_station_ids.append(station["id"])
+            if is_active(station):
+                client.update_document(
+                    WORKSTATION_COLLECTION, station["id"], {"archived_at": timestamp}
+                )
+
+    return UapArchiveOut(
+        **_to_out(uap).model_dump(),
+        archived_production_line_ids=archived_line_ids,
+        archived_workstation_ids=archived_station_ids,
+    )

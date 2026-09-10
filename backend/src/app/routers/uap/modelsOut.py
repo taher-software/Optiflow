@@ -35,3 +35,28 @@ class UapOut(BaseModel):
         ...,
         description="Ids of users with the 'production supervisor' role assigned to this UAP.",
     )
+    archived: bool = Field(
+        default=False,
+        description=(
+            "Whether this UAP has been archived. Derived from `archived_at` "
+            "(never stored as its own field). An archived UAP never appears "
+            "here anyway, since archived resources are excluded from every "
+            "list/read — this field only matters on the archive endpoint's "
+            "own response."
+        ),
+    )
+
+
+class UapArchiveOut(UapOut):
+    """Response shape for `DELETE /uaps/{uap_id}` (archiving): the archived
+    UAP itself, plus every production line and workstation swept into the
+    cascade (see the router's docstring for the cascade rules)."""
+
+    archived_production_line_ids: list[str] = Field(
+        default_factory=list,
+        description="Ids of every production line archived by this cascade.",
+    )
+    archived_workstation_ids: list[str] = Field(
+        default_factory=list,
+        description="Ids of every workstation archived by this cascade.",
+    )

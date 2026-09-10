@@ -57,6 +57,7 @@ from typing import Any, Optional
 from fastapi import HTTPException, status
 
 from src.app.gcp import get_pubsub_publisher
+from src.app.core.archiving import is_active
 from src.app.core.escalation import cancel_escalation
 from src.app.core.firestore import (
     NAMESPACE_COLLECTION,
@@ -169,7 +170,14 @@ def _validate_workstation(
     production_line_id: Optional[str],
 ) -> dict[str, Any]:
     station = client.get_document(WORKSTATION_COLLECTION, workstation_id)
-    if not station or station.get("namespace_id") != namespace_id:
+    if (
+        not station
+        or station.get("namespace_id") != namespace_id
+        or not is_active(station)
+    ):
+        # An archived workstation is rejected the same way as a nonexistent
+        # one: no new downtime ticket can target it, but its already-logged
+        # tickets still count in the KPIs.
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="workstation_id: no such workstation in this namespace.",
