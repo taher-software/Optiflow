@@ -123,7 +123,9 @@ def _require_non_blank(value: Optional[str], field_name: str) -> None:
 
 def _validate_uap(client: FirestoreClient, namespace_id: str, uap_id: str) -> dict[str, Any]:
     uap = client.get_document(UAP_COLLECTION, uap_id)
-    if not uap or uap.get("namespace_id") != namespace_id:
+    if not uap or uap.get("namespace_id") != namespace_id or not is_active(uap):
+        # An archived UAP is rejected the same way as a nonexistent one —
+        # see `_validate_workstation` below for why.
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="uap_id: no such production area in this namespace.",
@@ -138,7 +140,9 @@ def _validate_production_line(
     uap_id: Optional[str],
 ) -> dict[str, Any]:
     line = client.get_document(PRODUCTION_LINE_COLLECTION, production_line_id)
-    if not line or line.get("namespace_id") != namespace_id:
+    if not line or line.get("namespace_id") != namespace_id or not is_active(line):
+        # An archived production line is rejected the same way as a
+        # nonexistent one — see `_validate_workstation` below for why.
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="production_line_id: no such production line in this namespace.",

@@ -515,13 +515,23 @@ class TestPerimeterBoundary:
         assert res.status_code == 200, res.text
         assert res.json()["data"]["overall"]["downtime_seconds"] == 1800  # 30min x 1 (station_a excluded)
 
-    def test_plant_ticket_where_every_workstation_was_already_archived_floors_weight_at_one(
+    def test_plant_ticket_where_every_workstation_was_already_archived_weighs_zero(
         self, client, seed_user, auth_headers, fake_db, seed_uap, seed_production_line, seed_workstation
     ):
         """Both `station_a` and `station_b` archived before the ticket's
-        `created_at` -- the resolved perimeter is empty, so `_ticket_weight`'s
-        existing floor-at-1 rule applies: weight 1, downtime = 30min x 1 =
-        1800s, never 0."""
+        `created_at` -- the resolved perimeter is empty. `_ticket_weight`'s
+        `max(1, ...)` floor does NOT apply here: that floor exists for a
+        perimeter empty because of MISSING data (a UAP with no workstation
+        registered yet, or a ticket pointing at a since-deleted
+        workstation), where returning 0 would silently erase a genuinely
+        declared downtime. An entirely-archived perimeter is a different,
+        KNOWN fact -- every resource concerned was legitimately taken out of
+        service -- so the floor's justification does not carry over here.
+        Flooring at 1 would invent a workstation that no longer exists and
+        inflate the plant's downtime with time lost on a machine nobody
+        operates any more. Expected: weight 0, downtime = 30min x 0 = 0s.
+        The ticket still shows up on the dashboard though: `count` is not
+        weighted by workstations, so it stays 1."""
         owner = _owner(seed_user)
         hierarchy = _two_station_hierarchy(
             fake_db,
@@ -542,7 +552,7 @@ class TestPerimeterBoundary:
         res = client.get("/kpi/dashboard", params=_period(), headers=auth_headers(owner))
         assert res.status_code == 200, res.text
         data = res.json()["data"]
-        assert data["overall"]["downtime_seconds"] == 1800  # floored at weight 1
+        assert data["overall"]["downtime_seconds"] == 0  # 30min x 0 (entirely-archived perimeter, not a floor case)
         assert data["overall"]["count"] == 1
 
 
