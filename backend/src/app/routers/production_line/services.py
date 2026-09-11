@@ -3,7 +3,12 @@ from typing import Any, Optional
 
 from fastapi import HTTPException, status
 
-from src.app.core.archiving import is_active, now_iso_for_namespace
+from src.app.core.archiving import (
+    cancel_ticket_escalations_on_archive,
+    is_active,
+    now_iso_for_namespace,
+)
+from src.app.core.escalation import cancel_escalation
 from src.app.core.firestore import (
     PRODUCTION_LINE_COLLECTION,
     UAP_COLLECTION,
@@ -159,7 +164,13 @@ def delete_production_line(line_id: str, namespace_id: str) -> ProductionLineArc
     never touched. The cascade shares one `archived_at` timestamp, computed
     once. Idempotent: archiving an already-archived line returns 200
     without touching its original `archived_at` — the cascade is still
-    (re-)walked using that same original timestamp."""
+    (re-)walked using that same original timestamp.
+
+    Layer 1 of "stop escalating a ticket on an archived resource": any OPEN
+    downtime ticket scoped to this line, or to one of its cascaded
+    workstations, has its pending escalation Cloud Task cancelled and its
+    `escalation_task_id` cleared — see
+    `core.archiving.cancel_ticket_escalations_on_archive`."""
     client = get_firestore_client()
     line = _load_scoped(client, line_id, namespace_id, allow_archived=True)
 
@@ -182,6 +193,14 @@ def delete_production_line(line_id: str, namespace_id: str) -> ProductionLineArc
             client.update_document(
                 WORKSTATION_COLLECTION, station["id"], {"archived_at": timestamp}
             )
+
+    cancel_ticket_escalations_on_archive(
+        client,
+        namespace_id,
+        cancel_escalation,
+        production_line_ids=[line_id],
+        workstation_ids=archived_station_ids,
+    )
 
     return ProductionLineArchiveOut(
         **_to_out(line).model_dump(),

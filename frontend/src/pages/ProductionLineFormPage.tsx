@@ -1,13 +1,16 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { useNavigate, useParams } from "react-router-dom";
 
+import { ConfirmDeleteDialog } from "../components/ConfirmDeleteDialog";
 import { SelectField } from "../components/SelectField";
 import { TextField } from "../components/TextField";
 import { ROUTES } from "../constants/routes";
 import type { CreateProductionLinePayload } from "../constants/productionLines";
 import { useProductionLinesStore } from "../stores/useProductionLinesStore";
 import { useUapsStore } from "../stores/useUapsStore";
+import { useWorkstationsStore } from "../stores/useWorkstationsStore";
+import { lineDeletionImpact, NO_IMPACT } from "../utils/deletionImpact";
 
 /** Create or edit a production line (edit mode when a :id param is present). */
 export function ProductionLineFormPage() {
@@ -22,12 +25,18 @@ export function ProductionLineFormPage() {
   const getLine = useProductionLinesStore((s) => s.getLine);
   const updateLine = useProductionLinesStore((s) => s.updateLine);
   const deleteLine = useProductionLinesStore((s) => s.deleteLine);
+  // Stations are read only to spell out what a deletion sweeps up.
+  const workstations = useWorkstationsStore((s) => s.workstations);
+  const fetchWorkstations = useWorkstationsStore((s) => s.fetchWorkstations);
 
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [uapId, setUapId] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  /** The persisted name, so the confirmation names the line as it is saved. */
+  const [savedName, setSavedName] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(!isEdit);
 
@@ -36,10 +45,16 @@ export function ProductionLineFormPage() {
   }, [fetchUaps]);
 
   useEffect(() => {
+    if (!isEdit) return;
+    void fetchWorkstations();
+  }, [isEdit, fetchWorkstations]);
+
+  useEffect(() => {
     if (!id) return;
     void getLine(id).then((res) => {
       if (res.ok && res.data) {
         setName(res.data.name);
+        setSavedName(res.data.name);
         setDescription(res.data.description);
         setUapId(res.data.uap_id ?? "");
       } else {
@@ -73,12 +88,18 @@ export function ProductionLineFormPage() {
     else setError(res.error ?? t("lines.form.saveError"));
   };
 
+  const impact = useMemo(
+    () => (id ? lineDeletionImpact(id, workstations) : NO_IMPACT),
+    [id, workstations],
+  );
+
   const remove = async () => {
-    if (!id || !window.confirm(t("lines.form.confirmDelete"))) return;
+    if (!id) return;
     setDeleting(true);
     setError(null);
     const res = await deleteLine(id);
     setDeleting(false);
+    setConfirming(false);
     if (res.ok) navigate(ROUTES.lines);
     else setError(res.error ?? t("lines.form.deleteError"));
   };
@@ -152,7 +173,7 @@ export function ProductionLineFormPage() {
             {isEdit && (
               <button
                 type="button"
-                onClick={remove}
+                onClick={() => setConfirming(true)}
                 disabled={deleting}
                 className="ml-auto rounded-xl border border-red-500/50 px-4 py-3 text-sm font-medium text-red-400 transition-colors hover:border-red-500 hover:text-red-300 disabled:opacity-60"
               >
@@ -162,6 +183,16 @@ export function ProductionLineFormPage() {
           </div>
         </form>
       )}
+
+      <ConfirmDeleteDialog
+        open={confirming}
+        title={t("lines.form.confirmDelete.title")}
+        body={t("lines.form.confirmDelete.body", { name: savedName })}
+        impact={impact}
+        busy={deleting}
+        onConfirm={remove}
+        onCancel={() => setConfirming(false)}
+      />
     </div>
   );
 }

@@ -3,7 +3,12 @@ from typing import Any
 
 from fastapi import HTTPException, status
 
-from src.app.core.archiving import is_active, now_iso_for_namespace
+from src.app.core.archiving import (
+    cancel_ticket_escalations_on_archive,
+    is_active,
+    now_iso_for_namespace,
+)
+from src.app.core.escalation import cancel_escalation
 from src.app.core.firestore import (
     PRODUCTION_LINE_COLLECTION,
     UAP_COLLECTION,
@@ -217,7 +222,13 @@ def delete_uap(uap_id: str, namespace_id: str) -> UapArchiveOut:
     an already-archived UAP returns 200 without touching its original
     `archived_at` — the cascade is still (re-)walked so any child that
     somehow escaped the first pass is still swept in, using that same
-    original timestamp rather than a fresh one."""
+    original timestamp rather than a fresh one.
+
+    Layer 1 of "stop escalating a ticket on an archived resource": any OPEN
+    downtime ticket scoped to this UAP, to one of its cascaded production
+    lines, or to one of their cascaded workstations, has its pending
+    escalation Cloud Task cancelled and its `escalation_task_id` cleared —
+    see `core.archiving.cancel_ticket_escalations_on_archive`."""
     client = get_firestore_client()
     uap = _load_scoped(client, uap_id, namespace_id, allow_archived=True)
 
@@ -251,6 +262,15 @@ def delete_uap(uap_id: str, namespace_id: str) -> UapArchiveOut:
                 client.update_document(
                     WORKSTATION_COLLECTION, station["id"], {"archived_at": timestamp}
                 )
+
+    cancel_ticket_escalations_on_archive(
+        client,
+        namespace_id,
+        cancel_escalation,
+        uap_ids=[uap_id],
+        production_line_ids=archived_line_ids,
+        workstation_ids=archived_station_ids,
+    )
 
     return UapArchiveOut(
         **_to_out(uap).model_dump(),

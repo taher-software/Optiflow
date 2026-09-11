@@ -449,6 +449,22 @@ const fr = {
       saveError: "Impossible d'enregistrer les paramètres.",
     },
 
+    deleteDialog: {
+      alsoDeleted:
+        "Les éléments suivants seront également supprimés définitivement :",
+      linesCount: "{{count}} ligne de production",
+      linesCount_other: "{{count}} lignes de production",
+      stationsCount: "{{count}} poste de travail",
+      stationsCount_other: "{{count}} postes de travail",
+      andMore: "et {{count}} autre",
+      andMore_other: "et {{count}} autres",
+      irreversible:
+        "Cette action est définitive. Les éléments supprimés ne peuvent pas être récupérés.",
+      cancel: "Annuler",
+      confirm: "Supprimer définitivement",
+      deleting: "Suppression…",
+    },
+
     lines: {
       title: "Lignes de production",
       add: "Ajouter une ligne de production",
@@ -484,8 +500,10 @@ const fr = {
         cancel: "Annuler",
         delete: "Supprimer",
         deleting: "Suppression…",
-        confirmDelete:
-          "Supprimer cette ligne de production ? Cette action est irréversible.",
+        confirmDelete: {
+          title: "Supprimer cette ligne de production ?",
+          body: "« {{name}} » sera supprimée définitivement.",
+        },
         loadError: "Impossible de charger la ligne de production.",
         saveError: "Impossible d'enregistrer la ligne de production.",
         deleteError: "Impossible de supprimer la ligne de production.",
@@ -535,8 +553,10 @@ const fr = {
         cancel: "Annuler",
         delete: "Supprimer",
         deleting: "Suppression…",
-        confirmDelete:
-          "Supprimer ce poste de travail ? Cette action est irréversible.",
+        confirmDelete: {
+          title: "Supprimer ce poste de travail ?",
+          body: "« {{name}} » sera supprimé définitivement.",
+        },
         loadError: "Impossible de charger le poste de travail.",
         saveError: "Impossible d'enregistrer le poste de travail.",
         deleteError: "Impossible de supprimer le poste de travail.",
@@ -566,8 +586,10 @@ const fr = {
         cancel: "Annuler",
         delete: "Supprimer",
         deleting: "Suppression…",
-        confirmDelete:
-          "Supprimer cette zone de production ? Cette action est irréversible.",
+        confirmDelete: {
+          title: "Supprimer cette zone de production ?",
+          body: "« {{name}} » sera supprimée définitivement.",
+        },
         loadError: "Impossible de charger la zone de production.",
         saveError: "Impossible d'enregistrer la zone de production.",
         deleteError: "Impossible de supprimer la zone de production.",

@@ -3,7 +3,12 @@ from typing import Any, Optional
 
 from fastapi import HTTPException, status
 
-from src.app.core.archiving import is_active, now_iso_for_namespace
+from src.app.core.archiving import (
+    cancel_ticket_escalations_on_archive,
+    is_active,
+    now_iso_for_namespace,
+)
+from src.app.core.escalation import cancel_escalation
 from src.app.core.firestore import (
     PRODUCTION_LINE_COLLECTION,
     WORKSTATION_COLLECTION,
@@ -154,7 +159,14 @@ def delete_workstation(station_id: str, namespace_id: str) -> WorkstationArchive
     """Archives the workstation (irreversibly; there is no unarchive). A
     workstation has no children, so this never cascades. Idempotent:
     archiving an already-archived workstation returns 200 without touching
-    its original `archived_at`."""
+    its original `archived_at`.
+
+    Layer 1 of "stop escalating a ticket on an archived resource": any OPEN
+    downtime ticket on this workstation has its pending escalation Cloud
+    Task cancelled and its `escalation_task_id` cleared — see
+    `core.archiving.cancel_ticket_escalations_on_archive`. Best-effort and
+    re-walked on every call (idempotent, same as the archive itself), so a
+    cancellation that didn't land on a previous call gets another chance."""
     client = get_firestore_client()
     station = _load_scoped(client, station_id, namespace_id, allow_archived=True)
 
@@ -164,5 +176,9 @@ def delete_workstation(station_id: str, namespace_id: str) -> WorkstationArchive
             WORKSTATION_COLLECTION, station_id, {"archived_at": timestamp}
         )
         station = {**station, "archived_at": timestamp}
+
+    cancel_ticket_escalations_on_archive(
+        client, namespace_id, cancel_escalation, workstation_ids=[station_id]
+    )
 
     return WorkstationArchiveOut(**_to_out(station).model_dump())

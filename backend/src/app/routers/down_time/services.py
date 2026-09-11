@@ -275,18 +275,83 @@ def _is_visible(issue: dict[str, Any], role: Optional[str]) -> bool:
     return issue.get("process") == _process_for_role(role or "")
 
 
+def _resolve_issue_resource_ref(
+    issue: dict[str, Any]
+) -> Optional[tuple[str, str]]:
+    """The `(collection, resource_id)` pair an issue's downtime resource
+    resolves to, following the same "most specific id wins" convention the
+    rest of the codebase uses (`workstation_id` over `production_line_id`
+    over `uap_id`). `None` for a `plant`-scope issue, which carries no
+    resource id at all and therefore can never be hidden by archiving."""
+    if issue.get("workstation_id"):
+        return WORKSTATION_COLLECTION, issue["workstation_id"]
+    if issue.get("production_line_id"):
+        return PRODUCTION_LINE_COLLECTION, issue["production_line_id"]
+    if issue.get("uap_id"):
+        return UAP_COLLECTION, issue["uap_id"]
+    return None
+
+
+def _filter_archived_resource_issues(
+    client: FirestoreClient, issues: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Drop every issue whose resource (the most specific of
+    `workstation_id` / `production_line_id` / `uap_id` — see
+    `_resolve_issue_resource_ref`) has been archived (`is_active`, see
+    `src.app.core.archiving`). A ticket on an archived resource must stop
+    showing up as work to do; its downtime still counts in the KPIs, which
+    read Firestore directly rather than through this function.
+
+    Bounded I/O: at most one `get_documents` round-trip per resource
+    collection referenced (workstation / production line / uap — so at most
+    three calls total, regardless of how many issues or how many distinct
+    resources they reference), never one read per issue.
+
+    A resource id that doesn't resolve to a document (deleted rather than
+    archived — not something the product does today, but Firestore enforces
+    nothing here) is treated as hidden, the same conservative posture as
+    absent: "no such active resource" either way.
+    """
+    refs_by_issue_id: dict[str, tuple[str, str]] = {}
+    ids_by_collection: dict[str, set[str]] = {}
+    for issue in issues:
+        ref = _resolve_issue_resource_ref(issue)
+        if ref is None:
+            continue
+        refs_by_issue_id[issue["id"]] = ref
+        collection, resource_id = ref
+        ids_by_collection.setdefault(collection, set()).add(resource_id)
+
+    resources_by_collection: dict[str, dict[str, dict[str, Any]]] = {
+        collection: client.get_documents(collection, list(ids))
+        for collection, ids in ids_by_collection.items()
+    }
+
+    def _issue_is_visible(issue: dict[str, Any]) -> bool:
+        ref = refs_by_issue_id.get(issue["id"])
+        if ref is None:
+            return True
+        collection, resource_id = ref
+        resource = resources_by_collection.get(collection, {}).get(resource_id)
+        return resource is not None and is_active(resource)
+
+    return [issue for issue in issues if _issue_is_visible(issue)]
+
+
 def _fetch_visible_issues(
     client: FirestoreClient, namespace_id: str, role: Optional[str]
 ) -> list[dict[str, Any]]:
     """Fetch every issue in the namespace, filtered to those visible to
-    `role` (see `_is_visible`)."""
+    `role` (see `_is_visible`) and with every issue whose resource has been
+    archived excluded (see `_filter_archived_resource_issues`) — one
+    behaviour for every caller, deliberately not role-dependent."""
     issues = client.find_subdocuments(
         DOWN_TIME_COLLECTION, namespace_id, ISSUES_SUBCOLLECTION
     )
-    if role in _FULL_VISIBILITY_ROLES:
-        return issues
-    process = _process_for_role(role or "")
-    return [issue for issue in issues if issue.get("process") == process]
+    if role not in _FULL_VISIBILITY_ROLES:
+        process = _process_for_role(role or "")
+        issues = [issue for issue in issues if issue.get("process") == process]
+    return _filter_archived_resource_issues(client, issues)
 
 
 def _is_close_only(issue: dict[str, Any]) -> bool:
@@ -492,7 +557,11 @@ def list_down_times(
 ) -> DownTimePageOut:
     """List the downtime issues visible to `current` in their namespace,
     newest first, optionally filtered to a single `status`, paginated with
-    `limit`/`offset`. `total` is the full count of visible (filtered) issues."""
+    `limit`/`offset`. `total` is the full count of visible (filtered) issues
+    — visible meaning both role-process-visible (see `_is_visible`) and not
+    on an archived resource (see `_fetch_visible_issues` /
+    `_filter_archived_resource_issues`): the filter runs before pagination,
+    so `total` and the page contents always agree with each other."""
     limit = max(1, min(limit, _MAX_PAGE_LIMIT))
     offset = max(0, offset)
 
@@ -518,7 +587,13 @@ def get_down_time(issue_id: str, current: dict[str, Any]) -> DownTimeOut:
     """Fetch a single downtime issue by id, scoped to the caller's namespace
     and visibility. Returns 404 (not 403) when the issue doesn't exist in the
     namespace or isn't visible to the caller, so existence isn't leaked
-    across the visibility boundary."""
+    across the visibility boundary.
+
+    Deliberately NOT filtered on its resource's archived state, unlike
+    `list_down_times` / `get_down_time_summary` — a deep link or push
+    notification sent just before the resource gets archived must keep
+    resolving to a 200, not an error screen. Only the lists and the summary
+    hide an archived-resource ticket."""
     client = get_firestore_client()
     namespace_id = current["namespace_id"]
 
@@ -932,7 +1007,9 @@ def delete_down_time(issue_id: str, current: dict[str, Any]) -> DownTimeOut:
 def get_down_time_summary(current: dict[str, Any]) -> DownTimeSummaryOut:
     """Aggregate counts + average elapsed time per status, over the caller's
     visible issues (see module docstring for the per-status average
-    definitions)."""
+    definitions) — visible issues excludes archived-resource tickets the
+    same way `list_down_times` does, via the shared `_fetch_visible_issues`,
+    so the two stay consistent with each other."""
     client = get_firestore_client()
     namespace_id = current["namespace_id"]
     issues = _fetch_visible_issues(client, namespace_id, current.get("role"))

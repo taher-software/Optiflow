@@ -441,6 +441,21 @@ const en = {
       saveError: "Could not save the settings.",
     },
 
+    deleteDialog: {
+      alsoDeleted: "The following will be deleted permanently as well:",
+      linesCount: "{{count}} production line",
+      linesCount_other: "{{count}} production lines",
+      stationsCount: "{{count}} workstation",
+      stationsCount_other: "{{count}} workstations",
+      andMore: "and {{count}} more",
+      andMore_other: "and {{count}} more",
+      irreversible:
+        "This cannot be undone. Deleted items cannot be brought back.",
+      cancel: "Cancel",
+      confirm: "Delete permanently",
+      deleting: "Deleting…",
+    },
+
     lines: {
       title: "Production lines",
       add: "Add a production line",
@@ -476,7 +491,10 @@ const en = {
         cancel: "Cancel",
         delete: "Delete",
         deleting: "Deleting…",
-        confirmDelete: "Delete this production line? This cannot be undone.",
+        confirmDelete: {
+          title: "Delete this production line?",
+          body: "“{{name}}” will be deleted permanently.",
+        },
         loadError: "Could not load the production line.",
         saveError: "Could not save the production line.",
         deleteError: "Could not delete the production line.",
@@ -526,7 +544,10 @@ const en = {
         cancel: "Cancel",
         delete: "Delete",
         deleting: "Deleting…",
-        confirmDelete: "Delete this workstation? This cannot be undone.",
+        confirmDelete: {
+          title: "Delete this workstation?",
+          body: "“{{name}}” will be deleted permanently.",
+        },
         loadError: "Could not load the workstation.",
         saveError: "Could not save the workstation.",
         deleteError: "Could not delete the workstation.",
@@ -556,7 +577,10 @@ const en = {
         cancel: "Cancel",
         delete: "Delete",
         deleting: "Deleting…",
-        confirmDelete: "Delete this production area? This cannot be undone.",
+        confirmDelete: {
+          title: "Delete this production area?",
+          body: "“{{name}}” will be deleted permanently.",
+        },
         loadError: "Could not load the production area.",
         saveError: "Could not save the production area.",
         deleteError: "Could not delete the production area.",
