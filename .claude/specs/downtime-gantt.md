@@ -100,14 +100,34 @@ Every issue of the namespace whose downtime overlaps `window` contributes:
   has more than one line, else workstations. Reuse the KPI services' existing
   level-selection helper rather than re-deriving it.
 
-### 2.5 Filters and visibility
+### 2.5 The `type` filter — a workstation-only view
 
-- `type=bottleneck|critical` keeps: workstations whose `type` matches; **and** the
-  production lines and UAPs that own at least one workstation of that type. A
-  retained line/UAP still only shows its own tickets (§2.4).
-- **Archived resources are included** here (unlike `GET /down-times`, which hides
-  them): an archived resource that was down during the day must still be drawn,
-  with its stored name. This is a KPI-style read.
+`type=bottleneck|critical` does **not** narrow the three divisions; it switches
+the answer to a workstation-only view (developer ruling, 2026-09-11):
+
+- `uaps` and `lines` are returned **empty**. Showing a line or a UAP makes no
+  sense when the question asked is "which bottleneck/critical stations were
+  down today".
+- `work_stations` contains **only** the workstations whose `type` matches — the
+  matching stations of the whole namespace, wherever they hang (directly under a
+  UAP or under a production line).
+- **Ancestor downtime propagates down in this mode**: a matching station's
+  intervals are the union of the tickets scoped on the station itself and the
+  tickets scoped on its production line, on its UAP, and on the plant. A
+  bottleneck whose line is stopped IS unavailable, and must show its red bar —
+  the opposite would paint it as producing.
+- The interval rules of §2.3 then apply to that union as usual: clamping,
+  per-state merging, and `down` subtracted from `unconfirmed`.
+- A matching station with no interval at all that day is still absent.
+
+Without `type`, nothing changes: each resource shows only its own scope's
+tickets (§2.4), and a plant ticket is spread over the dominant location level.
+
+### 2.6 Visibility
+
+- **Archived resources are included** here (unlike `GET /down-times`, which
+  hides them): an archived resource that was down during the day must still be
+  drawn, with its stored name. This is a KPI-style read.
 - No role-based process narrowing: the endpoint's role scope is the only filter.
 
 ## 3. Frontend (web)
@@ -130,12 +150,17 @@ Every issue of the namespace whose downtime overlaps `window` contributes:
 `POST /down-times` must refuse a declaration on a resource that already has an
 open downtime.
 
-- **Conflict definition**: an existing issue in the namespace with the *same*
-  resource identity (same `production_scope` + same id; `plant` vs `plant`) whose
-  status is `pending` or `ongoing`. A `resolved` (not yet closed) ticket does
-  **not** block — the fix is done and a new stop is a new incident.
-  Overlapping-but-different scopes (a station under an already-down line) do not
-  block either.
+- **Conflict definition**: a declaration is refused when the target resource
+  **or any of its ancestors** already carries an issue in status `pending` or
+  `ongoing` — a plant-wide open ticket blocks everything, an open line ticket
+  blocks that line's workstations, an open UAP ticket blocks its lines and
+  their workstations. A parent that is already down makes a child declaration
+  meaningless (developer ruling, 2026-09-11).
+  A `resolved` (not yet closed) ticket does **not** block — the fix is done and
+  a new stop is a new incident.
+  The reverse direction (declaring a *parent* while a child is down) stays
+  allowed: a broader stop is new information, not a duplicate. ⟨pending
+  confirmation⟩
 - **Response**: `409 Conflict` with a clear, user-facing message naming the
   resource, e.g. `"A downtime is already open on this workstation (ticket
   <id>). Update the existing ticket instead of declaring a new one."`

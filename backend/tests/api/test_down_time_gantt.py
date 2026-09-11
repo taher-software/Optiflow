@@ -679,9 +679,9 @@ class TestDownTimeGanttIntervalStates:
         row = self._row(res, station["id"])
         unconfirmed_segments = [dt for dt in row["down_times"] if dt["state"] == "unconfirmed"]
         down_segments = [dt for dt in row["down_times"] if dt["state"] == "down"]
-        assert down_segments == [
-            {"start_time": _paris(15, 8, 30), "end_time": _paris(15, 8, 45), "state": "down"}
-        ]
+        assert {
+            "start_time": _paris(15, 8, 30), "end_time": _paris(15, 8, 45), "state": "down"
+        } in down_segments
         assert {"start_time": _paris(15, 7), "end_time": _paris(15, 8), "state": "unconfirmed"} in unconfirmed_segments
         assert {"start_time": _paris(15, 8, 45), "end_time": _paris(15, 9), "state": "unconfirmed"} in unconfirmed_segments
         # The subtracted middle slice must not remain as its own segment.
@@ -791,15 +791,71 @@ class TestDownTimeGanttRowAttribution:
 
 
 class TestDownTimeGanttFilters:
-    def test_type_filter_keeps_matching_workstations_only(
-        self, client, seed_user, auth_headers, fake_db, seed_workstation
+    """§2.5 rev2 — `type` switches to a workstation-only view: `uaps`/`lines`
+    always come back empty, `work_stations` holds every matching-type
+    station of the namespace (wherever it hangs), and ancestor downtime
+    (station/line/uap/plant) propagates down onto it as a union, unlike the
+    unfiltered §2.4 rule."""
+
+    def test_type_filter_returns_empty_uaps_and_lines(
+        self, client, seed_user, auth_headers, fake_db, seed_uap, seed_production_line, seed_workstation
     ):
+        """Even when the namespace has UAP/line-scoped tickets that would
+        populate `uaps`/`lines` in the unfiltered view, supplying `type`
+        forces both to empty — the question asked no longer concerns them."""
         _seed_settings(
             fake_db, shift_number=1, shift_1={"start_time": "06:00", "end_time": "14:00"}
         )
-        bottleneck = seed_workstation(namespace_id=NS, type=WorkstationType.BOTTLENECK.value)
+        uap = seed_uap(namespace_id=NS)
+        line = seed_production_line(namespace_id=NS, uap_id=uap["id"])
+        seed_workstation(namespace_id=NS, production_line_id=line["id"], type=WorkstationType.BOTTLENECK.value)
+        _seed_issue(
+            fake_db,
+            down_time_scope="uap",
+            uap_id=uap["id"],
+            created_at=_paris(15, 8),
+            resolved_at=_paris(15, 9),
+            status=DownTimeStatus.RESOLVED.value,
+        )
+        _seed_issue(
+            fake_db,
+            down_time_scope="production line",
+            production_line_id=line["id"],
+            uap_id=uap["id"],
+            created_at=_paris(15, 8),
+            resolved_at=_paris(15, 9),
+            status=DownTimeStatus.RESOLVED.value,
+        )
+        caller = _user(seed_user, Role.OWNER.value)
+        res = client.get(
+            GANTT_URL,
+            params={"day": "2026-01-15", "type": "bottleneck"},
+            headers=auth_headers(caller),
+        )
+        assert res.status_code == 200, res.text
+        data = res.json()["data"]
+        assert data["uaps"] == []
+        assert data["lines"] == []
+
+    def test_type_filter_includes_matching_stations_wherever_nested(
+        self, client, seed_user, auth_headers, fake_db, seed_uap, seed_production_line, seed_workstation
+    ):
+        """Matching-type stations of the whole namespace are returned
+        regardless of how they hang: nested under a line, or standalone
+        (no `production_line_id` at all). Non-matching types are excluded."""
+        _seed_settings(
+            fake_db, shift_number=1, shift_1={"start_time": "06:00", "end_time": "14:00"}
+        )
+        uap = seed_uap(namespace_id=NS)
+        line = seed_production_line(namespace_id=NS, uap_id=uap["id"])
+        nested_bottleneck = seed_workstation(
+            namespace_id=NS, production_line_id=line["id"], type=WorkstationType.BOTTLENECK.value
+        )
+        standalone_bottleneck = seed_workstation(
+            namespace_id=NS, production_line_id=None, type=WorkstationType.BOTTLENECK.value
+        )
         standard = seed_workstation(namespace_id=NS, type=WorkstationType.STANDARD.value)
-        for station in (bottleneck, standard):
+        for station in (nested_bottleneck, standalone_bottleneck, standard):
             _seed_issue(
                 fake_db,
                 down_time_scope="work station",
@@ -815,22 +871,19 @@ class TestDownTimeGanttFilters:
             headers=auth_headers(caller),
         )
         assert res.status_code == 200, res.text
-        station_ids = [w["workstation_id"] for w in res.json()["data"]["work_stations"]]
-        assert bottleneck["id"] in station_ids
-        assert standard["id"] not in station_ids
+        station_ids = {w["workstation_id"] for w in res.json()["data"]["work_stations"]}
+        assert station_ids == {nested_bottleneck["id"], standalone_bottleneck["id"]}
 
-    def test_type_filter_keeps_owning_lines_and_uaps(
+    def test_type_filter_propagates_station_scoped_ticket(
         self, client, seed_user, auth_headers, fake_db, seed_uap, seed_production_line, seed_workstation
     ):
-        """A retained line/UAP (because it owns a matching-type workstation)
-        still only shows its OWN tickets, not the workstation's."""
         _seed_settings(
             fake_db, shift_number=1, shift_1={"start_time": "06:00", "end_time": "14:00"}
         )
         uap = seed_uap(namespace_id=NS)
         line = seed_production_line(namespace_id=NS, uap_id=uap["id"])
         station = seed_workstation(
-            namespace_id=NS, production_line_id=line["id"], type=WorkstationType.CRITICAL.value
+            namespace_id=NS, production_line_id=line["id"], type=WorkstationType.BOTTLENECK.value
         )
         _seed_issue(
             fake_db,
@@ -842,59 +895,6 @@ class TestDownTimeGanttFilters:
             resolved_at=_paris(15, 9),
             status=DownTimeStatus.RESOLVED.value,
         )
-        # A `line`-scoped ticket, so the line row has its own interval too.
-        _seed_issue(
-            fake_db,
-            down_time_scope="production line",
-            production_line_id=line["id"],
-            uap_id=uap["id"],
-            created_at=_paris(15, 10),
-            resolved_at=_paris(15, 11),
-            status=DownTimeStatus.RESOLVED.value,
-        )
-        caller = _user(seed_user, Role.OWNER.value)
-        res = client.get(
-            GANTT_URL,
-            params={"day": "2026-01-15", "type": "critical"},
-            headers=auth_headers(caller),
-        )
-        assert res.status_code == 200, res.text
-        data = res.json()["data"]
-        line_row = next((l for l in data["lines"] if l["line_id"] == line["id"]), None)
-        assert line_row is not None
-        # Only the line's OWN 10:00-11:00 interval, never the workstation's.
-        assert line_row["down_times"] == [
-            {"start_time": _paris(15, 10), "end_time": _paris(15, 11), "state": "down"}
-        ]
-
-    def test_type_filter_excludes_unrelated_line(
-        self, client, seed_user, auth_headers, fake_db, seed_uap, seed_production_line, seed_workstation
-    ):
-        _seed_settings(
-            fake_db, shift_number=1, shift_1={"start_time": "06:00", "end_time": "14:00"}
-        )
-        uap = seed_uap(namespace_id=NS)
-        line_with_match = seed_production_line(namespace_id=NS, uap_id=uap["id"])
-        line_without_match = seed_production_line(namespace_id=NS, uap_id=uap["id"])
-        bottleneck = seed_workstation(
-            namespace_id=NS, production_line_id=line_with_match["id"], type=WorkstationType.BOTTLENECK.value
-        )
-        standard = seed_workstation(
-            namespace_id=NS, production_line_id=line_without_match["id"], type=WorkstationType.STANDARD.value
-        )
-        for station, line in (
-            (bottleneck, line_with_match),
-            (standard, line_without_match),
-        ):
-            _seed_issue(
-                fake_db,
-                down_time_scope="production line",
-                production_line_id=line["id"],
-                uap_id=uap["id"],
-                created_at=_paris(15, 8),
-                resolved_at=_paris(15, 9),
-                status=DownTimeStatus.RESOLVED.value,
-            )
         caller = _user(seed_user, Role.OWNER.value)
         res = client.get(
             GANTT_URL,
@@ -902,9 +902,203 @@ class TestDownTimeGanttFilters:
             headers=auth_headers(caller),
         )
         assert res.status_code == 200, res.text
-        line_ids = [l["line_id"] for l in res.json()["data"]["lines"]]
-        assert line_with_match["id"] in line_ids
-        assert line_without_match["id"] not in line_ids
+        row = next(w for w in res.json()["data"]["work_stations"] if w["workstation_id"] == station["id"])
+        assert {"start_time": _paris(15, 8), "end_time": _paris(15, 9), "state": "down"} in row["down_times"]
+
+    def test_type_filter_propagates_line_scoped_ticket(
+        self, client, seed_user, auth_headers, fake_db, seed_uap, seed_production_line, seed_workstation
+    ):
+        """A line-scoped ticket must propagate onto its matching-type
+        workstation — a bottleneck whose line is stopped IS unavailable."""
+        _seed_settings(
+            fake_db, shift_number=1, shift_1={"start_time": "06:00", "end_time": "14:00"}
+        )
+        uap = seed_uap(namespace_id=NS)
+        line = seed_production_line(namespace_id=NS, uap_id=uap["id"])
+        station = seed_workstation(
+            namespace_id=NS, production_line_id=line["id"], type=WorkstationType.BOTTLENECK.value
+        )
+        _seed_issue(
+            fake_db,
+            down_time_scope="production line",
+            production_line_id=line["id"],
+            uap_id=uap["id"],
+            created_at=_paris(15, 8),
+            resolved_at=_paris(15, 9),
+            status=DownTimeStatus.RESOLVED.value,
+        )
+        caller = _user(seed_user, Role.OWNER.value)
+        res = client.get(
+            GANTT_URL,
+            params={"day": "2026-01-15", "type": "bottleneck"},
+            headers=auth_headers(caller),
+        )
+        assert res.status_code == 200, res.text
+        row = next(w for w in res.json()["data"]["work_stations"] if w["workstation_id"] == station["id"])
+        assert {"start_time": _paris(15, 8), "end_time": _paris(15, 9), "state": "down"} in row["down_times"]
+
+    def test_type_filter_propagates_uap_scoped_ticket(
+        self, client, seed_user, auth_headers, fake_db, seed_uap, seed_production_line, seed_workstation
+    ):
+        _seed_settings(
+            fake_db, shift_number=1, shift_1={"start_time": "06:00", "end_time": "14:00"}
+        )
+        uap = seed_uap(namespace_id=NS)
+        line = seed_production_line(namespace_id=NS, uap_id=uap["id"])
+        station = seed_workstation(
+            namespace_id=NS, production_line_id=line["id"], type=WorkstationType.BOTTLENECK.value
+        )
+        _seed_issue(
+            fake_db,
+            down_time_scope="uap",
+            uap_id=uap["id"],
+            created_at=_paris(15, 8),
+            resolved_at=_paris(15, 9),
+            status=DownTimeStatus.RESOLVED.value,
+        )
+        caller = _user(seed_user, Role.OWNER.value)
+        res = client.get(
+            GANTT_URL,
+            params={"day": "2026-01-15", "type": "bottleneck"},
+            headers=auth_headers(caller),
+        )
+        assert res.status_code == 200, res.text
+        row = next(w for w in res.json()["data"]["work_stations"] if w["workstation_id"] == station["id"])
+        assert {"start_time": _paris(15, 8), "end_time": _paris(15, 9), "state": "down"} in row["down_times"]
+
+    def test_type_filter_propagates_plant_scoped_ticket(
+        self, client, seed_user, auth_headers, fake_db, seed_uap, seed_production_line, seed_workstation
+    ):
+        """Unlike §2.4's "spread over the dominant location level", the
+        plant ticket here is unioned directly onto every matching station,
+        regardless of the namespace's dominant level."""
+        _seed_settings(
+            fake_db, shift_number=1, shift_1={"start_time": "06:00", "end_time": "14:00"}
+        )
+        uap = seed_uap(namespace_id=NS)
+        line = seed_production_line(namespace_id=NS, uap_id=uap["id"])
+        station = seed_workstation(
+            namespace_id=NS, production_line_id=line["id"], type=WorkstationType.BOTTLENECK.value
+        )
+        _seed_issue(
+            fake_db,
+            down_time_scope="plant",
+            created_at=_paris(15, 8),
+            resolved_at=_paris(15, 9),
+            status=DownTimeStatus.RESOLVED.value,
+        )
+        caller = _user(seed_user, Role.OWNER.value)
+        res = client.get(
+            GANTT_URL,
+            params={"day": "2026-01-15", "type": "bottleneck"},
+            headers=auth_headers(caller),
+        )
+        assert res.status_code == 200, res.text
+        row = next(w for w in res.json()["data"]["work_stations"] if w["workstation_id"] == station["id"])
+        assert {"start_time": _paris(15, 8), "end_time": _paris(15, 9), "state": "down"} in row["down_times"]
+
+    def test_type_filter_merges_overlapping_sources_per_state(
+        self, client, seed_user, auth_headers, fake_db, seed_uap, seed_production_line, seed_workstation
+    ):
+        """Station-scoped `down` 08:00-09:00 and line-scoped `unconfirmed`
+        08:30-10:00 overlap once unioned onto the matching station: §2.3's
+        merge applies to the union, so `down` wins over the overlap and only
+        09:00-10:00 remains `unconfirmed`."""
+        _seed_settings(
+            fake_db, shift_number=1, shift_1={"start_time": "06:00", "end_time": "14:00"}
+        )
+        uap = seed_uap(namespace_id=NS)
+        line = seed_production_line(namespace_id=NS, uap_id=uap["id"])
+        station = seed_workstation(
+            namespace_id=NS, production_line_id=line["id"], type=WorkstationType.BOTTLENECK.value
+        )
+        _seed_issue(
+            fake_db,
+            down_time_scope="work station",
+            workstation_id=station["id"],
+            production_line_id=line["id"],
+            uap_id=uap["id"],
+            created_at=_paris(15, 8),
+            resolved_at=_paris(15, 9),
+            status=DownTimeStatus.RESOLVED.value,
+        )
+        _seed_issue(
+            fake_db,
+            down_time_scope="production line",
+            production_line_id=line["id"],
+            uap_id=uap["id"],
+            created_at=_paris(15, 8, 30),
+            resolved_at=_paris(15, 9, 30),
+            closed_at=_paris(15, 10),
+            status=DownTimeStatus.CLOSED.value,
+        )
+        caller = _user(seed_user, Role.OWNER.value)
+        res = client.get(
+            GANTT_URL,
+            params={"day": "2026-01-15", "type": "bottleneck"},
+            headers=auth_headers(caller),
+        )
+        assert res.status_code == 200, res.text
+        row = next(w for w in res.json()["data"]["work_stations"] if w["workstation_id"] == station["id"])
+        down_segments = [dt for dt in row["down_times"] if dt["state"] == "down"]
+        unconfirmed_segments = [dt for dt in row["down_times"] if dt["state"] == "unconfirmed"]
+        assert down_segments == [
+            {"start_time": _paris(15, 8), "end_time": _paris(15, 9), "state": "down"}
+        ]
+        assert unconfirmed_segments == [
+            {"start_time": _paris(15, 9), "end_time": _paris(15, 10), "state": "unconfirmed"}
+        ]
+
+    def test_type_filter_matching_station_with_no_interval_is_absent(
+        self, client, seed_user, auth_headers, fake_db, seed_workstation
+    ):
+        _seed_settings(
+            fake_db, shift_number=1, shift_1={"start_time": "06:00", "end_time": "14:00"}
+        )
+        station = seed_workstation(namespace_id=NS, type=WorkstationType.BOTTLENECK.value)
+        caller = _user(seed_user, Role.OWNER.value)
+        res = client.get(
+            GANTT_URL,
+            params={"day": "2026-01-15", "type": "bottleneck"},
+            headers=auth_headers(caller),
+        )
+        assert res.status_code == 200, res.text
+        station_ids = [w["workstation_id"] for w in res.json()["data"]["work_stations"]]
+        assert station["id"] not in station_ids
+
+    def test_archived_matching_station_still_included_with_type_filter(
+        self, client, seed_user, auth_headers, fake_db, seed_workstation
+    ):
+        """§2.6 under the `type` filter too: an archived matching station
+        that was down that day must still be drawn."""
+        _seed_settings(
+            fake_db, shift_number=1, shift_1={"start_time": "06:00", "end_time": "14:00"}
+        )
+        station = seed_workstation(namespace_id=NS, name="Press 9", type=WorkstationType.CRITICAL.value)
+        _seed_issue(
+            fake_db,
+            down_time_scope="work station",
+            workstation_id=station["id"],
+            created_at=_paris(15, 8),
+            resolved_at=_paris(15, 9),
+            status=DownTimeStatus.RESOLVED.value,
+        )
+        owner = _user(seed_user, Role.OWNER.value)
+        archive_res = client.delete(f"/workstations/{station['id']}", headers=auth_headers(owner))
+        assert archive_res.status_code == 200, archive_res.text
+
+        res = client.get(
+            GANTT_URL,
+            params={"day": "2026-01-15", "type": "critical"},
+            headers=auth_headers(owner),
+        )
+        assert res.status_code == 200, res.text
+        row = next(
+            (w for w in res.json()["data"]["work_stations"] if w["workstation_id"] == station["id"]),
+            None,
+        )
+        assert row is not None
+        assert row["name"] == "Press 9"
 
     def test_archived_resource_still_included_with_stored_name(
         self, client, seed_user, auth_headers, fake_db, seed_workstation

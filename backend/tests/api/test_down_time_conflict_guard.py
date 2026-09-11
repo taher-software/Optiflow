@@ -1,13 +1,15 @@
 """API tests for the single-open-downtime guard on `POST /down-times`, per
-`.claude/specs/downtime-gantt.md` §4 (test-first — the guard does not exist
-yet; today the endpoint always publishes and returns 202).
+`.claude/specs/downtime-gantt.md` §4 rev1 (test-first — the guard does not
+exist yet; today the endpoint always publishes and returns 202).
 
-Conflict definition (§4): an existing issue in the namespace with the SAME
-resource identity (same `production_scope` + same id; `plant` vs `plant`)
-whose status is `pending` or `ongoing` blocks a new declaration with `409`.
-A `resolved` (not yet closed) ticket does not block, and a different scope/id
-(even nested, e.g. a station under an already-down line) does not block
-either.
+Conflict definition (§4, revised 2026-09-11): a declaration is refused when
+the target resource **or any of its ancestors** (workstation -> its line ->
+its UAP -> plant) already carries an issue in status `pending` or `ongoing`.
+A `resolved` (not yet closed) ticket does not block — the fix is done and a
+new stop is a new incident. An unrelated resource in another branch of the
+hierarchy does not block either. The reverse direction — declaring a
+*parent* while a *child* is down — stays allowed (current ruling, pending
+confirmation per the BOM).
 
 Every "should now be blocked" test is expected to fail on its own assertion
 (`202` instead of `409`) since the endpoint does not check for an existing
@@ -135,9 +137,169 @@ class TestConflictGuardBlocks:
         )
         assert len(publish_spy) == 0
 
+    def test_open_plant_ticket_blocks_uap_declaration(
+        self, client, seed_user, seed_uap, auth_headers, fake_db, publish_spy
+    ):
+        """An open plant-wide ticket blocks a declaration on any UAP."""
+        agent = _agent(seed_user)
+        uap = seed_uap(namespace_id=NS)
+        _seed_open_issue(
+            fake_db, down_time_scope="plant", status=DownTimeStatus.PENDING.value
+        )
+        res = client.post(
+            DOWN_TIMES_URL,
+            headers=auth_headers(agent),
+            json={
+                "production_scope": ProductionScope.UAP.value,
+                "uap_id": uap["id"],
+                "down_time_type": DownTimeType.BREAKDOWN.value,
+            },
+        )
+        assert res.status_code == 409, res.text
+        assert len(publish_spy) == 0
+
+    def test_open_plant_ticket_blocks_line_declaration(
+        self, client, seed_user, seed_uap, seed_production_line, auth_headers,
+        fake_db, publish_spy,
+    ):
+        """An open plant-wide ticket blocks a declaration on any line."""
+        agent = _agent(seed_user)
+        uap = seed_uap(namespace_id=NS)
+        line = seed_production_line(namespace_id=NS, uap_id=uap["id"])
+        _seed_open_issue(
+            fake_db, down_time_scope="plant", status=DownTimeStatus.ONGOING.value
+        )
+        res = client.post(
+            DOWN_TIMES_URL,
+            headers=auth_headers(agent),
+            json={
+                "production_scope": ProductionScope.PRODUCTION_LINE.value,
+                "uap_id": uap["id"],
+                "production_line_id": line["id"],
+                "down_time_type": DownTimeType.BREAKDOWN.value,
+            },
+        )
+        assert res.status_code == 409, res.text
+        assert len(publish_spy) == 0
+
+    def test_open_plant_ticket_blocks_workstation_declaration(
+        self, client, seed_user, seed_uap, seed_production_line, seed_workstation,
+        auth_headers, fake_db, publish_spy,
+    ):
+        """An open plant-wide ticket blocks a declaration on any workstation."""
+        agent = _agent(seed_user)
+        uap = seed_uap(namespace_id=NS)
+        line = seed_production_line(namespace_id=NS, uap_id=uap["id"])
+        station = seed_workstation(namespace_id=NS, production_line_id=line["id"])
+        _seed_open_issue(
+            fake_db, down_time_scope="plant", status=DownTimeStatus.PENDING.value
+        )
+        res = client.post(
+            DOWN_TIMES_URL,
+            headers=auth_headers(agent),
+            json={
+                "production_scope": ProductionScope.WORK_STATION.value,
+                "uap_id": uap["id"],
+                "production_line_id": line["id"],
+                "workstation_id": station["id"],
+                "down_time_type": DownTimeType.BREAKDOWN.value,
+            },
+        )
+        assert res.status_code == 409, res.text
+        assert len(publish_spy) == 0
+
+    def test_open_uap_ticket_blocks_line_declaration(
+        self, client, seed_user, seed_uap, seed_production_line, auth_headers,
+        fake_db, publish_spy,
+    ):
+        """An open ticket on a UAP blocks a declaration on one of its lines."""
+        agent = _agent(seed_user)
+        uap = seed_uap(namespace_id=NS)
+        line = seed_production_line(namespace_id=NS, uap_id=uap["id"])
+        _seed_open_issue(
+            fake_db,
+            down_time_scope="uap",
+            uap_id=uap["id"],
+            status=DownTimeStatus.PENDING.value,
+        )
+        res = client.post(
+            DOWN_TIMES_URL,
+            headers=auth_headers(agent),
+            json={
+                "production_scope": ProductionScope.PRODUCTION_LINE.value,
+                "uap_id": uap["id"],
+                "production_line_id": line["id"],
+                "down_time_type": DownTimeType.BREAKDOWN.value,
+            },
+        )
+        assert res.status_code == 409, res.text
+        assert len(publish_spy) == 0
+
+    def test_open_uap_ticket_blocks_workstation_declaration(
+        self, client, seed_user, seed_uap, seed_production_line, seed_workstation,
+        auth_headers, fake_db, publish_spy,
+    ):
+        """An open ticket on a UAP blocks a declaration on a workstation
+        nested under one of its lines."""
+        agent = _agent(seed_user)
+        uap = seed_uap(namespace_id=NS)
+        line = seed_production_line(namespace_id=NS, uap_id=uap["id"])
+        station = seed_workstation(namespace_id=NS, production_line_id=line["id"])
+        _seed_open_issue(
+            fake_db,
+            down_time_scope="uap",
+            uap_id=uap["id"],
+            status=DownTimeStatus.ONGOING.value,
+        )
+        res = client.post(
+            DOWN_TIMES_URL,
+            headers=auth_headers(agent),
+            json={
+                "production_scope": ProductionScope.WORK_STATION.value,
+                "uap_id": uap["id"],
+                "production_line_id": line["id"],
+                "workstation_id": station["id"],
+                "down_time_type": DownTimeType.BREAKDOWN.value,
+            },
+        )
+        assert res.status_code == 409, res.text
+        assert len(publish_spy) == 0
+
+    def test_open_line_ticket_blocks_workstation_declaration(
+        self, client, seed_user, seed_uap, seed_production_line, seed_workstation,
+        auth_headers, fake_db, publish_spy,
+    ):
+        """An open ticket on a production line blocks a declaration on one
+        of its workstations."""
+        agent = _agent(seed_user)
+        uap = seed_uap(namespace_id=NS)
+        line = seed_production_line(namespace_id=NS, uap_id=uap["id"])
+        station = seed_workstation(namespace_id=NS, production_line_id=line["id"])
+        _seed_open_issue(
+            fake_db,
+            down_time_scope="production line",
+            production_line_id=line["id"],
+            uap_id=uap["id"],
+            status=DownTimeStatus.ONGOING.value,
+        )
+        res = client.post(
+            DOWN_TIMES_URL,
+            headers=auth_headers(agent),
+            json={
+                "production_scope": ProductionScope.WORK_STATION.value,
+                "uap_id": uap["id"],
+                "production_line_id": line["id"],
+                "workstation_id": station["id"],
+                "down_time_type": DownTimeType.BREAKDOWN.value,
+            },
+        )
+        assert res.status_code == 409, res.text
+        assert len(publish_spy) == 0
+
 
 class TestConflictGuardAllows:
-    """§4 — resolved tickets and differing scope/id never block."""
+    """§4 rev1 — resolved/closed ancestor tickets, unrelated branches, and
+    the reverse (parent-while-child-down) direction never block."""
 
     def test_resolved_not_yet_closed_does_not_block(
         self, client, seed_user, auth_headers, fake_db, publish_spy
@@ -175,13 +337,12 @@ class TestConflictGuardAllows:
         assert res.status_code == 202, res.text
         assert len(publish_spy) == 1
 
-    def test_different_scope_under_already_down_line_does_not_block(
+    def test_resolved_ancestor_ticket_does_not_block(
         self, client, seed_user, seed_uap, seed_production_line, seed_workstation,
         auth_headers, fake_db, publish_spy,
     ):
-        """A station under an already-down LINE is a different resource
-        identity — declaring the station's own downtime must not be
-        blocked by the line's open ticket."""
+        """A `resolved` (not yet closed) ticket on the parent line does not
+        block a declaration on one of its workstations — the fix is done."""
         agent = _agent(seed_user)
         uap = seed_uap(namespace_id=NS)
         line = seed_production_line(namespace_id=NS, uap_id=uap["id"])
@@ -191,7 +352,7 @@ class TestConflictGuardAllows:
             down_time_scope="production line",
             production_line_id=line["id"],
             uap_id=uap["id"],
-            status=DownTimeStatus.ONGOING.value,
+            status=DownTimeStatus.RESOLVED.value,
         )
         res = client.post(
             DOWN_TIMES_URL,
@@ -201,6 +362,73 @@ class TestConflictGuardAllows:
                 "uap_id": uap["id"],
                 "production_line_id": line["id"],
                 "workstation_id": station["id"],
+                "down_time_type": DownTimeType.BREAKDOWN.value,
+            },
+        )
+        assert res.status_code == 202, res.text
+        assert len(publish_spy) == 1
+
+    def test_unrelated_branch_ticket_does_not_block(
+        self, client, seed_user, seed_uap, seed_production_line, seed_workstation,
+        auth_headers, fake_db, publish_spy,
+    ):
+        """An open ticket on a line in a DIFFERENT UAP branch of the
+        hierarchy does not block a declaration on an unrelated workstation."""
+        agent = _agent(seed_user)
+        busy_uap = seed_uap(namespace_id=NS)
+        busy_line = seed_production_line(namespace_id=NS, uap_id=busy_uap["id"])
+        _seed_open_issue(
+            fake_db,
+            down_time_scope="production line",
+            production_line_id=busy_line["id"],
+            uap_id=busy_uap["id"],
+            status=DownTimeStatus.ONGOING.value,
+        )
+        other_uap = seed_uap(namespace_id=NS)
+        other_line = seed_production_line(namespace_id=NS, uap_id=other_uap["id"])
+        other_station = seed_workstation(
+            namespace_id=NS, production_line_id=other_line["id"]
+        )
+        res = client.post(
+            DOWN_TIMES_URL,
+            headers=auth_headers(agent),
+            json={
+                "production_scope": ProductionScope.WORK_STATION.value,
+                "uap_id": other_uap["id"],
+                "production_line_id": other_line["id"],
+                "workstation_id": other_station["id"],
+                "down_time_type": DownTimeType.BREAKDOWN.value,
+            },
+        )
+        assert res.status_code == 202, res.text
+        assert len(publish_spy) == 1
+
+    def test_declaring_parent_while_child_down_is_allowed(
+        self, client, seed_user, seed_uap, seed_production_line, seed_workstation,
+        auth_headers, fake_db, publish_spy,
+    ):
+        """Reverse direction (current ruling, pending confirmation): a
+        workstation already down does not block declaring a downtime on its
+        parent line — a broader stop is new information, not a duplicate."""
+        agent = _agent(seed_user)
+        uap = seed_uap(namespace_id=NS)
+        line = seed_production_line(namespace_id=NS, uap_id=uap["id"])
+        station = seed_workstation(namespace_id=NS, production_line_id=line["id"])
+        _seed_open_issue(
+            fake_db,
+            down_time_scope="work station",
+            workstation_id=station["id"],
+            production_line_id=line["id"],
+            uap_id=uap["id"],
+            status=DownTimeStatus.ONGOING.value,
+        )
+        res = client.post(
+            DOWN_TIMES_URL,
+            headers=auth_headers(agent),
+            json={
+                "production_scope": ProductionScope.PRODUCTION_LINE.value,
+                "uap_id": uap["id"],
+                "production_line_id": line["id"],
                 "down_time_type": DownTimeType.BREAKDOWN.value,
             },
         )
