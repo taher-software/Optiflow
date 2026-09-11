@@ -2,6 +2,7 @@ import { useEffect, useState, type FormEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { useNavigate, useParams } from "react-router-dom";
 
+import { ConfirmDeleteDialog } from "../components/ConfirmDeleteDialog";
 import { SelectField } from "../components/SelectField";
 import { TextField } from "../components/TextField";
 import { ROUTES } from "../constants/routes";
@@ -11,6 +12,7 @@ import {
 } from "../constants/workstations";
 import { useProductionLinesStore } from "../stores/useProductionLinesStore";
 import { useWorkstationsStore } from "../stores/useWorkstationsStore";
+import { NO_IMPACT } from "../utils/deletionImpact";
 
 /** Create or edit a workstation (edit mode when a :id param is present). */
 export function WorkstationFormPage() {
@@ -32,6 +34,9 @@ export function WorkstationFormPage() {
   const [type, setType] = useState<string>(WORKSTATION_TYPES[0]);
   const [submitting, setSubmitting] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  /** The persisted name, so the confirmation names the station as it is saved. */
+  const [savedName, setSavedName] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(!isEdit);
 
@@ -44,6 +49,7 @@ export function WorkstationFormPage() {
     void getWorkstation(id).then((res) => {
       if (res.ok && res.data) {
         setName(res.data.name);
+        setSavedName(res.data.name);
         setDescription(res.data.description);
         setLineId(res.data.production_line_id ?? "");
         setType(res.data.type);
@@ -79,11 +85,12 @@ export function WorkstationFormPage() {
   };
 
   const remove = async () => {
-    if (!id || !window.confirm(t("stations.form.confirmDelete"))) return;
+    if (!id) return;
     setDeleting(true);
     setError(null);
     const res = await deleteWorkstation(id);
     setDeleting(false);
+    setConfirming(false);
     if (res.ok) navigate(ROUTES.stations);
     else setError(res.error ?? t("stations.form.deleteError"));
   };
@@ -169,7 +176,7 @@ export function WorkstationFormPage() {
             {isEdit && (
               <button
                 type="button"
-                onClick={remove}
+                onClick={() => setConfirming(true)}
                 disabled={deleting}
                 className="ml-auto rounded-xl border border-red-500/50 px-4 py-3 text-sm font-medium text-red-400 transition-colors hover:border-red-500 hover:text-red-300 disabled:opacity-60"
               >
@@ -181,6 +188,16 @@ export function WorkstationFormPage() {
           </div>
         </form>
       )}
+
+      <ConfirmDeleteDialog
+        open={confirming}
+        title={t("stations.form.confirmDelete.title")}
+        body={t("stations.form.confirmDelete.body", { name: savedName })}
+        impact={NO_IMPACT}
+        busy={deleting}
+        onConfirm={remove}
+        onCancel={() => setConfirming(false)}
+      />
     </div>
   );
 }

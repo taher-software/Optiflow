@@ -42,6 +42,7 @@ from typing import Any, Callable, Optional
 
 from fastapi import HTTPException, status
 
+from src.app.core.archiving import is_active
 from src.app.core.firestore import (
     NAMESPACE_COLLECTION,
     NAMESPACE_SETTINGS_COLLECTION,
@@ -207,15 +208,59 @@ def _parse_iso(value: Optional[str]) -> Optional[datetime]:
         return None
 
 
+def _ticket_own_resource_archived_at(
+    issue: dict[str, Any], hierarchy: dict[str, Any]
+) -> Optional[datetime]:
+    """Resource-archiving rule 2 — the `archived_at` (parsed) of the single
+    MOST SPECIFIC archivable resource (workstation > production line > UAP,
+    same precedence `_stored_id_rank` uses) `issue` is directly stored
+    against, when that resource is in fact archived. `None` when the ticket
+    carries no such id, the id doesn't resolve in `hierarchy`, or the
+    resolved resource isn't archived — in every one of those cases the
+    ticket's own `archived_at` bound simply doesn't apply. Never writes to
+    the ticket and never reads/derives from its `status` — only the
+    resource's own `archived_at` produces this bound (rule 2)."""
+    workstation_id = issue.get("workstation_id")
+    if workstation_id:
+        station = hierarchy["stations"].get(workstation_id)
+        return _parse_iso(station.get("archived_at")) if station is not None else None
+    line_id = issue.get("production_line_id")
+    if line_id:
+        line = hierarchy["lines"].get(line_id)
+        return _parse_iso(line.get("archived_at")) if line is not None else None
+    uap_id = issue.get("uap_id")
+    if uap_id:
+        uap = hierarchy["uaps"].get(uap_id)
+        return _parse_iso(uap.get("archived_at")) if uap is not None else None
+    return None
+
+
 def _ticket_downtime_seconds(
-    issue: dict[str, Any], period_start: datetime, period_end: datetime, now: datetime
+    issue: dict[str, Any],
+    period_start: datetime,
+    period_end: datetime,
+    now: datetime,
+    hierarchy: Optional[dict[str, Any]] = None,
 ) -> float:
     """A single ticket's downtime, clamped to the queried period (§5bis.1):
     closed -> `created_at -> resolved_at`; not closed -> `created_at -> now`;
     effective window = `[max(created_at, period_start), min(natural_end,
     min(period_end, now))]`, floored at 0. This clamp is what makes a
     carry-over ticket (created before `period_start`) contribute only its
-    in-window slice once it's included in a downtime aggregation (fix #1)."""
+    in-window slice once it's included in a downtime aggregation (fix #1).
+
+    Resource-archiving rule 2: for a still-open (non-`CLOSED`) ticket whose
+    own resource (`_ticket_own_resource_archived_at`) has since been
+    archived, `natural_end` is additionally bounded at that `archived_at`
+    instead of running all the way to `now` — the ticket stops accruing
+    downtime the moment its workstation/line/UAP left service, even though
+    its stored `status` never changes. A CLOSED ticket is never affected: its
+    natural end is always `resolved_at`, archiving or not (rule 2/3 — this is
+    also what keeps a bounded-but-still-open ticket out of `_mttr_seconds`,
+    which only ever looks at CLOSED tickets). `hierarchy` is optional and
+    defaults to `None` (no archiving awareness at all, today's exact
+    behavior) so every direct unit-test call site of this function keeps
+    working unchanged."""
     created_at = _parse_iso(issue.get("created_at"))
     if created_at is None:
         return 0.0
@@ -223,6 +268,10 @@ def _ticket_downtime_seconds(
         natural_end = _parse_iso(issue.get("resolved_at")) or created_at
     else:
         natural_end = now
+        if hierarchy is not None:
+            archived_at = _ticket_own_resource_archived_at(issue, hierarchy)
+            if archived_at is not None:
+                natural_end = min(natural_end, archived_at)
 
     period_upper = min(period_end, now)
     effective_end = min(natural_end, period_upper)
@@ -253,6 +302,7 @@ def _compute_base_kpis(
     planned_seconds: float,
     count_tickets: Optional[list[dict[str, Any]]] = None,
     weight_of: Optional[Callable[[dict[str, Any]], int]] = None,
+    hierarchy: Optional[dict[str, Any]] = None,
 ) -> BaseKpis:
     """The 4 headline KPIs for a slice (§5bis.3/4/empty-slice rule;
     availability removed in revision 2). Used both for a `Kpis` object's own
@@ -274,11 +324,18 @@ def _compute_base_kpis(
     (fix #3) — an unconfigured/zero denominator, or a breakdown row that
     deliberately has no planned-time denominator (fix #5, callers simply
     pass `0.0`). MTBF no longer depends on downtime at all (planned/count).
+
+    `hierarchy`, when given, is threaded straight through to
+    `_ticket_downtime_seconds` so a still-open ticket on an archived resource
+    is bounded at its `archived_at` (resource-archiving rule 2) instead of
+    running to `now`. `None` (the default) keeps every direct unit-test call
+    site of this function on today's exact behavior.
     """
     count_source = tickets if count_tickets is None else count_tickets
     weight_fn = weight_of if weight_of is not None else _flat_weight
     downtime = sum(
-        _ticket_downtime_seconds(issue, period_start, period_end, now) * weight_fn(issue)
+        _ticket_downtime_seconds(issue, period_start, period_end, now, hierarchy)
+        * weight_fn(issue)
         for issue in tickets
     )
     count = len(count_source)
@@ -318,9 +375,15 @@ def _compute_kpis(
     weight_of: Optional[Callable[[dict[str, Any]], int]] = None,
     type_weight_fn: Optional[Callable[[dict[str, Any]], dict[str, int]]] = None,
     perimeter_type_counts: Optional[dict[str, int]] = None,
+    hierarchy: Optional[dict[str, Any]] = None,
 ) -> Kpis:
     """`_compute_base_kpis` plus, optionally, the `bottleneck`/`critical`
     divisions (kpi-workstation-type-slices §3).
+
+    `hierarchy`, when given, is forwarded to `_compute_base_kpis`/
+    `_compute_type_slice` for resource-archiving rule 2's open-ticket bound
+    — see `_compute_base_kpis`'s own docstring. `None` (default) is today's
+    behavior, unchanged.
 
     `type_weight_fn` and `perimeter_type_counts` are an all-or-nothing pair:
     passing only one is a caller bug (there is no way to compute a slice
@@ -338,7 +401,14 @@ def _compute_kpis(
             "given together, or not at all."
         )
     base = _compute_base_kpis(
-        tickets, period_start, period_end, now, planned_seconds, count_tickets, weight_of
+        tickets,
+        period_start,
+        period_end,
+        now,
+        planned_seconds,
+        count_tickets,
+        weight_of,
+        hierarchy,
     )
     if type_weight_fn is None or perimeter_type_counts is None:
         return _widen_kpis(base)
@@ -354,6 +424,7 @@ def _compute_kpis(
         type_weight_fn,
         perimeter_type_counts,
         WorkstationType.BOTTLENECK.value,
+        hierarchy,
     )
     critical = _compute_type_slice(
         tickets,
@@ -365,6 +436,7 @@ def _compute_kpis(
         type_weight_fn,
         perimeter_type_counts,
         WorkstationType.CRITICAL.value,
+        hierarchy,
     )
     return _widen_kpis(base, bottleneck=bottleneck, critical=critical)
 
@@ -379,6 +451,7 @@ def _compute_type_slice(
     type_weight_fn: Callable[[dict[str, Any]], dict[str, int]],
     perimeter_type_counts: dict[str, int],
     type_key: str,
+    hierarchy: Optional[dict[str, Any]] = None,
 ) -> Optional[BaseKpis]:
     """One `bottleneck`/`critical` division (§3.1/§3.2). `None` when the
     perimeter (`perimeter_type_counts`, precomputed once per request, never
@@ -393,6 +466,11 @@ def _compute_type_slice(
     in EACH slice (§5), so slice counts do not sum to the root's `count`.
     `mtbf_seconds` reuses the SAME `planned_seconds` denominator as the
     object's own root (never a new one) divided by this slice's own count.
+
+    `hierarchy`, forwarded to `_ticket_downtime_seconds`, keeps this slice's
+    own downtime sum consistent with the root's (resource-archiving rule 2 —
+    an open ticket on an archived resource is bounded here exactly like it
+    is at the root, never left to run to `now` in one and not the other).
     """
     if perimeter_type_counts.get(type_key, 0) <= 0:
         return None
@@ -401,7 +479,8 @@ def _compute_type_slice(
         return type_weight_fn(issue).get(type_key, 0)
 
     downtime = sum(
-        _ticket_downtime_seconds(issue, period_start, period_end, now) * _weight(issue)
+        _ticket_downtime_seconds(issue, period_start, period_end, now, hierarchy)
+        * _weight(issue)
         for issue in tickets
     )
     slice_count_tickets = [issue for issue in count_tickets if _weight(issue) > 0]
@@ -748,6 +827,13 @@ def _planned_seconds(
 
 
 def _location_hierarchy(client: FirestoreClient, namespace_id: str) -> dict[str, Any]:
+    # Resource-archiving rule 1: every UAP/line/workstation is loaded
+    # unconditionally here, archived or not (no `is_active` filtering at
+    # load time) -- their past tickets still need attributing to them for
+    # KPI history, archiving must never erase it. Downstream callers decide
+    # per-ticket, per-rule whether a given archived resource still counts
+    # (rule 2's open-ticket bound, rule 4's perimeter-at-ticket-date).
+    #
     # 3 independent collection scans -- parallelized (see `_run_parallel`).
     # Order is preserved regardless of which future finishes first.
     uaps, lines, stations = _run_parallel(
@@ -778,6 +864,17 @@ def _location_hierarchy(client: FirestoreClient, namespace_id: str) -> dict[str,
     # stations and 2000 tickets that re-sum was happening per ticket per row.
     uap_station_counts: dict[str, int] = {
         uap_id: sum(len(stations_by_line.get(line["id"], [])) for line in lines_here)
+        for uap_id, lines_here in lines_by_uap.items()
+    }
+
+    # Resource-archiving rule 4 — `_row_weight`'s "uap" spread branch needs
+    # the actual station DOCUMENTS under a UAP (not just their count) to
+    # filter them by `archived_at` relative to each ticket's own
+    # `created_at`, so a raw per-UAP station list is precomputed once here,
+    # alongside `uap_station_counts`, mirroring `stations_by_line` at the
+    # line level -- never rebuilt per ticket per row.
+    stations_by_uap: dict[str, list[dict[str, Any]]] = {
+        uap_id: [s for line in lines_here for s in stations_by_line.get(line["id"], [])]
         for uap_id, lines_here in lines_by_uap.items()
     }
 
@@ -812,6 +909,7 @@ def _location_hierarchy(client: FirestoreClient, namespace_id: str) -> dict[str,
         "line_to_uap": {l["id"]: l.get("uap_id") for l in lines},
         "station_to_line": {s["id"]: s.get("production_line_id") for s in stations},
         "uap_station_counts": uap_station_counts,
+        "stations_by_uap": stations_by_uap,
         "type_counts_by_line": type_counts_by_line,
         "type_counts_by_uap": type_counts_by_uap,
         "type_counts_namespace": type_counts_namespace,
@@ -857,19 +955,23 @@ def _weight_from_ids(issue: dict[str, Any], hierarchy: dict[str, Any]) -> int:
     return max(1, len(_resolved_stations_from_ids(issue, hierarchy)))
 
 
-def _ticket_stations(issue: dict[str, Any], hierarchy: dict[str, Any]) -> set[str]:
+def _ticket_stations_raw(issue: dict[str, Any], hierarchy: dict[str, Any]) -> set[str]:
     """§9.1 fix — the CONCRETE, real station ids `issue`'s scope resolves to,
     mirroring `_ticket_weight`'s own branching on `down_time_scope` exactly
     (same order, same fallbacks), but returning the actual station id set
-    instead of just its count. `_ticket_weight` is now `max(1,
-    len(_ticket_stations(...)))` — a plain derivation of this set, which is
-    what guarantees the root weight and the type split below always agree,
-    for every ticket shape (the defect this fix closes: the previous
-    implementation weighed the root via this function's logic but weighed
-    each type slice via an entirely separate, non-agreeing one). May be
-    EMPTY (unresolved reference / empty line-or-UAP) — `_ticket_type_weights`
-    is what turns that into the unexposed `standard` share instead of
-    silently vanishing."""
+    instead of just its count. Deliberately UNFILTERED by archiving — this is
+    the RAW resolution, whose emptiness means "there was nothing to resolve"
+    (a since-deleted workstation, a line/UAP with no workstations under it),
+    which is exactly the signal `_ticket_weight`/`_row_weight` need to tell
+    that case apart from resource-archiving rule 4's "resolved to something,
+    then all of it was archived before this ticket" — see `_ticket_stations`
+    for the rule-4-filtered view built on top of this one, and the module
+    docstring's "subtle trap" note for why the two must stay distinct
+    functions rather than being collapsed into one.
+
+    May be EMPTY (unresolved reference / empty line-or-UAP) —
+    `_ticket_type_weights` is what turns that into the unexposed `standard`
+    share instead of silently vanishing."""
     scope = issue.get("down_time_scope")
     if scope == ProductionScope.WORK_STATION.value:
         wid = issue.get("workstation_id")
@@ -896,6 +998,56 @@ def _ticket_stations(issue: dict[str, Any], hierarchy: dict[str, Any]) -> set[st
     return _resolved_stations_from_ids(issue, hierarchy)
 
 
+def _active_at_ticket_date(resource: dict[str, Any], created_at: Optional[datetime]) -> bool:
+    """Resource-archiving rule 4's perimeter predicate — whether `resource`
+    still counts in a ticket dated `created_at`: never archived at all
+    (`archiving.is_active`, the shared predicate — reused rather than
+    re-implementing `not resource.get("archived_at")` here), or archived
+    STRICTLY AFTER `created_at`. Equality does NOT satisfy "strictly after"
+    (the pinned boundary convention, `TestPerimeterBoundary`) — a resource
+    archived at the exact instant the ticket was created is excluded, same as
+    one archived earlier. `created_at is None` (a ticket with no parsable
+    `created_at` at all) conservatively excludes an archived resource — there
+    is no date to compare `archived_at` against."""
+    if is_active(resource):
+        return True
+    if created_at is None:
+        return False
+    archived_at = _parse_iso(resource.get("archived_at"))
+    return archived_at is not None and archived_at > created_at
+
+
+def _active_station_ids(
+    station_ids: set[str], hierarchy: dict[str, Any], created_at: Optional[datetime]
+) -> set[str]:
+    """`station_ids` narrowed to the ones still active at `created_at`
+    (`_active_at_ticket_date`). A station id absent from `hierarchy["stations"]`
+    defaults to ACTIVE (kept, never dropped) rather than excluded — in
+    production every id in `station_ids` is always drawn from that same dict
+    (`_location_hierarchy` builds both from the one `stations` read), so this
+    only ever matters for a caller/test passing a partial hierarchy that
+    doesn't carry a document for an id it otherwise knows about; degrading to
+    "assume active" there preserves today's pre-archiving behavior instead of
+    silently zeroing out an otherwise-resolved perimeter."""
+    return {
+        sid
+        for sid in station_ids
+        if _active_at_ticket_date(hierarchy["stations"].get(sid, {}), created_at)
+    }
+
+
+def _ticket_stations(issue: dict[str, Any], hierarchy: dict[str, Any]) -> set[str]:
+    """Resource-archiving rule 4 — `_ticket_stations_raw` narrowed to the
+    stations still active at `issue`'s own `created_at`
+    (`_active_station_ids`). This is the set every caller that needs the
+    ticket's TRUE current-perimeter attribution (the type split, the weight
+    below) must use; `_ticket_stations_raw` remains separately available
+    purely to tell "empty because unresolvable" apart from "empty because
+    entirely archived before this ticket" — see that function's docstring."""
+    created_at = _parse_iso(issue.get("created_at"))
+    return _active_station_ids(_ticket_stations_raw(issue, hierarchy), hierarchy, created_at)
+
+
 def _ticket_weight(issue: dict[str, Any], hierarchy: dict[str, Any]) -> int:
     """§5bis.1bis (revision 2) — number of workstations `issue`'s scope
     affects, the weight every downtime-seconds sum multiplies that ticket's
@@ -906,9 +1058,23 @@ def _ticket_weight(issue: dict[str, Any], hierarchy: dict[str, Any]) -> int:
     `production_line_id`/`workstation_id`. Falls back to inferring the scope
     from the most specific id present (`_weight_from_ids`) only for legacy
     documents with no `down_time_scope`, an unrecognized value, or a stored
-    scope whose own id field is missing from the ticket. Floored at 1 in
-    every branch. A plain derivation of `_ticket_stations` (§9.1 fix)."""
-    return max(1, len(_ticket_stations(issue, hierarchy)))
+    scope whose own id field is missing from the ticket.
+
+    Resource-archiving rule 4 (the module docstring's "subtle trap"): the
+    floor-at-1 is preserved for its ORIGINAL case and suppressed for the new
+    one. `_ticket_stations_raw` empty -> nothing was resolvable at all
+    (missing/unresolvable data, the floor's original justification) -> 1.
+    `_ticket_stations_raw` non-empty -> something WAS resolved, so the weight
+    is the count of it still active at the ticket's own `created_at`
+    (`_ticket_stations`) — deliberately NOT floored, so a perimeter that
+    resolved to something and then was entirely archived before this ticket
+    correctly weighs 0, rather than inventing a workstation that no longer
+    existed when the ticket was opened."""
+    raw = _ticket_stations_raw(issue, hierarchy)
+    if not raw:
+        return 1
+    created_at = _parse_iso(issue.get("created_at"))
+    return len(_active_station_ids(raw, hierarchy, created_at))
 
 
 def _weight_of_builder(hierarchy: dict[str, Any]) -> Callable[[dict[str, Any]], int]:
@@ -982,18 +1148,23 @@ def _tally_station_types(
 def _ticket_type_weights(issue: dict[str, Any], hierarchy: dict[str, Any]) -> dict[str, int]:
     """§3.2/§9.1 — `issue`'s root weight (`_ticket_weight`), split by
     workstation type. Always sums to exactly `_ticket_weight(issue,
-    hierarchy)`: when `_ticket_stations` resolves to a non-empty set, this is
-    a plain per-type tally of that SAME set (the set the root weight is
-    `len()` of); when it's empty (an unresolved `workstation_id`, or a
+    hierarchy)`, so it mirrors `_ticket_weight`'s own raw-vs-filtered
+    branching (resource-archiving rule 4) exactly: when
+    `_ticket_stations_raw` is empty (an unresolved `workstation_id`, or a
     line/UAP with no workstations under it — §5's "unresolved reference"
-    rule), the whole floored-at-1 weight is attributed to the unexposed
-    `standard` share rather than vanishing or landing in a real type."""
-    stations = _ticket_stations(issue, hierarchy)
-    if not stations:
+    rule, the floor's original case), the whole floored-at-1 weight is
+    attributed to the unexposed `standard` share rather than vanishing or
+    landing in a real type. When it's non-empty, this is a plain per-type
+    tally of `_ticket_stations` (the rule-4-filtered, active-at-ticket-date
+    set `_ticket_weight` is itself `len()` of) — which may total 0 when
+    every resolved station was archived before this ticket, exactly like
+    `_ticket_weight` in that same case (never floored here either)."""
+    raw = _ticket_stations_raw(issue, hierarchy)
+    if not raw:
         counts = _empty_type_counts()
         counts[WorkstationType.STANDARD.value] = 1
         return counts
-    return _tally_station_types(stations, hierarchy)
+    return _tally_station_types(_ticket_stations(issue, hierarchy), hierarchy)
 
 
 def _ticket_type_weight_fn_builder(
@@ -1212,7 +1383,15 @@ def _row_weight(
     above the ticket's DECLARED `down_time_scope` level. Below that, the
     narrower id is context, not a restriction, and must not stop the
     ticket's OWN-share spread weight from applying to a sibling row
-    `_locations_for_ticket` now reaches."""
+    `_locations_for_ticket` now reaches.
+
+    Resource-archiving rule 4, spread branch (`kind == "line"`/`"uap"`):
+    same floor-preserved-for-its-original-case-only rule as `_ticket_weight`
+    — an EMPTY `stations_by_line`/`stations_by_uap` raw list (no workstation
+    registered under this row at all) still floors to 1; a NON-EMPTY raw
+    list is instead counted down to the stations still active at `issue`'s
+    own `created_at`, which may legitimately total 0 (never floored) when
+    every one of them was archived before this ticket."""
     uap_id, line_id, station_id = _resolve_location(issue, hierarchy)
     scope = issue.get("down_time_scope")
     scope_rank = _SCOPE_RANK.get(scope) if isinstance(scope, str) else None
@@ -1237,9 +1416,15 @@ def _row_weight(
         return _ticket_weight(issue, hierarchy)
     if kind == "station":
         return 1
-    if kind == "line":
-        return max(1, len(hierarchy["stations_by_line"].get(loc_id, [])))
-    return max(1, hierarchy["uap_station_counts"].get(loc_id, 0))
+    raw_stations = (
+        hierarchy["stations_by_line"].get(loc_id, [])
+        if kind == "line"
+        else hierarchy["stations_by_uap"].get(loc_id, [])
+    )
+    if not raw_stations:
+        return 1
+    created_at = _parse_iso(issue.get("created_at"))
+    return sum(1 for s in raw_stations if _active_at_ticket_date(s, created_at))
 
 
 def _location_weight_fn(
@@ -1281,12 +1466,17 @@ def _row_type_weights(
       derived from the same `_ticket_stations` set, which for an "own" row
       already lives entirely inside that row's perimeter.
     - spread row (a wider-scope ticket landing in a row it doesn't own) ->
-      that row's OWN static type composition (precomputed once in
-      `_location_hierarchy`), never the ticket's -- this is `_row_weight`'s
-      own "the row's own share, not the whole ticket" rule, applied
-      per-type; the three type shares of a spread row already sum to the
-      row's own total station count, which is exactly what `_row_weight`
-      returns in this branch.
+      that row's OWN type composition, tallied from the raw station
+      documents (`stations_by_line`/`stations_by_uap`) and filtered down to
+      the ones still active at `issue`'s own `created_at`
+      (`_active_at_ticket_date`) -- this is `_row_weight`'s own "the row's
+      own share, not the whole ticket" rule, applied per-type, AND mirrors
+      `_row_weight`'s spread-branch archival filtering exactly (resource-
+      archiving rule 4), so the three type shares of a spread row always sum
+      back to `_row_weight`'s return value for that same row, archived or
+      not. The precomputed static `type_counts_by_line`/`type_counts_by_uap`
+      (unfiltered by archival, used elsewhere for perimeter-wide
+      composition) is deliberately NOT reused here for that reason.
 
     Only ever called on a ticket already known to belong to this row (via
     `_group_tickets_by_location`/`_locations_for_ticket`), exactly like
@@ -1318,9 +1508,17 @@ def _row_type_weights(
         counts = _empty_type_counts()
         counts[WorkstationType.STANDARD.value] = 1
         return counts
-    if kind == "line":
-        return dict(hierarchy["type_counts_by_line"].get(loc_id, _empty_type_counts()))
-    return dict(hierarchy["type_counts_by_uap"].get(loc_id, _empty_type_counts()))
+    raw_stations = (
+        hierarchy["stations_by_line"].get(loc_id, [])
+        if kind == "line"
+        else hierarchy["stations_by_uap"].get(loc_id, [])
+    )
+    created_at = _parse_iso(issue.get("created_at"))
+    counts = _empty_type_counts()
+    for station in raw_stations:
+        if _active_at_ticket_date(station, created_at):
+            counts[_station_type(station)] += 1
+    return counts
 
 
 def _row_type_weight_fn_builder(
@@ -1388,9 +1586,20 @@ def _pick_location_kind(hierarchy: dict[str, Any]) -> str:
     counted alongside one extra group for the orphans of the level just
     below (`_has_orphan_child`) -- a UAP-less line for "uap", a line-less
     workstation for "line" -- since those cannot roll up into any real row
-    and would otherwise be invisible."""
-    uap_count = len(hierarchy["uaps"])
-    line_count = len(hierarchy["lines"])
+    and would otherwise be invisible.
+
+    Resource-archiving rule 5: an ARCHIVED UAP/line is excluded from
+    `uap_count`/`line_count` outright, regardless of tickets. An archived
+    resource only ever becomes a `by_location` row through
+    `_group_by_location`'s ticket-driven grouping (rows are built from where
+    tickets land, never by iterating the hierarchy directly, so an archived
+    resource with zero tickets in the queried period never becomes a row on
+    its own already) -- so counting it here too would inflate the perceived
+    number of "distinguishable" groups with one that structurally cannot
+    contribute a row by itself, pushing the granularity decision up to a
+    coarser `kind` than the breakdown will actually show."""
+    uap_count = sum(1 for u in hierarchy["uaps"].values() if is_active(u))
+    line_count = sum(1 for l in hierarchy["lines"].values() if is_active(l))
     if uap_count + (1 if _has_orphan_child(hierarchy, "uap") else 0) > 1:
         return "uap"
     if line_count + (1 if _has_orphan_child(hierarchy, "line") else 0) > 1:
@@ -1539,6 +1748,7 @@ def _group_by_location(
                     weight_of=_location_weight_fn(hierarchy, kind, loc_id),
                     type_weight_fn=type_weight_fn,
                     perimeter_type_counts=perimeter_type_counts,
+                    hierarchy=hierarchy,
                 ),
             )
         )
@@ -1563,6 +1773,7 @@ def _group_by_location(
                         0.0,
                         count_tickets=unassigned_count_tickets,
                         weight_of=lambda _issue, _n=unassigned_count: _n,
+                        hierarchy=hierarchy,
                     ),
                 )
             )
@@ -1581,6 +1792,7 @@ def _group_by_shift(
     weight_of: Optional[Callable[[dict[str, Any]], int]] = None,
     type_weight_fn: Optional[Callable[[dict[str, Any]], dict[str, int]]] = None,
     perimeter_type_counts: Optional[dict[str, int]] = None,
+    hierarchy: Optional[dict[str, Any]] = None,
 ) -> list[BreakdownRow]:
     """§5bis.5 — empty when the namespace runs a single shift; a shift with
     no configured clock window emits no row at all (fix #3/#5 companion: a
@@ -1594,7 +1806,10 @@ def _group_by_shift(
     kpi-workstation-type-slices §4 — a `by_shift` row's perimeter is the
     whole namespace (a shift spans the whole plant), so `type_weight_fn`/
     `perimeter_type_counts` are simply the request-wide namespace ones,
-    passed through unchanged for every shift row."""
+    passed through unchanged for every shift row.
+
+    `hierarchy`, forwarded to `_compute_kpis`, applies resource-archiving
+    rule 2's open-ticket bound to each shift row's own downtime sum."""
     shift_number = settings.get("shift_number", 1)
     if shift_number <= 1:
         return []
@@ -1618,6 +1833,7 @@ def _group_by_shift(
             weight_of=weight_of,
             type_weight_fn=type_weight_fn,
             perimeter_type_counts=perimeter_type_counts,
+            hierarchy=hierarchy,
         )
         rows.append(BreakdownRow(kind="shift", id=sid, label=sid, kpis=kpis))
     return rows
@@ -1630,6 +1846,7 @@ def _group_by_type(
     now: datetime,
     count_tickets: list[dict[str, Any]],
     weight_of: Optional[Callable[[dict[str, Any]], int]] = None,
+    hierarchy: Optional[dict[str, Any]] = None,
 ) -> list[BreakdownRow]:
     def _group(ticket_list: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
         groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -1654,6 +1871,7 @@ def _group_by_type(
                 0.0,
                 count_tickets=count_groups.get(type_id, []),
                 weight_of=weight_of,
+                hierarchy=hierarchy,
             ),
         )
         for type_id in set(downtime_groups) | set(count_groups)
@@ -1668,6 +1886,7 @@ def _downtime_by_process(
     period_end: datetime,
     now: datetime,
     weight_of: Optional[Callable[[dict[str, Any]], int]] = None,
+    hierarchy: Optional[dict[str, Any]] = None,
 ) -> dict[str, float]:
     weight_fn = weight_of if weight_of is not None else _flat_weight
     totals: dict[str, float] = defaultdict(float)
@@ -1675,7 +1894,7 @@ def _downtime_by_process(
         process = _process_for_ticket(issue)
         if process is not None:
             totals[process] += _ticket_downtime_seconds(
-                issue, period_start, period_end, now
+                issue, period_start, period_end, now, hierarchy
             ) * weight_fn(issue)
     return dict(totals)
 
@@ -1686,11 +1905,13 @@ def _pareto_by_process(
     period_end: datetime,
     now: datetime,
     weight_of: Optional[Callable[[dict[str, Any]], int]] = None,
+    hierarchy: Optional[dict[str, Any]] = None,
 ) -> list[ParetoRow]:
     """Share of total (weighted, §5bis.1bis) downtime per process, sorted
     desc, running cumulative. Empty list when total downtime is 0 (nothing
-    to chart)."""
-    totals = _downtime_by_process(tickets, period_start, period_end, now, weight_of)
+    to chart). `hierarchy`, forwarded to `_downtime_by_process`, applies
+    resource-archiving rule 2's open-ticket bound."""
+    totals = _downtime_by_process(tickets, period_start, period_end, now, weight_of, hierarchy)
     total = sum(totals.values())
     if total <= 0:
         return []
@@ -1733,6 +1954,7 @@ def _downtime_by_shift_bars(
     period_end: datetime,
     now: datetime,
     weight_of: Optional[Callable[[dict[str, Any]], int]] = None,
+    hierarchy: Optional[dict[str, Any]] = None,
 ) -> list[Bar]:
     shift_number = settings.get("shift_number", 1)
     if shift_number <= 1:
@@ -1744,7 +1966,7 @@ def _downtime_by_shift_bars(
         if shift_value is None:
             continue
         totals[str(shift_value)] += _ticket_downtime_seconds(
-            issue, period_start, period_end, now
+            issue, period_start, period_end, now, hierarchy
         ) * weight_fn(issue)
     bars = [Bar(id=sid, label=sid, value=int(round(sec))) for sid, sec in totals.items()]
     bars.sort(key=lambda bar: bar.value, reverse=True)
@@ -1757,6 +1979,7 @@ def _downtime_by_type_bars(
     period_end: datetime,
     now: datetime,
     weight_of: Optional[Callable[[dict[str, Any]], int]] = None,
+    hierarchy: Optional[dict[str, Any]] = None,
 ) -> list[Bar]:
     weight_fn = weight_of if weight_of is not None else _flat_weight
     totals: dict[str, float] = defaultdict(float)
@@ -1764,7 +1987,7 @@ def _downtime_by_type_bars(
         type_id = _type_id_for_ticket(issue)
         if type_id is not None:
             totals[type_id] += _ticket_downtime_seconds(
-                issue, period_start, period_end, now
+                issue, period_start, period_end, now, hierarchy
             ) * weight_fn(issue)
     bars = [Bar(id=tid, label=tid, value=int(round(sec))) for tid, sec in totals.items()]
     bars.sort(key=lambda bar: bar.value, reverse=True)
@@ -2067,6 +2290,7 @@ def get_dashboard(query: DashboardQueryIn, namespace_id: str) -> DashboardData:
             weight_of=weight_of,
             type_weight_fn=namespace_type_weight_fn,
             perimeter_type_counts=namespace_type_counts,
+            hierarchy=hierarchy,
         ),
         by_shift=_group_by_shift(
             current,
@@ -2078,13 +2302,18 @@ def get_dashboard(query: DashboardQueryIn, namespace_id: str) -> DashboardData:
             weight_of,
             type_weight_fn=namespace_type_weight_fn,
             perimeter_type_counts=namespace_type_counts,
+            hierarchy=hierarchy,
         ),
         by_location=_group_by_location(
             all_tickets, hierarchy, location_kind, period_start, period_end, now, current
         ),
-        pareto_by_process=_pareto_by_process(all_tickets, period_start, period_end, now, weight_of),
+        pareto_by_process=_pareto_by_process(
+            all_tickets, period_start, period_end, now, weight_of, hierarchy
+        ),
         repair_by_process=_repair_by_process(current),
-        by_type=_group_by_type(all_tickets, period_start, period_end, now, current, weight_of),
+        by_type=_group_by_type(
+            all_tickets, period_start, period_end, now, current, weight_of, hierarchy
+        ),
     )
 
 
@@ -2195,6 +2424,7 @@ def get_drilldown(query: DrilldownQueryIn, namespace_id: str) -> DrilldownData:
         weight_of=weight_of,
         type_weight_fn=slice_type_weight_fn,
         perimeter_type_counts=slice_perimeter_type_counts,
+        hierarchy=hierarchy,
     )
 
     last_kind, _last_id = steps[-1]
@@ -2225,6 +2455,7 @@ def get_drilldown(query: DrilldownQueryIn, namespace_id: str) -> DrilldownData:
                             if line["id"] in _locations_for_ticket(t, hierarchy, "line")
                         ],
                         weight_of=_location_weight_fn(hierarchy, "line", line["id"]),
+                        hierarchy=hierarchy,
                     ),
                 )
                 for line in child_lines
@@ -2261,6 +2492,7 @@ def get_drilldown(query: DrilldownQueryIn, namespace_id: str) -> DrilldownData:
                         if station["id"] in _locations_for_ticket(t, hierarchy, "station")
                     ],
                     weight_of=_location_weight_fn(hierarchy, "station", station["id"]),
+                    hierarchy=hierarchy,
                 ),
             )
             for station in child_stations
@@ -2279,13 +2511,15 @@ def get_drilldown(query: DrilldownQueryIn, namespace_id: str) -> DrilldownData:
 
     pareto = repair = None
     if "process" not in dims_fixed:
-        pareto = _pareto_by_process(all_tickets, period_start, period_end, now, weight_of)
+        pareto = _pareto_by_process(
+            all_tickets, period_start, period_end, now, weight_of, hierarchy
+        )
         repair = _repair_by_process(current)
 
     downtime_by_shift = None
     if "shift" not in dims_fixed:
         downtime_by_shift = _downtime_by_shift_bars(
-            all_tickets, settings, period_start, period_end, now, weight_of
+            all_tickets, settings, period_start, period_end, now, weight_of, hierarchy
         )
 
     # `type` is only ever fixed by being a path step itself (there is no
@@ -2293,7 +2527,7 @@ def get_drilldown(query: DrilldownQueryIn, namespace_id: str) -> DrilldownData:
     downtime_by_type = None
     if "type" not in {kind for kind, _ in steps}:
         downtime_by_type = _downtime_by_type_bars(
-            all_tickets, period_start, period_end, now, weight_of
+            all_tickets, period_start, period_end, now, weight_of, hierarchy
         )
 
     # Fix #13 / client decision above: a `type` step counts as "process
@@ -2342,6 +2576,7 @@ def _daily_metric_value(
     day_end: datetime,
     now: datetime,
     weight_of: Optional[Callable[[dict[str, Any]], int]] = None,
+    hierarchy: Optional[dict[str, Any]] = None,
 ) -> float:
     """`metric`'s value for a single day.
 
@@ -2364,7 +2599,7 @@ def _daily_metric_value(
         return _mttr_seconds(day_tickets)
     weight_fn = weight_of if weight_of is not None else _flat_weight
     return sum(
-        _ticket_downtime_seconds(issue, day_start, day_end, now) * weight_fn(issue)
+        _ticket_downtime_seconds(issue, day_start, day_end, now, hierarchy) * weight_fn(issue)
         for issue in day_tickets
     )
 
@@ -2442,7 +2677,7 @@ def get_daily(query: DailyQueryIn, namespace_id: str) -> DailyPointsOut:
             day_start, day_end = period_start, period_end
             day_tickets = buckets.get(day, [])
         value = _daily_metric_value(
-            query.metric, day_tickets, day_start, day_end, now, weight_of
+            query.metric, day_tickets, day_start, day_end, now, weight_of, hierarchy
         )
         points.append(DailyPoint(date=day.isoformat(), value=int(round(value))))
         day += timedelta(days=1)

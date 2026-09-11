@@ -58,8 +58,12 @@ from datetime import datetime
 
 import backoff
 
+from src.app.core.archiving import is_active
 from src.app.core.email import send_down_time_escalation_email
-from src.app.core.firestore import NAMESPACE_COLLECTION, USERS_COLLECTION
+from src.app.core.firestore import (
+    NAMESPACE_COLLECTION,
+    USERS_COLLECTION,
+)
 from src.app.core.notifications import (
     escalation_notification,
     format_duration,
@@ -74,6 +78,7 @@ from ._common import (
     DOWN_TIME_COLLECTION,
     ISSUES_SUBCOLLECTION,
     resolve_location,
+    resolve_scope_document,
     schedule_escalation_cycle,
 )
 from .exceptions import FunctionalJobError
@@ -384,6 +389,45 @@ def _run_escalate_down_time(namespace_id: str, payload: dict, job_id: str) -> di
         )
         return {"status": "stopped", "reason": f"unexpected status '{status}'", "down_time_id": down_time_id}
 
+    # Defensive (Layer 2) archived-resource guard. Layer 1 (proactive) is
+    # `cancel_escalation`, called from the archiving services when a resource
+    # is archived — but that call is best-effort and never guarantees the
+    # pending Cloud Task is actually gone (it may already be in flight, or
+    # the cancel call itself may have failed). Nobody should be woken at
+    # 3 a.m. for a ticket on a machine that has since been taken out of
+    # service, so this handler re-checks on every cycle and refuses to
+    # reschedule or notify once the ticket's resource is archived — sitting
+    # BEFORE `_reschedule` and any notification fan-out, deliberately: the
+    # whole point is that nobody is notified.
+    #
+    # Resolved the same way the rest of the codebase does — the most
+    # specific of workstation_id / production_line_id / uap_id — via the
+    # shared `resolve_scope_document` (one Firestore read). That single
+    # document is enough: archiving a UAP or a production line cascades
+    # `archived_at` down to every resource beneath it (see
+    # `core.archiving`), so an ancestor archive is already visible on the
+    # ticket's own resource. Walking back up to the parents would cost extra
+    # reads per cycle and tell us nothing the resource does not already say.
+    scope_source = {
+        "production_scope": issue.get("down_time_scope"),
+        "workstation_id": issue.get("workstation_id"),
+        "production_line_id": issue.get("production_line_id"),
+        "uap_id": issue.get("uap_id"),
+    }
+    scope_doc = resolve_scope_document(firestore, namespace_id, scope_source)
+
+    if scope_doc is not None and not is_active(scope_doc):
+        logger.info(
+            f"escalate_down_time: resource archived for issue '{down_time_id}' "
+            f"in namespace '{namespace_id}' — stopping the escalation chain "
+            "without rescheduling or notifying."
+        )
+        return {
+            "status": "stopped",
+            "reason": "resource archived",
+            "down_time_id": down_time_id,
+        }
+
     # Reschedule FIRST, notify second — deliberately (see module docstring).
     # The next cycle is secured before any recipient lookup/fan-out runs, so
     # a notification outage can never cost the ticket its next cycle.
@@ -398,13 +442,12 @@ def _run_escalate_down_time(namespace_id: str, payload: dict, job_id: str) -> di
     _reschedule(firestore, namespace_id, namespace, down_time_id, escalation_number)
 
     language = language_of(namespace)
-    scope_source = {
-        "production_scope": issue.get("down_time_scope"),
-        "workstation_id": issue.get("workstation_id"),
-        "production_line_id": issue.get("production_line_id"),
-        "uap_id": issue.get("uap_id"),
-    }
-    location = resolve_location(firestore, namespace_id, namespace, scope_source, language)
+    # Reuse the scope document already fetched above for the archived check —
+    # `resolve_location`'s optional `doc` param exists exactly for this, so
+    # this costs no extra read.
+    location = resolve_location(
+        firestore, namespace_id, namespace, scope_source, language, doc=scope_doc
+    )
 
     if status == DownTimeStatus.RESOLVED.value:
         _notify_production_agents_awaiting_confirmation(

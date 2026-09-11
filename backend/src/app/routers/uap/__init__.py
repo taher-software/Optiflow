@@ -6,7 +6,7 @@ from src.app.globals.enum import Role
 
 from src.app.routers.uap import services
 from src.app.routers.uap.modelsIn import CreateUapIn, UpdateUapIn
-from src.app.routers.uap.modelsOut import UapOut
+from src.app.routers.uap.modelsOut import UapArchiveOut, UapOut
 
 router = APIRouter(prefix="/uaps", tags=["uaps"])
 
@@ -122,17 +122,25 @@ async def update_uap(
 
 @router.delete(
     "/{uap_id}",
-    response_model=ApiResponse[UapOut],
-    summary="Delete a UAP",
+    response_model=ApiResponse[UapArchiveOut],
+    summary="Archive a UAP",
     description=(
-        "Deletes a UAP from the caller's namespace and returns the deleted "
-        "record. Restricted to owner/admin/production supervisor."
+        "Archives a UAP in the caller's namespace — irreversibly: there is "
+        "no way to undo this. The UAP immediately disappears from every "
+        "list and from `GET /uaps/{uap_id}` (which then behaves as not "
+        "found), but its past downtime tickets are kept so they keep "
+        "counting in the plant's KPIs. Archiving cascades: every production "
+        "line attached to this UAP, and every workstation attached to one "
+        "of those lines, is archived along with it (an independent line or "
+        "workstation is left untouched). Archiving an already-archived UAP "
+        "is a no-op that still returns 200. Restricted to owner/admin/"
+        "production supervisor."
     ),
     responses={404: {"description": "UAP not found in the caller's namespace."}},
 )
 async def delete_uap(
     uap_id: str,
     current: dict = Depends(_uap_scope),
-) -> ApiResponse[UapOut]:
+) -> ApiResponse[UapArchiveOut]:
     result = services.delete_uap(uap_id, current["namespace_id"])
-    return ApiResponse(message="UAP deleted.", data=result)
+    return ApiResponse(message="UAP archived.", data=result)

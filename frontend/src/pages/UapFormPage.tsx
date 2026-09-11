@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { useNavigate, useParams } from "react-router-dom";
 
+import { ConfirmDeleteDialog } from "../components/ConfirmDeleteDialog";
 import { MemberGroupSelect } from "../components/MemberGroupSelect";
 import { TextField } from "../components/TextField";
 import { ROUTES } from "../constants/routes";
@@ -11,8 +12,11 @@ import {
   type CreateUapPayload,
   type UapMemberField,
 } from "../constants/uaps";
+import { useProductionLinesStore } from "../stores/useProductionLinesStore";
 import { useUapsStore } from "../stores/useUapsStore";
 import { useUsersStore } from "../stores/useUsersStore";
+import { useWorkstationsStore } from "../stores/useWorkstationsStore";
+import { NO_IMPACT, uapDeletionImpact } from "../utils/deletionImpact";
 
 /** Create or edit a production area (edit mode when a :id param is present). */
 export function UapFormPage() {
@@ -27,6 +31,11 @@ export function UapFormPage() {
   const getUap = useUapsStore((s) => s.getUap);
   const updateUap = useUapsStore((s) => s.updateUap);
   const deleteUap = useUapsStore((s) => s.deleteUap);
+  // Lines and stations are read only to spell out what a deletion sweeps up.
+  const lines = useProductionLinesStore((s) => s.lines);
+  const fetchLines = useProductionLinesStore((s) => s.fetchLines);
+  const workstations = useWorkstationsStore((s) => s.workstations);
+  const fetchWorkstations = useWorkstationsStore((s) => s.fetchWorkstations);
 
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
@@ -34,6 +43,9 @@ export function UapFormPage() {
     useState<Record<UapMemberField, string[]>>(emptyMembers);
   const [submitting, setSubmitting] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  /** The persisted name, so the confirmation names the area as it is saved. */
+  const [savedName, setSavedName] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(!isEdit);
 
@@ -42,10 +54,17 @@ export function UapFormPage() {
   }, [fetchUsers]);
 
   useEffect(() => {
+    if (!isEdit) return;
+    void fetchLines();
+    void fetchWorkstations();
+  }, [isEdit, fetchLines, fetchWorkstations]);
+
+  useEffect(() => {
     if (!id) return;
     void getUap(id).then((res) => {
       if (res.ok && res.data) {
         setName(res.data.name);
+        setSavedName(res.data.name);
         setDescription(res.data.description);
         const next = emptyMembers();
         for (const { field } of UAP_MEMBER_GROUPS) {
@@ -98,12 +117,18 @@ export function UapFormPage() {
     else setError(res.error ?? t("uaps.form.saveError"));
   };
 
+  const impact = useMemo(
+    () => (id ? uapDeletionImpact(id, lines, workstations) : NO_IMPACT),
+    [id, lines, workstations],
+  );
+
   const remove = async () => {
-    if (!id || !window.confirm(t("uaps.form.confirmDelete"))) return;
+    if (!id) return;
     setDeleting(true);
     setError(null);
     const res = await deleteUap(id);
     setDeleting(false);
+    setConfirming(false);
     if (res.ok) navigate(ROUTES.uaps);
     else setError(res.error ?? t("uaps.form.deleteError"));
   };
@@ -185,7 +210,7 @@ export function UapFormPage() {
             {isEdit && (
               <button
                 type="button"
-                onClick={remove}
+                onClick={() => setConfirming(true)}
                 disabled={deleting}
                 className="ml-auto rounded-xl border border-red-500/50 px-4 py-3 text-sm font-medium text-red-400 transition-colors hover:border-red-500 hover:text-red-300 disabled:opacity-60"
               >
@@ -195,6 +220,16 @@ export function UapFormPage() {
           </div>
         </form>
       )}
+
+      <ConfirmDeleteDialog
+        open={confirming}
+        title={t("uaps.form.confirmDelete.title")}
+        body={t("uaps.form.confirmDelete.body", { name: savedName })}
+        impact={impact}
+        busy={deleting}
+        onConfirm={remove}
+        onCancel={() => setConfirming(false)}
+      />
     </div>
   );
 }

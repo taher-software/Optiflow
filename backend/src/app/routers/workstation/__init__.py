@@ -6,7 +6,7 @@ from src.app.globals.enum import Role
 
 from src.app.routers.workstation import services
 from src.app.routers.workstation.modelsIn import CreateWorkstationIn, UpdateWorkstationIn
-from src.app.routers.workstation.modelsOut import WorkstationOut
+from src.app.routers.workstation.modelsOut import WorkstationArchiveOut, WorkstationOut
 
 router = APIRouter(prefix="/workstations", tags=["workstations"])
 
@@ -135,17 +135,24 @@ async def update_workstation(
 
 @router.delete(
     "/{station_id}",
-    response_model=ApiResponse[WorkstationOut],
-    summary="Delete a workstation",
+    response_model=ApiResponse[WorkstationArchiveOut],
+    summary="Archive a workstation",
     description=(
-        "Deletes a workstation from the caller's namespace and returns the "
-        "deleted record. Restricted to owner/admin/production supervisor."
+        "Archives a workstation in the caller's namespace — irreversibly: "
+        "there is no way to undo this. The workstation immediately "
+        "disappears from every list and from `GET /workstations/"
+        "{station_id}` (which then behaves as not found), but its past "
+        "downtime tickets are kept so they keep counting in the plant's "
+        "KPIs, and no new ticket can target it. A workstation has no "
+        "children, so archiving it never cascades. Archiving an "
+        "already-archived workstation is a no-op that still returns 200. "
+        "Restricted to owner/admin/production supervisor."
     ),
     responses={404: {"description": "Workstation not found in the caller's namespace."}},
 )
 async def delete_workstation(
     station_id: str,
     current: dict = Depends(_workstation_scope),
-) -> ApiResponse[WorkstationOut]:
+) -> ApiResponse[WorkstationArchiveOut]:
     result = services.delete_workstation(station_id, current["namespace_id"])
-    return ApiResponse(message="Workstation deleted.", data=result)
+    return ApiResponse(message="Workstation archived.", data=result)

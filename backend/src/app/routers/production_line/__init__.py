@@ -9,7 +9,10 @@ from src.app.routers.production_line.modelsIn import (
     CreateProductionLineIn,
     UpdateProductionLineIn,
 )
-from src.app.routers.production_line.modelsOut import ProductionLineOut
+from src.app.routers.production_line.modelsOut import (
+    ProductionLineArchiveOut,
+    ProductionLineOut,
+)
 
 router = APIRouter(prefix="/production-lines", tags=["production-lines"])
 
@@ -140,11 +143,19 @@ async def update_production_line(
 
 @router.delete(
     "/{line_id}",
-    response_model=ApiResponse[ProductionLineOut],
-    summary="Delete a production line",
+    response_model=ApiResponse[ProductionLineArchiveOut],
+    summary="Archive a production line",
     description=(
-        "Deletes a production line from the caller's namespace and returns "
-        "the deleted record. Restricted to owner/admin/production supervisor."
+        "Archives a production line in the caller's namespace — "
+        "irreversibly: there is no way to undo this. The line immediately "
+        "disappears from every list and from `GET /production-lines/"
+        "{line_id}` (which then behaves as not found), but its past "
+        "downtime tickets are kept so they keep counting in the plant's "
+        "KPIs. Archiving cascades to every workstation attached to this "
+        "line (a workstation on another line, or an independent one, is "
+        "left untouched). Archiving an already-archived line is a no-op "
+        "that still returns 200. Restricted to owner/admin/production "
+        "supervisor."
     ),
     responses={
         404: {"description": "Production line not found in the caller's namespace."}
@@ -153,6 +164,6 @@ async def update_production_line(
 async def delete_production_line(
     line_id: str,
     current: dict = Depends(_production_line_scope),
-) -> ApiResponse[ProductionLineOut]:
+) -> ApiResponse[ProductionLineArchiveOut]:
     result = services.delete_production_line(line_id, current["namespace_id"])
-    return ApiResponse(message="Production line deleted.", data=result)
+    return ApiResponse(message="Production line archived.", data=result)
