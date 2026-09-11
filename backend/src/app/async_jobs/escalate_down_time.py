@@ -62,7 +62,6 @@ from src.app.core.archiving import is_active
 from src.app.core.email import send_down_time_escalation_email
 from src.app.core.firestore import (
     NAMESPACE_COLLECTION,
-    PRODUCTION_LINE_COLLECTION,
     USERS_COLLECTION,
 )
 from src.app.core.notifications import (
@@ -403,14 +402,12 @@ def _run_escalate_down_time(namespace_id: str, payload: dict, job_id: str) -> di
     #
     # Resolved the same way the rest of the codebase does — the most
     # specific of workstation_id / production_line_id / uap_id — via the
-    # shared `resolve_scope_document` (one Firestore read), plus, for a
-    # workstation-scoped ticket, that workstation's own `production_line_id`
-    # (one more read) so archiving the *line* stops the chain too, exactly
-    # like archiving the workstation itself would. Archiving a UAP or a
-    # production line already cascades `archived_at` down to every
-    # workstation beneath it (see `core.archiving`), so a workstation's own
-    # document is enough to catch a UAP-level archive transitively; only the
-    # one level directly above (the workstation's line) needs an extra read.
+    # shared `resolve_scope_document` (one Firestore read). That single
+    # document is enough: archiving a UAP or a production line cascades
+    # `archived_at` down to every resource beneath it (see
+    # `core.archiving`), so an ancestor archive is already visible on the
+    # ticket's own resource. Walking back up to the parents would cost extra
+    # reads per cycle and tell us nothing the resource does not already say.
     scope_source = {
         "production_scope": issue.get("down_time_scope"),
         "workstation_id": issue.get("workstation_id"),
@@ -419,15 +416,7 @@ def _run_escalate_down_time(namespace_id: str, payload: dict, job_id: str) -> di
     }
     scope_doc = resolve_scope_document(firestore, namespace_id, scope_source)
 
-    resource_archived = scope_doc is not None and not is_active(scope_doc)
-    if not resource_archived and scope_doc and scope_doc.get("production_line_id"):
-        line_doc = firestore.get_document(
-            PRODUCTION_LINE_COLLECTION, scope_doc["production_line_id"]
-        )
-        if line_doc and line_doc.get("namespace_id") == namespace_id and not is_active(line_doc):
-            resource_archived = True
-
-    if resource_archived:
+    if scope_doc is not None and not is_active(scope_doc):
         logger.info(
             f"escalate_down_time: resource archived for issue '{down_time_id}' "
             f"in namespace '{namespace_id}' — stopping the escalation chain "

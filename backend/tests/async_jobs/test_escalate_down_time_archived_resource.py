@@ -15,11 +15,14 @@ expected to fail on its own assertion (a reschedule/notification that
 should not have happened, or a `result["status"]` that isn't `"stopped"`),
 never on a broken fixture.
 
-The guard must resolve the ticket's resource the same way the rest of the
-code does — not only the workstation document directly referenced by
-`workstation_id`, but also (for a workstation-scoped ticket) that
-workstation's own `production_line_id`, so archiving the *line* stops the
-chain too, exactly like archiving the workstation itself would.
+The guard resolves the ticket's resource the same way the rest of the code
+does — the document directly referenced by the ticket's scope — and reads
+nothing else. Archiving a production line or a UAP cascades `archived_at`
+down to every resource beneath it (see `core.archiving`), so an ancestor
+archive is already visible on the ticket's own resource; the archived-line
+tests below therefore seed the cascade the product actually produces
+(line *and* its workstation archived) rather than a line archived with an
+active workstation under it, a state the product cannot produce.
 
 Fixtures below (`_wire_firestore`, `push_spy`, `email_spy`, `reschedule_spy`,
 `_seed_issue`, `_payload`) are deliberately copied verbatim from
@@ -250,10 +253,9 @@ class TestArchivedWorkstationStopsEscalation:
 
 
 # --------------------------------------------------------------------------- #
-# Archived production line (the workstation itself is still active) -> also
-# stops. The guard must resolve the ticket's resource the way the rest of
-# the code does (the workstation's own `production_line_id`), not only the
-# workstation document.
+# Archived production line -> also stops. Archiving a line cascades
+# `archived_at` onto its workstations, so the ticket's own resource already
+# carries the archive; these tests seed that cascade.
 # --------------------------------------------------------------------------- #
 
 
@@ -264,7 +266,12 @@ class TestArchivedProductionLineStopsEscalation:
         _seed_production_line(
             _wire_firestore, "line-1", archived_at="2026-01-01T00:00:00+00:00"
         )
-        _seed_workstation(_wire_firestore, "station-1", production_line_id="line-1")
+        _seed_workstation(
+            _wire_firestore,
+            "station-1",
+            production_line_id="line-1",
+            archived_at="2026-01-01T00:00:00+00:00",
+        )
         _seed_issue(
             _wire_firestore,
             workstation_id="station-1",
@@ -285,7 +292,12 @@ class TestArchivedProductionLineStopsEscalation:
         _seed_production_line(
             _wire_firestore, "line-1", archived_at="2026-01-01T00:00:00+00:00"
         )
-        _seed_workstation(_wire_firestore, "station-1", production_line_id="line-1")
+        _seed_workstation(
+            _wire_firestore,
+            "station-1",
+            production_line_id="line-1",
+            archived_at="2026-01-01T00:00:00+00:00",
+        )
         _seed_issue(
             _wire_firestore,
             workstation_id="station-1",
