@@ -1,26 +1,13 @@
 import { create } from "zustand";
 
 import {
-  PERIOD_DAYS,
   type DashboardData,
   type DrilldownData,
   type DrillStep,
   type PeriodPreset,
 } from "../constants/dashboard";
-import { isoDayAfter, isoToday } from "../utils/dashboardFormat";
+import { isoToday, periodRange } from "../utils/dashboardFormat";
 import { request } from "./apiClient";
-
-/** Bornes ISO [from..to] de la période courante. */
-function periodRange(
-  period: PeriodPreset,
-  from: string,
-  to: string,
-): { from: string; to: string } {
-  if (period === "custom") return { from, to };
-  const days = PERIOD_DAYS[period];
-  const today = isoToday();
-  return { from: isoDayAfter(today, -(days - 1)), to: today };
-}
 
 interface DashboardState {
   data: DashboardData | null;

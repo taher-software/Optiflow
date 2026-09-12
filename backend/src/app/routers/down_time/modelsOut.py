@@ -195,3 +195,93 @@ class DownTimePageOut(BaseModel):
     )
     limit: int = Field(..., description="Page size applied.")
     offset: int = Field(..., description="Offset applied.")
+
+
+# --------------------------------------------------------------------------
+# GET /down-times/gantt — see `.claude/specs/downtime-gantt.md` §2.
+# --------------------------------------------------------------------------
+
+
+class GanttWindowOut(BaseModel):
+    """The production-day window (§2.2) — a shift-derived span that may run
+    past midnight for a wrapping last shift."""
+
+    start: str = Field(..., description="ISO datetime (namespace tz), window start.")
+    end: str = Field(..., description="ISO datetime (namespace tz), window end.")
+
+
+class GanttShiftOut(BaseModel):
+    """One configured shift, projected onto absolute datetimes of the
+    queried production day (§2.2)."""
+
+    shift: str = Field(..., description="Shift number, as a string (e.g. '1').")
+    start: str = Field(..., description="ISO datetime (namespace tz), shift start.")
+    end: str = Field(..., description="ISO datetime (namespace tz), shift end.")
+    break_start: Optional[str] = Field(
+        default=None, description="ISO datetime of the shift's break start, if any."
+    )
+    break_end: Optional[str] = Field(
+        default=None, description="ISO datetime of the shift's break end, if any."
+    )
+
+
+class GanttIntervalOut(BaseModel):
+    """One down/unconfirmed segment on a resource's row (§2.3), clamped to
+    `window` and already merged/subtracted per the state rules."""
+
+    start_time: str = Field(..., description="ISO datetime (namespace tz), segment start.")
+    end_time: str = Field(..., description="ISO datetime (namespace tz), segment end.")
+    state: str = Field(..., description="'down' or 'unconfirmed'.")
+
+
+class GanttUapRowOut(BaseModel):
+    """One UAP row of the gantt (§2.4)."""
+
+    uap_id: str = Field(..., description="UAP id.")
+    name: str = Field(..., description="UAP's stored name (kept even if archived).")
+    down_times: list[GanttIntervalOut] = Field(
+        default_factory=list, description="This UAP's intervals, sorted by start_time."
+    )
+
+
+class GanttLineRowOut(BaseModel):
+    """One production line row of the gantt (§2.4)."""
+
+    line_id: str = Field(..., description="Production line id.")
+    name: str = Field(..., description="Line's stored name (kept even if archived).")
+    down_times: list[GanttIntervalOut] = Field(
+        default_factory=list, description="This line's intervals, sorted by start_time."
+    )
+
+
+class GanttWorkStationRowOut(BaseModel):
+    """One workstation row of the gantt (§2.4/§2.5)."""
+
+    workstation_id: str = Field(..., description="Workstation id.")
+    name: str = Field(..., description="Station's stored name (kept even if archived).")
+    type: str = Field(..., description="Workstation type (standard/bottleneck/critical).")
+    down_times: list[GanttIntervalOut] = Field(
+        default_factory=list, description="This station's intervals, sorted by start_time."
+    )
+
+
+class DownTimeGanttOut(BaseModel):
+    """A day-scoped Gantt of the plant (`GET /down-times/gantt`) — see
+    `.claude/specs/downtime-gantt.md` §2 for the full contract. `uaps` /
+    `lines` / `work_stations` are always present (possibly empty); without
+    `type`, all three may carry rows (§2.4); with `type`, `uaps`/`lines` are
+    always empty and `work_stations` holds only the matching-type stations,
+    with ancestor downtime propagated onto them (§2.5)."""
+
+    day: str = Field(..., description="Resolved production day, ISO 'YYYY-MM-DD'.")
+    window: GanttWindowOut = Field(..., description="The production-day window (§2.2).")
+    shifts: list[GanttShiftOut] = Field(
+        default_factory=list, description="Configured shifts projected onto `day`."
+    )
+    uaps: list[GanttUapRowOut] = Field(default_factory=list, description="UAP rows.")
+    lines: list[GanttLineRowOut] = Field(
+        default_factory=list, description="Production line rows."
+    )
+    work_stations: list[GanttWorkStationRowOut] = Field(
+        default_factory=list, description="Workstation rows."
+    )

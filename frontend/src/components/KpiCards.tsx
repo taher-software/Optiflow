@@ -1,4 +1,5 @@
 import { useTranslation } from "react-i18next";
+import { Link } from "react-router-dom";
 
 import {
   RAMP_COUNT,
@@ -7,7 +8,14 @@ import {
   type BaseKpis,
   type Kpis,
 } from "../constants/dashboard";
-import { formatDuration, formatShare, shareOf } from "../utils/dashboardFormat";
+import { ROUTES } from "../constants/routes";
+import { useDashboardStore } from "../stores/useDashboardStore";
+import {
+  formatDuration,
+  formatShare,
+  ganttDayParam,
+  shareOf,
+} from "../utils/dashboardFormat";
 
 /** Socle commun d'une tuile : libellé, rampe de la métrique, valeur.
  *
@@ -149,8 +157,28 @@ function SeverityMeter({
   );
 }
 
+/** Cible du gantt pour une division : le filtre de type, et le JOUR quand la
+ * période affichée ne contient pas aujourd'hui (`ganttDayParam`). Sans cela un
+ * lecteur du mois dernier atterrirait sur le gantt d'aujourd'hui sans rien
+ * pour le lui dire. Le store du dashboard est la seule source de la période. */
+function useGanttHref(division: DivisionKey): string {
+  const period = useDashboardStore((s) => s.period);
+  const customFrom = useDashboardStore((s) => s.customFrom);
+  const customTo = useDashboardStore((s) => s.customTo);
+
+  const params = new URLSearchParams({ type: division });
+  const day = ganttDayParam(period, customFrom, customTo);
+  if (day) params.set("day", day);
+  return `${ROUTES.downTimes}?${params}`;
+}
+
 /** Libellé d'une division : jauge de gravité, nom de la division, et le rang
- * en clair pour les lecteurs d'écran. */
+ * en clair pour les lecteurs d'écran.
+ *
+ * C'est aussi le point d'entrée vers le gantt du jour filtré sur ce type de
+ * poste. Un vrai lien (et non un `onClick` sur un `div`) : il se tabule,
+ * s'ouvre dans un nouvel onglet et s'annonce comme un lien. La jauge de
+ * gravité, elle, ne bouge pas — même balisage, même gabarit. */
 function DivisionLabel({
   division,
   ramp,
@@ -160,8 +188,14 @@ function DivisionLabel({
 }) {
   const { t } = useTranslation();
   const rank = SEVERITY_RANK[division.key];
+  const label = t(`dashboard.kpi.division.${division.key}`);
+  const href = useGanttHref(division.key);
   return (
-    <span className="flex min-w-0 items-center gap-1.5">
+    <Link
+      to={href}
+      title={t("dashboard.kpi.division.openGantt", { division: label })}
+      className="flex min-w-0 items-center gap-1.5 rounded-sm hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0d9488]"
+    >
       <SeverityMeter rank={rank} ramp={ramp} />
       <span
         className={`truncate text-[10px] uppercase tracking-wide ${
@@ -170,10 +204,13 @@ function DivisionLabel({
             : "font-semibold text-[#9ca3af]"
         }`}
       >
-        {t(`dashboard.kpi.division.${division.key}`)}
+        {label}
       </span>
-      <span className="sr-only">{t(`dashboard.kpi.severity.rank${rank}`)}</span>
-    </span>
+      <span className="sr-only">
+        {t(`dashboard.kpi.severity.rank${rank}`)} —{" "}
+        {t("dashboard.kpi.division.openGantt", { division: label })}
+      </span>
+    </Link>
   );
 }
 

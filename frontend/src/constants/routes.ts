@@ -32,6 +32,8 @@ export const ROUTES = {
   newStation: "/app/workstations/new",
   /** Namespace plant settings (shifts + escalation delay). */
   settings: "/app/settings",
+  /** Day-scoped downtime gantt (owner/admin/manager/production-supervisor). */
+  downTimes: "/app/down-times",
   /** Stats explorer (daily KPI tracking + episode comparison). */
   stats: "/app/stats",
 } as const;

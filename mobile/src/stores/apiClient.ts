@@ -6,8 +6,30 @@ export interface ApiResult<T> {
   /** HTTP status code (0 when the request never reached the server). */
   status: number;
   data?: T;
-  /** Backend `detail` message, if any. */
+  /** Backend `detail`, when it is a plain message string. */
   detail?: string;
+  /** Raw `detail` value, for errors whose detail is a structured object
+   * (e.g. the 409 of `POST /down-times`). `undefined` when the body carried
+   * no `detail` at all. */
+  detailBody?: unknown;
+}
+
+/** Read the `detail` of a non-2xx JSON body. Returns the raw value plus, when
+ * it is a string, the message every caller already renders. */
+async function readErrorDetail(
+  res: Response,
+): Promise<{ detail?: string; detailBody?: unknown }> {
+  try {
+    const err = (await res.json()) as { detail?: unknown };
+    const detailBody = err?.detail;
+    return {
+      detail: typeof detailBody === "string" ? detailBody : undefined,
+      detailBody,
+    };
+  } catch {
+    // no JSON body
+    return {};
+  }
 }
 
 /** Authenticated JSON request: adds the bearer token from the auth store and
@@ -37,14 +59,7 @@ export async function apiRequest<T>(
       }
       return { ok: true, status: res.status, data };
     }
-    let detail: string | undefined;
-    try {
-      const err = (await res.json()) as { detail?: string };
-      detail = err.detail;
-    } catch {
-      // no JSON body
-    }
-    return { ok: false, status: res.status, detail };
+    return { ok: false, status: res.status, ...(await readErrorDetail(res)) };
   } catch {
     return { ok: false, status: 0 };
   }
@@ -65,14 +80,7 @@ export async function postJson<T>(
       const json = (await res.json()) as { data: T };
       return { ok: true, status: res.status, data: json.data };
     }
-    let detail: string | undefined;
-    try {
-      const err = (await res.json()) as { detail?: string };
-      detail = err.detail;
-    } catch {
-      // no JSON body
-    }
-    return { ok: false, status: res.status, detail };
+    return { ok: false, status: res.status, ...(await readErrorDetail(res)) };
   } catch {
     return { ok: false, status: 0 };
   }

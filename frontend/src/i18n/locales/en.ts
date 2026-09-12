@@ -276,6 +276,8 @@ const en = {
           general: "Overall",
           bottleneck: "Bottleneck",
           critical: "Critical",
+          openGantt:
+            "Open the gantt of the selected day, filtered on {{division}} stations",
         },
         severity: {
           rank1: "Highest severity",
@@ -390,8 +392,56 @@ const en = {
       },
     },
 
+    downTimes: {
+      eyebrow: "Down times · Day gantt",
+      title: "Down times of the day",
+      subtitle:
+        "One production day at a time: every resource that stopped is one row, over the plant's working time.",
+      day: "Day",
+      loading: "Loading…",
+      empty: "No data.",
+      emptyDay: "No resource was down that day.",
+      emptyFiltered: "No {{type}} station was down that day.",
+      noWindow:
+        "The production day could not be computed: the returned window is unusable.",
+      noShifts:
+        "No shift configured: the axis covers the whole calendar day (Settings → shifts).",
+      windowOf: "Production day of {{day}}",
+      filter: {
+        all: "All stations",
+        bottleneck: "Bottlenecks",
+        critical: "Critical",
+      },
+      state: {
+        down: "Confirmed stop",
+        unconfirmed: "Repaired, not validated",
+      },
+      axis: {
+        workingTime: "Working time",
+        shift: "Shift {{n}}",
+      },
+      legend: {
+        available: "Available",
+        down: "Confirmed stop",
+        unconfirmed: "Repaired, not validated",
+        nonPlanned: "Non-planned time (break)",
+        unconfirmedHint:
+          '"Repaired, not validated": the fix is done but production has not validated the return yet — availability is not certain.',
+      },
+      row: {
+        summary:
+          "{{name}}: {{down}} of confirmed stop, {{unconfirmed}} repaired but not validated.",
+      },
+      divisions: {
+        uaps: "Production areas",
+        lines: "Production lines",
+        stations: "Work stations",
+      },
+    },
+
     nav: {
       dashboard: "Dashboard",
+      downTimes: "Down times",
       stats: "Stats",
       users: "Users",
       uaps: "Production areas",

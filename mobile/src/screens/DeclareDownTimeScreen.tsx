@@ -10,6 +10,7 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+import { ConflictNotice } from "../components/ConflictNotice";
 import { OptionPicker, type Option } from "../components/OptionPicker";
 import {
   DOWN_TIME_TYPES,
@@ -21,7 +22,7 @@ import {
   type DownTimeType,
   type ProductionScope,
 } from "../constants/downtime";
-import type { RootStackParamList } from "../constants/routes";
+import { ROUTES, type RootStackParamList } from "../constants/routes";
 import { useDownTimeStore } from "../stores/useDownTimeStore";
 import { useResourcesStore } from "../stores/useResourcesStore";
 import { useToastStore } from "../stores/useToastStore";
@@ -40,6 +41,8 @@ export function DeclareDownTimeScreen({ navigation }: Props) {
   const workstations = useResourcesStore((s) => s.workstations);
   const loadStructure = useResourcesStore((s) => s.loadStructure);
   const createDownTime = useDownTimeStore((s) => s.createDownTime);
+  const conflict = useDownTimeStore((s) => s.conflict);
+  const clearConflict = useDownTimeStore((s) => s.clearConflict);
   const showToast = useToastStore((s) => s.show);
 
   const [scope, setScope] = useState<ProductionScope | "">("");
@@ -52,7 +55,8 @@ export function DeclareDownTimeScreen({ navigation }: Props) {
 
   useEffect(() => {
     void loadStructure();
-  }, [loadStructure]);
+    return clearConflict;
+  }, [loadStructure, clearConflict]);
 
   // Only offer a scope when the plant actually has that structure.
   const scopeOptions: Option[] = useMemo(() => {
@@ -117,21 +121,29 @@ export function DeclareDownTimeScreen({ navigation }: Props) {
 
   // Reset dependents when a parent selection changes.
   const onScope = (v: string) => {
+    clearConflict();
     setScope(v as ProductionScope);
     setUapSel("");
     setLineSel("");
     setStationSel("");
   };
   const onUap = (v: string) => {
+    clearConflict();
     setUapSel(v);
     setLineSel("");
     setStationSel("");
   };
   const onLine = (v: string) => {
+    clearConflict();
     setLineSel(v);
     setStationSel("");
   };
+  const onStation = (v: string) => {
+    clearConflict();
+    setStationSel(v);
+  };
   const onType = (v: string) => {
+    clearConflict();
     setType(v as DownTimeType);
     setDepartment("");
   };
@@ -144,6 +156,24 @@ export function DeclareDownTimeScreen({ navigation }: Props) {
       (lineSel !== "" && lineSel !== INDEPENDENT)) &&
     (scope !== "work station" || stationSel !== "") &&
     (type !== SETUP_CHANGEOVER || department !== "");
+
+  // Secondary lines of the conflict notice: which ticket blocks, and — when
+  // the blocking level is above the one being declared — why a parent counts.
+  const conflictDetails: string[] = useMemo(() => {
+    if (!conflict) return [];
+    const lines: string[] = [];
+    if (conflict.ticketId) {
+      lines.push(
+        t("downtime.declare.conflict.ticket", { id: conflict.ticketId }),
+      );
+    }
+    if (conflict.level !== "unknown" && conflict.level !== scope) {
+      lines.push(t("downtime.declare.conflict.parentNote"));
+    }
+    return lines;
+  }, [conflict, scope, t]);
+
+  const conflictTicketId = conflict?.ticketId ?? null;
 
   const submit = async () => {
     if (!valid) return;
@@ -168,9 +198,11 @@ export function DeclareDownTimeScreen({ navigation }: Props) {
     if (res.ok) {
       showToast(t("downtime.declare.success"), "success");
       navigation.goBack();
-    } else {
-      showToast(res.status === 0 ? t("errors.network") : t("errors.generic"));
+      return;
     }
+    // A 409 is rendered inline by <ConflictNotice /> (store `conflict`).
+    if (res.status === 409) return;
+    showToast(res.status === 0 ? t("errors.network") : t("errors.generic"));
   };
 
   return (
@@ -223,7 +255,7 @@ export function DeclareDownTimeScreen({ navigation }: Props) {
             label={t("downtime.declare.station")}
             options={stationOptions}
             value={stationSel}
-            onChange={setStationSel}
+            onChange={onStation}
             emptyText={t("downtime.declare.noStations")}
           />
         )}
@@ -241,6 +273,36 @@ export function DeclareDownTimeScreen({ navigation }: Props) {
             options={departmentOptions}
             value={department}
             onChange={setDepartment}
+          />
+        )}
+
+        {/* The "open the existing ticket" action is unguarded on purpose
+            (review finding W9, ruled not applicable): declaring is restricted
+            to `production agent` (`down_time/__init__.py:24,91`), and that
+            role is in `_FULL_VISIBILITY_ROLES` (`down_time/services.py:119-124`),
+            so `_is_visible` (`services.py:344-350`, applied by `get_down_time`
+            at `:678`) always passes for the only caller that can receive this
+            409. The action is shown iff the 409 carried a ticket id. */}
+        {conflict && (
+          <ConflictNotice
+            title={t("downtime.declare.conflict.title")}
+            message={t(
+              `downtime.declare.conflict.level.${slug(conflict.level)}`,
+            )}
+            details={conflictDetails}
+            actionLabel={
+              conflictTicketId
+                ? t("downtime.declare.conflict.openTicket")
+                : undefined
+            }
+            onAction={
+              conflictTicketId
+                ? () =>
+                    navigation.navigate(ROUTES.issueDetail, {
+                      id: conflictTicketId,
+                    })
+                : undefined
+            }
           />
         )}
 
