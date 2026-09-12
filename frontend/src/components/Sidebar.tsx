@@ -43,6 +43,10 @@ export function Sidebar() {
   const canManageUaps =
     canManageUsers || user?.role === "production supervisor";
   const canManageSettings = canManageUaps || user?.role === "manager";
+  // Same role set as the endpoint's `_gantt_scope` (owner/admin/manager/
+  // production supervisor): showing the entry to anyone else would only lead
+  // to a 403.
+  const canReadGantt = canManageSettings;
 
   const items: NavItem[] = [
     {
@@ -50,6 +54,12 @@ export function Sidebar() {
       label: t("nav.dashboard"),
       icon: icon("M3 12l9-9 9 9M5 10v10h14V10"),
       show: true,
+    },
+    {
+      to: ROUTES.downTimes,
+      label: t("nav.downTimes"),
+      icon: icon("M4 6h10M4 12h6M4 18h13M3 3v18"),
+      show: canReadGantt,
     },
     {
       to: ROUTES.users,

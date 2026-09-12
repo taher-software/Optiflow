@@ -1,7 +1,9 @@
-import type {
-  DailyPoint,
-  ShiftWindow,
-  StatsMetric,
+import {
+  PERIOD_DAYS,
+  type DailyPoint,
+  type PeriodPreset,
+  type ShiftWindow,
+  type StatsMetric,
 } from "../constants/dashboard";
 
 /** Heure « HH:MM » du backend → libellé lisible : "14:00" → "14h",
@@ -66,6 +68,39 @@ export function isoDayAfter(from: string, offset: number): string {
 /** Aujourd'hui en ISO (YYYY-MM-DD). */
 export function isoToday(): string {
   return new Date().toISOString().slice(0, 10);
+}
+
+/** Bornes ISO [from..to] de la période courante. Un préréglage se termine
+ * toujours aujourd'hui ; seule la période « custom » peut ne pas contenir le
+ * jour courant. */
+export function periodRange(
+  period: PeriodPreset,
+  from: string,
+  to: string,
+): { from: string; to: string } {
+  if (period === "custom") return { from, to };
+  const days = PERIOD_DAYS[period];
+  const today = isoToday();
+  return { from: isoDayAfter(today, -(days - 1)), to: today };
+}
+
+/** Jour à passer au gantt (`?day=`) depuis la période du dashboard, ou `null`
+ * quand la période contient aujourd'hui.
+ *
+ * Le gantt est un écran d'UN jour, par conception : il ne peut pas porter une
+ * plage. Atterrir sur aujourd'hui alors que le lecteur regarde le mois dernier
+ * serait un mensonge silencieux, donc on emmène la BORNE DE FIN de la période —
+ * le jour le plus récent qu'il regardait. Si la période contient aujourd'hui,
+ * `null` : le gantt résout alors lui-même le jour de production courant dans le
+ * fuseau du site (jamais celui du navigateur). Pure hors horloge. */
+export function ganttDayParam(
+  period: PeriodPreset,
+  customFrom: string,
+  customTo: string,
+): string | null {
+  const { from, to } = periodRange(period, customFrom, customTo);
+  const today = isoToday();
+  return from <= today && today <= to ? null : to;
 }
 
 /** Agrégat d'un épisode pour la métrique choisie. Pur.

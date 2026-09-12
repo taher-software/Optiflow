@@ -277,6 +277,8 @@ const fr = {
           general: "Général",
           bottleneck: "Goulot",
           critical: "Critique",
+          openGantt:
+            "Voir le gantt de la journée sélectionnée, filtré sur les postes « {{division}} »",
         },
         severity: {
           rank1: "Gravité la plus forte",
@@ -396,8 +398,56 @@ const fr = {
       },
     },
 
+    downTimes: {
+      eyebrow: "Arrêts · Gantt du jour",
+      title: "Arrêts de la journée",
+      subtitle:
+        "Une journée de production à la fois : chaque ressource arrêtée est une ligne, sur le temps de travail de l'usine.",
+      day: "Jour",
+      loading: "Chargement…",
+      empty: "Aucune donnée.",
+      emptyDay: "Aucune ressource n'a été arrêtée ce jour-là.",
+      emptyFiltered: "Aucun poste « {{type}} » n'a été arrêté ce jour-là.",
+      noWindow:
+        "La journée de production n'a pas pu être calculée : la plage horaire renvoyée est inexploitable.",
+      noShifts:
+        "Aucune équipe configurée : l'axe couvre la journée calendaire complète (Paramètres → équipes).",
+      windowOf: "Journée de production du {{day}}",
+      filter: {
+        all: "Tous les postes",
+        bottleneck: "Goulots",
+        critical: "Critiques",
+      },
+      state: {
+        down: "Arrêt confirmé",
+        unconfirmed: "Réparé, non validé",
+      },
+      axis: {
+        workingTime: "Temps de travail",
+        shift: "Équipe {{n}}",
+      },
+      legend: {
+        available: "Disponible",
+        down: "Arrêt confirmé",
+        unconfirmed: "Réparé, non validé",
+        nonPlanned: "Temps non planifié (pause)",
+        unconfirmedHint:
+          "« Réparé, non validé » : la réparation est faite mais la production n'a pas encore validé le retour — la disponibilité n'est pas certaine.",
+      },
+      row: {
+        summary:
+          "{{name}} : {{down}} d'arrêt confirmé, {{unconfirmed}} réparé non validé.",
+      },
+      divisions: {
+        uaps: "Zones de production",
+        lines: "Lignes de production",
+        stations: "Postes de travail",
+      },
+    },
+
     nav: {
       dashboard: "Tableau de bord",
+      downTimes: "Arrêts",
       stats: "Stats",
       users: "Utilisateurs",
       uaps: "Zones de production",

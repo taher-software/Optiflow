@@ -5,6 +5,7 @@ import { ProtectedRoute } from "../components/ProtectedRoute";
 import { ROUTES } from "../constants/routes";
 import ConfirmAccountPage from "../pages/ConfirmAccountPage";
 import DashboardPage from "../pages/DashboardPage";
+import DownTimesPage from "../pages/DownTimesPage";
 import LoginPage from "../pages/LoginPage";
 import ProspectPage from "../pages/ProspectPage";
 import RegisterPage from "../pages/RegisterPage";
@@ -41,6 +42,7 @@ export function AppRouter() {
         <Route element={<ProtectedRoute />}>
           <Route element={<AppLayout />}>
             <Route path={ROUTES.app} element={<DashboardPage />} />
+            <Route path={ROUTES.downTimes} element={<DownTimesPage />} />
             <Route path={ROUTES.users} element={<UsersPage />} />
             <Route path={ROUTES.newUser} element={<UserFormPage />} />
             <Route path={`${ROUTES.users}/:id`} element={<UserFormPage />} />
