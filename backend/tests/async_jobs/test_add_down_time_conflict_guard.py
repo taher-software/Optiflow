@@ -23,6 +23,16 @@ gets created, where none should be) rather than on a broken fixture. The
 expected to fail — they pin the non-regression half of the contract once the
 guard lands.
 
+**rev4** (review finding W5): `/pubsub_job` is unauthenticated by design and
+recopies the payload unvalidated, so the handler must not simply pass a
+payload-supplied `production_line_id`/`uap_id` straight through — it must
+resolve the ancestor chain from the Firestore resource documents themselves
+(`workstation_id` -> `production_line_id` -> `uap_id`), the same way it
+already does when those ids are *missing*. `TestConflictGuardDoesNotTrustPayload`
+pins this: a payload naming the right `workstation_id` but the WRONG
+`production_line_id` for it, while the workstation's REAL line carries an
+open ticket, must still be aborted.
+
 Ancestor ids are resolved from the resource documents themselves (workstation
 -> `production_line_id` -> uap -> namespace), never from the payload: the
 existing handler suite already establishes that a `work station`-scoped
@@ -368,3 +378,75 @@ class TestConflictGuardAllowsCreation:
 
         assert _issue(fake_db, NS, "job-parent-while-child-down") is not None
         assert _issue_count(fake_db, NS) == 2
+
+
+class TestConflictGuardDoesNotTrustPayload:
+    """§4 rev4 (review finding W5) — `/pubsub_job` is unauthenticated and
+    recopies the payload unvalidated, so the handler's defensive re-check
+    must resolve the ancestor chain from Firestore, never from a
+    payload-supplied ancestor id, whether that id is wrong or simply
+    absent."""
+
+    def test_wrong_payload_production_line_id_does_not_bypass_the_real_ancestor_guard(
+        self, fake_db, push_spy, seed_uap, seed_production_line, seed_workstation
+    ):
+        """The workstation's REAL production line (per Firestore) is down.
+        The payload names a different, unrelated line for it — the only way
+        the guard could still catch this is by resolving the ancestor chain
+        from the workstation document itself, not from the payload."""
+        uap = seed_uap(namespace_id=NS)
+        real_line = seed_production_line(namespace_id=NS, uap_id=uap["id"])
+        unrelated_line = seed_production_line(namespace_id=NS, uap_id=uap["id"])
+        station = seed_workstation(namespace_id=NS, production_line_id=real_line["id"])
+        _seed_open_issue(
+            fake_db,
+            down_time_scope="production line",
+            production_line_id=real_line["id"],
+            uap_id=uap["id"],
+            status=DownTimeStatus.ONGOING.value,
+        )
+
+        add_down_time(
+            NS,
+            _payload(
+                production_scope=ProductionScope.WORK_STATION.value,
+                workstation_id=station["id"],
+                production_line_id=unrelated_line["id"],
+                uap_id=uap["id"],
+            ),
+            "job-wrong-line-id",
+        )
+
+        assert _issue(fake_db, NS, "job-wrong-line-id") is None
+        assert _issue_count(fake_db, NS) == 1
+
+    def test_wrong_payload_uap_id_does_not_bypass_the_real_ancestor_guard(
+        self, fake_db, push_spy, seed_uap, seed_production_line, seed_workstation
+    ):
+        """Same shape one level up: the payload names the right
+        `production_line_id` but the WRONG `uap_id` for it. The real UAP
+        (per Firestore, via the line) carries the open ticket."""
+        real_uap = seed_uap(namespace_id=NS)
+        unrelated_uap = seed_uap(namespace_id=NS)
+        line = seed_production_line(namespace_id=NS, uap_id=real_uap["id"])
+        station = seed_workstation(namespace_id=NS, production_line_id=line["id"])
+        _seed_open_issue(
+            fake_db,
+            down_time_scope="uap",
+            uap_id=real_uap["id"],
+            status=DownTimeStatus.PENDING.value,
+        )
+
+        add_down_time(
+            NS,
+            _payload(
+                production_scope=ProductionScope.WORK_STATION.value,
+                workstation_id=station["id"],
+                production_line_id=line["id"],
+                uap_id=unrelated_uap["id"],
+            ),
+            "job-wrong-uap-id",
+        )
+
+        assert _issue(fake_db, NS, "job-wrong-uap-id") is None
+        assert _issue_count(fake_db, NS) == 1

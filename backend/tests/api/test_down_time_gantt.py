@@ -342,6 +342,98 @@ class TestDownTimeGanttWindow:
         assert data["window"]["end"] == "2026-01-16T00:00:00+01:00"
         assert data["shifts"] == []
 
+    def test_night_first_shift_declaration_still_spans_full_production_day(
+        self, client, seed_user, auth_headers, fake_db, seed_workstation
+    ):
+        """§2.2 rev (review finding B1): a plant that numbers its NIGHT
+        shift `shift_1` (declaration order: 22:00->06:00, 06:00->14:00,
+        14:00->22:00) must not get a truncated/zero-length window just
+        because `shift_1` isn't the chronologically-first shift.
+        `window.start`/`window.end` are the min/max of the PROJECTED
+        datetimes, never `shifts[0]`/`shifts[-1]` of declaration order — a
+        bug that collapses the window to `[22:00, 22:00)` and empties the
+        whole gantt. A downtime that falls squarely in the middle of the
+        true production day must still be on the gantt."""
+        _seed_settings(
+            fake_db,
+            shift_number=3,
+            shift_1={"start_time": "22:00", "end_time": "06:00"},
+            shift_2={"start_time": "06:00", "end_time": "14:00"},
+            shift_3={"start_time": "14:00", "end_time": "22:00"},
+        )
+        station = seed_workstation(namespace_id=NS)
+        _seed_issue(
+            fake_db,
+            down_time_scope="work station",
+            workstation_id=station["id"],
+            created_at=_paris(15, 10),
+            resolved_at=_paris(15, 11),
+            status=DownTimeStatus.RESOLVED.value,
+        )
+        caller = _user(seed_user, Role.OWNER.value)
+        res = client.get(
+            GANTT_URL, params={"day": "2026-01-15"}, headers=auth_headers(caller)
+        )
+        assert res.status_code == 200, res.text
+        data = res.json()["data"]
+        assert data["window"]["start"] == _paris(15, 6)
+        assert data["window"]["end"] == "2026-01-16T06:00:00+01:00"
+        row = next(
+            w for w in data["work_stations"] if w["workstation_id"] == station["id"]
+        )
+        assert {
+            "start_time": _paris(15, 10), "end_time": _paris(15, 11), "state": "down"
+        } in row["down_times"]
+        # `shifts[]` is ordered chronologically (2, 3, 1), never by the
+        # declaration order (1, 2, 3) the namespace happened to number them.
+        assert [s["shift"] for s in data["shifts"]] == ["2", "3", "1"]
+
+    def test_degenerate_shift_window_falls_back_to_calendar_day(
+        self, client, seed_user, auth_headers, fake_db
+    ):
+        """§2.2 rev (review finding B1): whenever the computed
+        `window.end` is not strictly after `window.start` — here a shift
+        misconfigured with an equal start/end — the endpoint must fall back
+        to the calendar day rather than return a zero-length or inverted
+        window."""
+        _seed_settings(
+            fake_db, shift_number=1, shift_1={"start_time": "08:00", "end_time": "08:00"}
+        )
+        caller = _user(seed_user, Role.OWNER.value)
+        res = client.get(
+            GANTT_URL, params={"day": "2026-01-15"}, headers=auth_headers(caller)
+        )
+        assert res.status_code == 200, res.text
+        data = res.json()["data"]
+        assert data["window"]["start"] == _paris(15, 0)
+        assert data["window"]["end"] == "2026-01-16T00:00:00+01:00"
+
+    def test_break_outside_its_own_shift_window_is_ignored(
+        self, client, seed_user, auth_headers, fake_db
+    ):
+        """§2.2 (review finding W4): a break that does not fall inside its
+        own shift (here 20:00->21:00 on a 06:00->14:00 shift) must be
+        ignored exactly as the KPI services ignore it (`_valid_break`) —
+        not projected as a non-planned band floating outside the shift."""
+        _seed_settings(
+            fake_db,
+            shift_number=1,
+            shift_1={
+                "start_time": "06:00",
+                "end_time": "14:00",
+                "break_start_time": "20:00",
+                "break_end_time": "21:00",
+            },
+        )
+        caller = _user(seed_user, Role.OWNER.value)
+        res = client.get(
+            GANTT_URL, params={"day": "2026-01-15"}, headers=auth_headers(caller)
+        )
+        assert res.status_code == 200, res.text
+        shift_1 = res.json()["data"]["shifts"][0]
+        assert shift_1["break_start"] is None
+        assert shift_1["break_end"] is None
+
     def test_timestamps_are_full_iso_datetimes_not_hhmm(
         self, client, seed_user, auth_headers, fake_db
     ):
@@ -461,6 +553,9 @@ class TestDownTimeGanttIntervalStates:
     def test_down_state_from_created_to_resolved(
         self, client, seed_user, auth_headers, fake_db, seed_workstation
     ):
+        """The ticket is resolved but never closed, so besides its `down`
+        08:00-09:00 span it also contributes an open-ended `unconfirmed`
+        tail 09:00-window.end (14:00, §2.3 "resolved but never closed")."""
         _seed_settings(
             fake_db, shift_number=1, shift_1={"start_time": "06:00", "end_time": "14:00"}
         )
@@ -477,7 +572,8 @@ class TestDownTimeGanttIntervalStates:
         assert res.status_code == 200, res.text
         row = self._row(res, station["id"])
         assert row["down_times"] == [
-            {"start_time": _paris(15, 8), "end_time": _paris(15, 9), "state": "down"}
+            {"start_time": _paris(15, 8), "end_time": _paris(15, 9), "state": "down"},
+            {"start_time": _paris(15, 9), "end_time": _paris(15, 14), "state": "unconfirmed"},
         ]
 
     def test_unconfirmed_state_from_resolved_to_closed(
@@ -543,12 +639,21 @@ class TestDownTimeGanttIntervalStates:
         row = self._row(res, station["id"])
         assert {"start_time": _paris(15, 13), "end_time": _paris(15, 14), "state": "unconfirmed"} in row["down_times"]
 
-    def test_rejected_resolution_resumes_down_at_rejected_at(
+    def test_rejected_resolution_renders_one_continuous_down_bar(
         self, client, seed_user, auth_headers, fake_db, seed_workstation
     ):
-        """A rejected resolution: `unconfirmed` ends at `rejected_at`, and a
-        fresh `down` segment resumes there, running (here) to `window.end`
-        since the ticket is `ongoing` again with no later `resolved_at`."""
+        """§2.3 (developer ruling, 2026-09-11): `reject_resolution` nulls
+        `resolved_at` (`resolved_at`/`resolved_by` -> None, `rejected_at`/
+        `rejected_by` set, status back to `ongoing` — see
+        `services.reject_resolution`), so the resolved->rejected
+        `unconfirmed` slice is not recoverable from the stored document. A
+        rejected ticket must therefore render as ONE continuous `down` bar
+        from `created_at` to `window.end`, the conservative rendering since
+        production itself said the resource was not back. This is the only
+        legitimate seed shape for a rejected ticket — the application never
+        writes a document carrying `resolved_at` and `rejected_at`
+        together, so no test may seed one (that was the prior, deleted,
+        version of this test)."""
         _seed_settings(
             fake_db, shift_number=1, shift_1={"start_time": "06:00", "end_time": "14:00"}
         )
@@ -558,17 +663,19 @@ class TestDownTimeGanttIntervalStates:
             down_time_scope="work station",
             workstation_id=station["id"],
             created_at=_paris(15, 8),
-            resolved_at=_paris(15, 9),
+            resolved_at=None,
+            resolved_by=None,
             rejected_at=_paris(15, 9, 30),
+            rejected_by="rejecter-1",
             status=DownTimeStatus.ONGOING.value,
             rejection_count=1,
         )
         res = self._get(client, seed_user, auth_headers)
         assert res.status_code == 200, res.text
         row = self._row(res, station["id"])
-        assert {"start_time": _paris(15, 8), "end_time": _paris(15, 9), "state": "down"} in row["down_times"]
-        assert {"start_time": _paris(15, 9), "end_time": _paris(15, 9, 30), "state": "unconfirmed"} in row["down_times"]
-        assert {"start_time": _paris(15, 9, 30), "end_time": _paris(15, 14), "state": "down"} in row["down_times"]
+        assert row["down_times"] == [
+            {"start_time": _paris(15, 8), "end_time": _paris(15, 14), "state": "down"}
+        ]
 
     def test_ticket_started_before_window_is_clamped_to_window_start(
         self, client, seed_user, auth_headers, fake_db, seed_workstation
@@ -650,12 +757,19 @@ class TestDownTimeGanttIntervalStates:
         self, client, seed_user, auth_headers, fake_db, seed_workstation
     ):
         """A confirmed `down` stop beats an overlapping `unconfirmed` one —
-        the overlap is removed from the `unconfirmed` segment."""
+        the overlap is removed from the `unconfirmed` segment. Ticket A
+        contributes `down` 07:00-08:00 and `unconfirmed` 08:00-09:00
+        (resolved 08:00, closed 09:00). Ticket B contributes `down`
+        08:30-08:45 and, since it is never closed, an open-ended
+        `unconfirmed` tail 08:45-window.end (14:00, §2.3). Merged per state:
+        `unconfirmed` unions to 08:00-14:00 (08:00-09:00 touches/overlaps
+        08:45-14:00), then has both `down` segments' overlap subtracted,
+        splitting into 08:00-08:30 and 08:45-14:00."""
         _seed_settings(
             fake_db, shift_number=1, shift_1={"start_time": "06:00", "end_time": "14:00"}
         )
         station = seed_workstation(namespace_id=NS)
-        # Ticket A: unconfirmed 08:00-09:00 (resolved at 08:00, closed 09:00).
+        # Ticket A: down 07:00-08:00, unconfirmed 08:00-09:00 (resolved 08:00, closed 09:00).
         _seed_issue(
             fake_db,
             down_time_scope="work station",
@@ -665,7 +779,8 @@ class TestDownTimeGanttIntervalStates:
             closed_at=_paris(15, 9),
             status=DownTimeStatus.CLOSED.value,
         )
-        # Ticket B: down 08:30-08:45, overlapping ticket A's unconfirmed span.
+        # Ticket B: down 08:30-08:45, overlapping ticket A's unconfirmed span,
+        # and never closed so its own unconfirmed tail runs to window.end.
         _seed_issue(
             fake_db,
             down_time_scope="work station",
@@ -680,10 +795,13 @@ class TestDownTimeGanttIntervalStates:
         unconfirmed_segments = [dt for dt in row["down_times"] if dt["state"] == "unconfirmed"]
         down_segments = [dt for dt in row["down_times"] if dt["state"] == "down"]
         assert {
+            "start_time": _paris(15, 7), "end_time": _paris(15, 8), "state": "down"
+        } in down_segments
+        assert {
             "start_time": _paris(15, 8, 30), "end_time": _paris(15, 8, 45), "state": "down"
         } in down_segments
-        assert {"start_time": _paris(15, 7), "end_time": _paris(15, 8), "state": "unconfirmed"} in unconfirmed_segments
-        assert {"start_time": _paris(15, 8, 45), "end_time": _paris(15, 9), "state": "unconfirmed"} in unconfirmed_segments
+        assert {"start_time": _paris(15, 8), "end_time": _paris(15, 8, 30), "state": "unconfirmed"} in unconfirmed_segments
+        assert {"start_time": _paris(15, 8, 45), "end_time": _paris(15, 14), "state": "unconfirmed"} in unconfirmed_segments
         # The subtracted middle slice must not remain as its own segment.
         assert not any(
             dt["start_time"] == _paris(15, 8, 30) and dt["state"] == "unconfirmed"
@@ -756,6 +874,42 @@ class TestDownTimeGanttRowAttribution:
         assert res.status_code == 200, res.text
         uap_ids = {u["uap_id"] for u in res.json()["data"]["uaps"]}
         assert uap_ids == {uap1["id"], uap2["id"]}
+
+    def test_plant_ticket_spread_excludes_archived_resources(
+        self, client, seed_user, auth_headers, fake_db, seed_uap
+    ):
+        """§2.4 (review finding W3): the plant-wide spread covers ACTIVE
+        resources only — an archived UAP must not receive a bar for a
+        plant-wide ticket it never lived through. Three UAPs (two active,
+        one archived) so the active count alone is still > 1, keeping the
+        dominant-level pick at "UAPs" regardless of whether it counts
+        active or total resources. Does not contradict §2.6: an archived
+        resource's OWN ticket still appears — see
+        test_archived_resource_still_included_with_stored_name."""
+        _seed_settings(
+            fake_db, shift_number=1, shift_1={"start_time": "06:00", "end_time": "14:00"}
+        )
+        active_uap_1 = seed_uap(namespace_id=NS)
+        active_uap_2 = seed_uap(namespace_id=NS)
+        archived_uap = seed_uap(namespace_id=NS)
+        owner = _user(seed_user, Role.OWNER.value)
+        archive_res = client.delete(
+            f"/uaps/{archived_uap['id']}", headers=auth_headers(owner)
+        )
+        assert archive_res.status_code == 200, archive_res.text
+        _seed_issue(
+            fake_db,
+            down_time_scope="plant",
+            created_at=_paris(15, 8),
+            resolved_at=_paris(15, 9),
+            status=DownTimeStatus.RESOLVED.value,
+        )
+        res = client.get(
+            GANTT_URL, params={"day": "2026-01-15"}, headers=auth_headers(owner)
+        )
+        assert res.status_code == 200, res.text
+        uap_ids = {u["uap_id"] for u in res.json()["data"]["uaps"]}
+        assert uap_ids == {active_uap_1["id"], active_uap_2["id"]}
 
     def test_plant_ticket_spreads_over_lines_when_single_uap(
         self, client, seed_user, auth_headers, fake_db, seed_uap, seed_production_line
@@ -1000,10 +1154,16 @@ class TestDownTimeGanttFilters:
     def test_type_filter_merges_overlapping_sources_per_state(
         self, client, seed_user, auth_headers, fake_db, seed_uap, seed_production_line, seed_workstation
     ):
-        """Station-scoped `down` 08:00-09:00 and line-scoped `unconfirmed`
-        08:30-10:00 overlap once unioned onto the matching station: §2.3's
-        merge applies to the union, so `down` wins over the overlap and only
-        09:00-10:00 remains `unconfirmed`."""
+        """The station-scoped ticket (created 08:00, resolved 09:00, never
+        closed) contributes `down` 08:00-09:00 AND an open-ended
+        `unconfirmed` tail 09:00-window.end (14:00, §2.3 "never closed").
+        The line-scoped ticket (created 08:30, resolved 09:30, closed
+        10:00) contributes `down` 08:30-09:30 and `unconfirmed` 09:30-10:00.
+        Unioned onto the matching station and merged per state (§2.3/§2.5):
+        `down` = 08:00-09:30 (the two `down` spans merge, touching/
+        overlapping at 08:30-09:00); `unconfirmed` unions to 09:00-14:00,
+        then has the `down` overlap (08:00-09:30) subtracted, leaving
+        09:30-14:00."""
         _seed_settings(
             fake_db, shift_number=1, shift_1={"start_time": "06:00", "end_time": "14:00"}
         )
@@ -1043,10 +1203,10 @@ class TestDownTimeGanttFilters:
         down_segments = [dt for dt in row["down_times"] if dt["state"] == "down"]
         unconfirmed_segments = [dt for dt in row["down_times"] if dt["state"] == "unconfirmed"]
         assert down_segments == [
-            {"start_time": _paris(15, 8), "end_time": _paris(15, 9), "state": "down"}
+            {"start_time": _paris(15, 8), "end_time": _paris(15, 9, 30), "state": "down"}
         ]
         assert unconfirmed_segments == [
-            {"start_time": _paris(15, 9), "end_time": _paris(15, 10), "state": "unconfirmed"}
+            {"start_time": _paris(15, 9, 30), "end_time": _paris(15, 14), "state": "unconfirmed"}
         ]
 
     def test_type_filter_matching_station_with_no_interval_is_absent(

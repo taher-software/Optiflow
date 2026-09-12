@@ -59,14 +59,23 @@ Router `src/app/routers/down_time`, service in the same package.
 
 ### 2.2 The production day (`window`)
 
-- `window.start` = shift 1's `start_time` on `day`; `window.end` = the last
-  configured shift's `end_time`, **carried to the next calendar day whenever the
-  schedule wraps past midnight** (3-shift plants). The window is therefore a
-  production day, not a calendar day.
+- `window.start` = the **earliest** projected shift start of `day`;
+  `window.end` = the **latest** projected shift end, **carried to the next
+  calendar day whenever the schedule wraps past midnight** (3-shift plants). The
+  window is therefore a production day, not a calendar day.
+  Bounds are `min`/`max` over the projected datetimes, NEVER the first/last entry
+  of the `shift_1..shift_N` declaration order — a plant that declares its night
+  shift as `shift_1` would otherwise get a zero-length window and an empty gantt
+  (review finding B1, 2026-09-11). Whenever the computed `window.end` is not
+  strictly after `window.start`, fall back to the calendar day.
 - `shifts[]` lists the configured shifts of the namespace (same "configured
   shift" notion as the KPI services: `shift_number`, parsable clock windows,
   optional break), already projected onto absolute datetimes of that production
-  day. Breaks are reported so the frontend can render them as non-planned time.
+  day, ordered chronologically. Breaks are reported so the frontend can render
+  them as non-planned time; a break is only reported when it is valid **and falls
+  inside its own shift** — reuse the KPI services' break validation rather than a
+  bare clock parse, so a corrupted break is ignored here exactly as the KPIs
+  ignore it.
 - Fallback when the namespace has no usable shift configuration: the calendar day
   `00:00 → 24:00` in the namespace timezone, `shifts: []`.
 
@@ -81,8 +90,14 @@ Every issue of the namespace whose downtime overlaps `window` contributes:
 
 - A ticket never resolved: `down` runs to `window.end` (open bar).
 - A ticket resolved but never closed: `unconfirmed` runs to `window.end`.
-- A rejected resolution puts the ticket back to `ongoing`: the current `down`
-  segment then resumes at `rejected_at` (the `unconfirmed` segment ends there).
+- **A rejected resolution leaves no trace to draw.** `reject_resolution` nulls
+  `resolved_at` when production sends a fix back, so the resolved→rejected
+  `unconfirmed` slice is simply not recoverable from the stored document. Such a
+  ticket therefore renders as one continuous `down` bar — the conservative and
+  honest rendering, since production itself said the resource was not back.
+  Accepted as-is (developer ruling, 2026-09-11); no `rejected_at` branch is to be
+  kept in the service, and no test may seed a document carrying `resolved_at` and
+  `rejected_at` together, which the application never produces.
 - **Clamping** — every interval is clamped to `window`; a ticket started before
   the window and still down inside it is included, clamped to `window.start`.
   Intervals that end up empty are dropped.
@@ -99,6 +114,10 @@ Every issue of the namespace whose downtime overlaps `window` contributes:
   — UAPs when the namespace has more than one UAP, else production lines when it
   has more than one line, else workstations. Reuse the KPI services' existing
   level-selection helper rather than re-deriving it.
+- The plant spread covers **active resources only**: an archived UAP/line/station
+  must not receive a red bar for a plant-wide ticket it never lived through. This
+  does not contradict §2.6 — an archived resource still appears when it carries a
+  ticket of its own.
 
 ### 2.5 The `type` filter — a workstation-only view
 
@@ -109,8 +128,9 @@ the answer to a workstation-only view (developer ruling, 2026-09-11):
   sense when the question asked is "which bottleneck/critical stations were
   down today".
 - `work_stations` contains **only** the workstations whose `type` matches — the
-  matching stations of the whole namespace, wherever they hang (directly under a
-  UAP or under a production line).
+  matching stations of the whole namespace, whether they hang under a production
+  line or under none (the data model links a workstation to a line or to
+  nothing — never straight to a UAP).
 - **Ancestor downtime propagates down in this mode**: a matching station's
   intervals are the union of the tickets scoped on the station itself and the
   tickets scoped on its production line, on its UAP, and on the plant. A
@@ -161,15 +181,37 @@ open downtime.
   The reverse direction (declaring a *parent* while a child is down) stays
   allowed: a broader stop is new information, not a duplicate. ⟨pending
   confirmation⟩
-- **Response**: `409 Conflict` with a clear, user-facing message naming the
-  resource, e.g. `"A downtime is already open on this workstation (ticket
-  <id>). Update the existing ticket instead of declaring a new one."`
+- **Response**: `409 Conflict` whose `detail` is a **structured object**, so no
+  client has to parse prose:
+  `{"code": "downtime_already_open", "blocking_scope": "production line",
+  "blocking_ticket_id": "<id>|null", "message": "<the English sentence>"}`.
+  `message` stays for API explorers; the mobile and web clients read `code` and
+  `blocking_scope` and render their own localised text.
+  `blocking_ticket_id` is **always the blocking ticket's id**. Review finding W10
+  suspected a visibility leak here; it does not exist and the guard against it was
+  removed rather than kept as unreachable code (developer ruling, 2026-09-11):
+  declaring a downtime is restricted to `production agent`
+  (`_down_time_report_scope`), and `production agent` is in
+  `_FULL_VISIBILITY_ROLES` — the only role that can ever receive this 409 already
+  reads every ticket of its namespace through `GET /down-times/{id}`. Hiding the
+  id would have been inconsistent, and the `_is_visible` check would have cost one
+  Firestore read per conflict for a branch that can never fire.
+  **If the declaring role set ever widens beyond full-visibility roles, this
+  decision must be revisited** — that is the single condition that makes W10 real.
 - **Where**: checked synchronously in the endpoint's service (so the caller gets
   the 409), and re-checked defensively in the `add_down_time` async handler,
   which aborts without creating the ticket when the conflict exists (the endpoint
   only publishes; it never runs the handler in-process).
 - **Mobile**: `DeclareDownTimeScreen` surfaces the 409 as a clear localised
-  message (fr + en), not a generic error toast.
+  message (fr + en), not a generic error toast, reading the structured fields
+  above — never by parsing the English sentence. The "open the existing ticket"
+  action is offered only when `blocking_ticket_id` is present.
+- **Known residual race** (review finding W6, accepted 2026-09-11): the check and
+  the write are two operations with no transaction, so two simultaneous
+  declarations on the same resource can both pass. The window is small, the
+  consequence is a duplicate ticket rather than data loss, and closing it
+  properly means a lock document with its own lifecycle — deliberately deferred,
+  stated here rather than discovered later.
 
 ## 5. Out of scope
 

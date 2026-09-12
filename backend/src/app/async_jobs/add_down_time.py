@@ -76,6 +76,19 @@ completed.
 Trigger: published (job_type=`JobType.ADD_DOWN_TIME`) by the downtime-ticket
 creation endpoint (owned by the api sub-factory) once a workstation/line/UAP
 stop is declared.
+
+**Single-open-downtime guard (§4 of `.claude/specs/downtime-gantt.md`,
+rev2).** Before creating the issue document, `_run_add_down_time` defensively
+re-checks `src.app.core.down_time_conflict.find_blocking_conflict` — the
+resource itself, or any of its ancestors (work station -> production line ->
+UAP -> plant), must not already carry a `pending`/`ongoing` issue. This
+mirrors the synchronous check the endpoint's service already runs (so the
+caller gets a `409`) before publishing, but that endpoint never runs this
+handler in-process, so the rule has to hold here too against whatever
+Firestore's state is by the time this job actually runs. A conflict raises
+`FunctionalJobError` — logged and acked, no retry, no partial write — never a
+`SystemJobError`/uncaught exception, since a genuine conflict would just be
+found again on any retry.
 """
 
 from __future__ import annotations
@@ -86,6 +99,7 @@ from typing import Optional
 
 import backoff
 
+from src.app.core.down_time_conflict import find_blocking_conflict
 from src.app.core.email import send_down_time_supervisor_email
 from src.app.core.escalation import should_escalate
 from src.app.core.firestore import (
@@ -523,6 +537,69 @@ def _run_add_down_time(
                 "invariant."
             )
             uap_id = production_line_id = workstation_id = None
+
+        # §4 rev2 — defensive re-check of the single-open-downtime guard.
+        # The synchronous check already ran in the endpoint's service before
+        # this job was published, but the endpoint only publishes: it never
+        # runs this handler in-process, so the same business rule must be
+        # enforced again here against the current Firestore state (the
+        # window between the endpoint's check and this handler running is
+        # exactly where a second, concurrent declaration could land). A
+        # conflict is a business-rule refusal, not a transient failure:
+        # raising `FunctionalJobError` aborts BEFORE `create_subdocument`
+        # runs (no ticket, no partial write) and is logged + acked by
+        # `_add_down_time_attempt`, never retried — retrying a genuine
+        # conflict would just find the same open blocker again. Safe to
+        # replay: a later delivery of this same `job_id` re-runs this exact
+        # check against Firestore's then-current state.
+        #
+        # rev4 (review finding W5) — `/pubsub_job` is unauthenticated by
+        # design and recopies this payload with no revalidation, so ONLY the
+        # id of the declared scope itself is passed below; any id above it
+        # is resolved by `find_blocking_conflict` from the Firestore
+        # documents, never from this payload (see that function's and
+        # `_resolve_ancestor_ids`'s docstrings — this is now unconditional
+        # there too, so it holds even if this call site ever changes).
+        declared_scope_id = {
+            ProductionScope.UAP.value: {"uap_id": uap_id},
+            ProductionScope.PRODUCTION_LINE.value: {
+                "production_line_id": production_line_id
+            },
+            ProductionScope.WORK_STATION.value: {"workstation_id": workstation_id},
+        }.get(payload["production_scope"], {})
+
+        conflict = find_blocking_conflict(
+            firestore,
+            namespace_id,
+            payload["production_scope"],
+            **declared_scope_id,
+        )
+        if conflict is not None:
+            # W7 — a refused declaration was silent: the reporter had
+            # already received a `202`. Trace it at warning level with the
+            # reporter, the declared target, and the blocking ticket.
+            logger.warning(
+                "add_down_time: refusing to create issue '%s' for reporter "
+                "'%s' — declared '%s' scope (uap_id=%s, "
+                "production_line_id=%s, workstation_id=%s) is already "
+                "covered by open issue '%s' (scope '%s', status '%s').",
+                job_id,
+                payload.get("created_by"),
+                payload["production_scope"],
+                uap_id,
+                production_line_id,
+                workstation_id,
+                conflict.issue_id,
+                conflict.down_time_scope,
+                conflict.status,
+            )
+            raise FunctionalJobError(
+                f"add_down_time: refusing to create issue '{job_id}' — a "
+                "downtime is already open on this resource or one of its "
+                f"ancestors (blocking issue '{conflict.issue_id}', declared "
+                f"at '{conflict.down_time_scope}' scope, status "
+                f"'{conflict.status}')."
+            )
 
         issue_data = {
             "id": job_id,

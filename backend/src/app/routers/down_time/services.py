@@ -52,12 +52,13 @@ branches are the belt-and-braces fallback if a cancel call doesn't land.
 
 import logging
 import uuid
-from datetime import datetime
+from datetime import date as date_cls, datetime, time, timedelta
 from typing import Any, Optional
 from fastapi import HTTPException, status
 
 from src.app.gcp import get_pubsub_publisher
 from src.app.core.archiving import is_active
+from src.app.core.down_time_conflict import DownTimeConflict, find_blocking_conflict
 from src.app.core.escalation import cancel_escalation
 from src.app.core.firestore import (
     NAMESPACE_COLLECTION,
@@ -66,6 +67,7 @@ from src.app.core.firestore import (
     USERS_COLLECTION,
     WORKSTATION_COLLECTION,
 )
+from src.app.core.shift_time import parse_hhmm, window_length_minutes
 from src.app.core.timezone import namespace_timezone
 from src.app.gcp import get_firestore_client
 from src.app.gcp.firestore import FirestoreClient
@@ -74,6 +76,7 @@ from src.app.globals.enum import (
     DownTimeStatus,
     DownTimeType,
     JobType,
+    ProductionScope,
     Role,
 )
 
@@ -82,11 +85,26 @@ logger = logging.getLogger(__name__)
 from src.app.routers.down_time.modelsIn import CreateDownTimeIn
 from src.app.routers.down_time.modelsOut import (
     DownTimeAckOut,
+    DownTimeGanttOut,
     DownTimeOut,
     DownTimePageOut,
     DownTimeStatusSummaryOut,
     DownTimeSummaryOut,
+    GanttIntervalOut,
+    GanttLineRowOut,
+    GanttShiftOut,
+    GanttUapRowOut,
+    GanttWindowOut,
+    GanttWorkStationRowOut,
 )
+
+# `kpi.services` owns the shift-window / planned-time / location-hierarchy
+# primitives the gantt reuses (namespace-timezone convention, configured
+# -shifts parsing, dominant-location-level pick) — imported as a module, not
+# individual private names, to make every reuse site below explicit about
+# where it's borrowing from. No cycle: `kpi.services` never imports
+# `down_time.services`.
+from src.app.routers.kpi import services as kpi_services
 
 # Same literals `add_down_time` stores the issue under — kept in sync with
 # `src.app.async_jobs.add_down_time.DOWN_TIME_COLLECTION` / `ISSUES_SUBCOLLECTION`.
@@ -209,13 +227,52 @@ def _validate_workstation(
     return station
 
 
+def _conflict_detail(conflict: DownTimeConflict) -> dict[str, Any]:
+    """The structured, machine-readable 409 body for a blocked declaration
+    (§4, review finding W10 — resolved as not applicable): `code` is a
+    stable token clients switch on, `blocking_scope` the level the blocking
+    ticket was declared at. `message` stays for API explorers; the
+    mobile/web clients read `code` / `blocking_scope` instead of parsing it.
+
+    `blocking_ticket_id` is ALWAYS the blocking ticket's id (spec §4). The
+    `_is_visible` gating this used to carry is provably unreachable:
+    declaring a downtime is restricted to `production agent`
+    (`_down_time_report_scope`), and `production agent` is in
+    `_FULL_VISIBILITY_ROLES`, so the only caller that can ever receive this
+    409 already sees every ticket of its namespace. Coupling to watch: if
+    the declaring role set ever widens beyond the full-visibility roles,
+    this visibility question comes back and the gating must be
+    reintroduced."""
+    level_label = {
+        ProductionScope.PLANT.value: "the plant",
+        ProductionScope.UAP.value: "this UAP",
+        ProductionScope.PRODUCTION_LINE.value: "this production line",
+        ProductionScope.WORK_STATION.value: "this workstation",
+    }.get(conflict.down_time_scope, "this resource")
+
+    message = (
+        f"A downtime is already open on {level_label} (ticket "
+        f"{conflict.issue_id}). Update the existing ticket instead of "
+        "declaring a new one."
+    )
+
+    return {
+        "code": "downtime_already_open",
+        "blocking_scope": conflict.down_time_scope,
+        "blocking_ticket_id": conflict.issue_id,
+        "message": message,
+    }
+
+
 def create_down_time(
-    payload: CreateDownTimeIn, namespace_id: str, created_by: str
+    payload: CreateDownTimeIn, current: dict[str, Any]
 ) -> DownTimeAckOut:
     _require_non_blank(payload.uap_id, "uap_id")
     _require_non_blank(payload.production_line_id, "production_line_id")
     _require_non_blank(payload.workstation_id, "workstation_id")
 
+    namespace_id = current["namespace_id"]
+    created_by = current["id"]
     client = get_firestore_client()
 
     if payload.uap_id is not None:
@@ -229,6 +286,24 @@ def create_down_time(
     if payload.workstation_id is not None:
         _validate_workstation(
             client, namespace_id, payload.workstation_id, payload.production_line_id
+        )
+
+    # §4 — one open downtime per resource. The above validations already
+    # loaded/checked the full id chain, so it's passed through here to spare
+    # `find_blocking_conflict` its own ancestor-resolution reads (see its
+    # docstring).
+    conflict = find_blocking_conflict(
+        client,
+        namespace_id,
+        payload.production_scope.value,
+        uap_id=payload.uap_id,
+        production_line_id=payload.production_line_id,
+        workstation_id=payload.workstation_id,
+    )
+    if conflict is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=_conflict_detail(conflict),
         )
 
     job_id = str(uuid.uuid4())
@@ -1002,6 +1077,561 @@ def delete_down_time(issue_id: str, current: dict[str, Any]) -> DownTimeOut:
         DOWN_TIME_COLLECTION, namespace_id, ISSUES_SUBCOLLECTION, issue_id
     )
     return result
+
+
+
+# --------------------------------------------------------------------------
+# GET /down-times/gantt — see `.claude/specs/downtime-gantt.md` §2.
+# --------------------------------------------------------------------------
+
+
+def _project_shift(
+    shift_number: str, shift: dict[str, Any], day: date_cls, tz: Any
+) -> GanttShiftOut:
+    """Projects one configured shift's clock window (and optional break) onto
+    absolute datetimes of `day`, in `tz` (§2.2). Midnight-wrap aware via
+    plain `timedelta` arithmetic from `day`'s own local midnight — a shift
+    (or its break) whose length pushes past 24h naturally lands on the next
+    calendar day, no separate wrap branch needed. `_configured_shifts`
+    (`kpi.services`) only ever returns shifts whose own window already
+    parses, so `start_time`/`end_time` are trusted here.
+
+    B1 (review finding): an equal start/end clock pair is ambiguous between
+    "0 minutes" and "24h" (see `core.shift_time.window_length_minutes`'s own
+    docstring, which explicitly leaves the choice to the caller). The KPI
+    planned-time computation resolves it as a full 24h shift; the gantt
+    deliberately resolves it as a zero-length, unusable shift instead, so a
+    misconfigured shift degrades `_gantt_window` to its calendar-day
+    fallback rather than silently producing a full-day window nobody
+    configured.
+
+    W4 (review finding): the break is validated via `kpi.services._valid_break`
+    — the SAME rule the KPI layer applies (non-zero length, falls inside its
+    own shift window) — rather than a bare clock parse, so a corrupted OR
+    out-of-window break is ignored here exactly as the KPIs ignore it. Two
+    layers reading the same namespace's planned time must never disagree on
+    what counts as a valid break."""
+    day_start = datetime.combine(day, time.min, tzinfo=tz)
+    start_minutes = parse_hhmm(shift["start_time"])
+    end_minutes = parse_hhmm(shift["end_time"])
+    length_minutes = (
+        0
+        if end_minutes == start_minutes
+        else window_length_minutes(start_minutes, end_minutes)
+    )
+    start_dt = day_start + timedelta(minutes=start_minutes)
+    end_dt = start_dt + timedelta(minutes=length_minutes)
+
+    break_start_dt: Optional[datetime] = None
+    break_end_dt: Optional[datetime] = None
+    valid_break = kpi_services._valid_break(shift)
+    if valid_break is not None:
+        break_start_minutes, _break_end_minutes, break_length_minutes = valid_break
+        offset_minutes = (break_start_minutes - start_minutes) % (24 * 60)
+        break_start_dt = start_dt + timedelta(minutes=offset_minutes)
+        break_end_dt = break_start_dt + timedelta(minutes=break_length_minutes)
+
+    return GanttShiftOut(
+        shift=shift_number,
+        start=start_dt.isoformat(),
+        end=end_dt.isoformat(),
+        break_start=break_start_dt.isoformat() if break_start_dt else None,
+        break_end=break_end_dt.isoformat() if break_end_dt else None,
+    )
+
+
+def _gantt_window(
+    settings: dict[str, Any], day: date_cls, tz: Any
+) -> tuple[datetime, datetime, list[GanttShiftOut]]:
+    """`(window_start, window_end, shifts)` for `day` (§2.2). Reuses
+    `kpi.services._configured_shifts` for the "configured shift" notion
+    (`shift_number`, parsable clock windows, optional break) so the gantt
+    never re-derives what counts as a usable shift. Falls back to the
+    calendar day `[00:00, 24:00)`, `shifts: []`, when the namespace has no
+    usable shift configuration at all (no settings document, or no shift
+    carries a parsable window).
+
+    B1 (review finding): `window_start`/`window_end` are the `min`/`max` of
+    the PROJECTED shift datetimes, NEVER `shifts[0]`/`shifts[-1]` of
+    declaration order — a namespace that numbers a later shift `shift_1`
+    (e.g. the night shift) must not get a truncated/zero-length window just
+    because `shift_1` isn't the chronologically first shift. `shifts[]` is
+    returned in chronological (projected-start) order, regardless of
+    declaration order, for the same reason. Whenever the computed window
+    isn't strictly ordered (`window_end` not strictly after `window_start`
+    — e.g. every configured shift degenerate, see `_project_shift`'s
+    zero-length guard), falls back to the calendar day the same way the "no
+    usable shift configuration" case does, while still returning the
+    projected `shifts[]` (unlike that case, which has none to return)."""
+    configured = kpi_services._configured_shifts(settings)
+    if not configured:
+        window_start = datetime.combine(day, time.min, tzinfo=tz)
+        window_end = window_start + timedelta(days=1)
+        return window_start, window_end, []
+
+    projected = [
+        _project_shift(shift_number, shift, day, tz)
+        for shift_number, shift in configured
+    ]
+    starts = [datetime.fromisoformat(p.start) for p in projected]
+    ends = [datetime.fromisoformat(p.end) for p in projected]
+
+    window_start = min(starts)
+    window_end = max(ends)
+    shifts = [p for _, p in sorted(zip(starts, projected), key=lambda pair: pair[0])]
+
+    if window_end <= window_start:
+        window_start = datetime.combine(day, time.min, tzinfo=tz)
+        window_end = window_start + timedelta(days=1)
+
+    return window_start, window_end, shifts
+
+
+def _issue_segments(
+    issue: dict[str, Any], window_end: datetime
+) -> list[tuple[datetime, datetime, str]]:
+    """The raw (unclamped) `(start, end, state)` segments a single issue
+    contributes (§2.3), derived purely from its own stored timestamps —
+    never from `status` — so this only needs whatever combination of
+    `created_at`/`resolved_at`/`closed_at` the document actually carries:
+
+    - Never resolved (`resolved_at` absent): one open `down` segment,
+      `created_at -> window_end`. This is ALSO the shape of a rejected
+      resolution: `reject_resolution` nulls `resolved_at`/`resolved_by` back
+      to `None` when production sends a fix back (see
+      `services.reject_resolution`), so a rejected ticket is
+      indistinguishable, at the stored-document level, from one that was
+      simply never resolved — it therefore renders as ONE continuous `down`
+      bar from `created_at` to `window_end`, the conservative and honest
+      rendering since production itself said the resource was not back
+      (§2.3, developer ruling 2026-09-11).
+    - Resolved: `down` runs `created_at -> resolved_at`. The `unconfirmed`
+      tail that follows ends at `closed_at` (normal close), or stays open to
+      `window_end` when the ticket was never closed.
+
+    Deliberately no `rejected_at`-aware branch: with `resolved_at` always
+    cleared by a rejection, the resolved -> rejected `unconfirmed` slice
+    that preceded it is not recoverable from the stored document, and the
+    application never writes a document carrying both `resolved_at` and
+    `rejected_at` together — a branch trying to recover it would be dead
+    code no real seed could ever reach (review finding, `reject_resolution`
+    nulling `resolved_at`; see
+    `test_rejected_resolution_renders_one_continuous_down_bar`, which is the
+    only legitimate seed shape for a rejected ticket)."""
+    created_at = _parse_iso(issue.get("created_at"))
+    if created_at is None:
+        return []
+
+    resolved_at = _parse_iso(issue.get("resolved_at"))
+    if resolved_at is None:
+        return [(created_at, window_end, "down")]
+
+    closed_at = _parse_iso(issue.get("closed_at"))
+    unconfirmed_end = closed_at if closed_at is not None else window_end
+    return [
+        (created_at, resolved_at, "down"),
+        (resolved_at, unconfirmed_end, "unconfirmed"),
+    ]
+
+
+def _clamp_interval(
+    start: datetime, end: datetime, window_start: datetime, window_end: datetime
+) -> Optional[tuple[datetime, datetime]]:
+    """Clamps `[start, end)` to `[window_start, window_end]` (§2.3); `None`
+    when the clamped interval is empty (entirely outside the window)."""
+    clamped_start = max(start, window_start)
+    clamped_end = min(end, window_end)
+    if clamped_start >= clamped_end:
+        return None
+    return clamped_start, clamped_end
+
+
+def _merge_intervals(
+    intervals: list[tuple[datetime, datetime]]
+) -> list[tuple[datetime, datetime]]:
+    """Merges overlapping OR TOUCHING intervals (§2.3) — `end == next start`
+    counts as touching, so two segments sharing a boundary merge into one."""
+    if not intervals:
+        return []
+    ordered = sorted(intervals, key=lambda pair: pair[0])
+    merged = [ordered[0]]
+    for start, end in ordered[1:]:
+        last_start, last_end = merged[-1]
+        if start <= last_end:
+            merged[-1] = (last_start, max(last_end, end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def _subtract_intervals(
+    targets: list[tuple[datetime, datetime]],
+    cuts: list[tuple[datetime, datetime]],
+) -> list[tuple[datetime, datetime]]:
+    """`targets` with every interval in `cuts` removed from it, splitting a
+    target into up to two pieces per overlapping cut (§2.3 — `down` wins
+    over `unconfirmed`). `cuts`/`targets` are each assumed already merged
+    (non-overlapping among themselves)."""
+    result = list(targets)
+    for cut_start, cut_end in cuts:
+        next_result: list[tuple[datetime, datetime]] = []
+        for start, end in result:
+            if cut_end <= start or cut_start >= end:
+                next_result.append((start, end))
+                continue
+            if cut_start > start:
+                next_result.append((start, cut_start))
+            if cut_end < end:
+                next_result.append((cut_end, end))
+        result = next_result
+    return result
+
+
+def _row_intervals(
+    issues: list[dict[str, Any]], window_start: datetime, window_end: datetime
+) -> list[GanttIntervalOut]:
+    """The final, sorted `down_times[]` for one resource row (§2.3): every
+    issue's raw segments, clamped to the window, merged per state, then
+    `down` subtracted from any overlapping `unconfirmed` (a confirmed stop
+    beats an unsure availability). Empty when nothing survives clamping —
+    the caller drops the row in that case (§2.1 "only if it has at least one
+    interval")."""
+    down_raw: list[tuple[datetime, datetime]] = []
+    unconfirmed_raw: list[tuple[datetime, datetime]] = []
+    for issue in issues:
+        for start, end, state in _issue_segments(issue, window_end):
+            clamped = _clamp_interval(start, end, window_start, window_end)
+            if clamped is None:
+                continue
+            (down_raw if state == "down" else unconfirmed_raw).append(clamped)
+
+    down_merged = _merge_intervals(down_raw)
+    unconfirmed_merged = _subtract_intervals(
+        _merge_intervals(unconfirmed_raw), down_merged
+    )
+
+    combined = [(s, e, "down") for s, e in down_merged] + [
+        (s, e, "unconfirmed") for s, e in unconfirmed_merged
+    ]
+    combined.sort(key=lambda triple: triple[0])
+    return [
+        GanttIntervalOut(start_time=s.isoformat(), end_time=e.isoformat(), state=state)
+        for s, e, state in combined
+    ]
+
+
+def _own_scope_groups(
+    issues: list[dict[str, Any]]
+) -> tuple[
+    dict[str, list[dict[str, Any]]],
+    dict[str, list[dict[str, Any]]],
+    dict[str, list[dict[str, Any]]],
+    list[dict[str, Any]],
+]:
+    """`(by_station, by_line, by_uap, plant_issues)` — `issues` bucketed by
+    their own most-specific stored id (§2.4: "a ticket scoped uap/line/
+    workstation appears only on its own resource row — no propagation"), or
+    `plant_issues` when the ticket carries none of the three (a `plant`
+    -scope ticket, which names no resource)."""
+    by_station: dict[str, list[dict[str, Any]]] = {}
+    by_line: dict[str, list[dict[str, Any]]] = {}
+    by_uap: dict[str, list[dict[str, Any]]] = {}
+    plant_issues: list[dict[str, Any]] = []
+    for issue in issues:
+        if issue.get("workstation_id"):
+            by_station.setdefault(issue["workstation_id"], []).append(issue)
+        elif issue.get("production_line_id"):
+            by_line.setdefault(issue["production_line_id"], []).append(issue)
+        elif issue.get("uap_id"):
+            by_uap.setdefault(issue["uap_id"], []).append(issue)
+        else:
+            plant_issues.append(issue)
+    return by_station, by_line, by_uap, plant_issues
+
+
+def _uap_rows(
+    groups: dict[str, list[dict[str, Any]]],
+    uaps: dict[str, dict[str, Any]],
+    window_start: datetime,
+    window_end: datetime,
+) -> list[GanttUapRowOut]:
+    rows = []
+    for uap_id, issues in groups.items():
+        uap = uaps.get(uap_id)
+        if uap is None:
+            continue
+        down_times = _row_intervals(issues, window_start, window_end)
+        if not down_times:
+            continue
+        rows.append(
+            GanttUapRowOut(uap_id=uap_id, name=uap.get("name", ""), down_times=down_times)
+        )
+    rows.sort(key=lambda row: row.uap_id)
+    return rows
+
+
+def _line_rows(
+    groups: dict[str, list[dict[str, Any]]],
+    lines: dict[str, dict[str, Any]],
+    window_start: datetime,
+    window_end: datetime,
+) -> list[GanttLineRowOut]:
+    rows = []
+    for line_id, issues in groups.items():
+        line = lines.get(line_id)
+        if line is None:
+            continue
+        down_times = _row_intervals(issues, window_start, window_end)
+        if not down_times:
+            continue
+        rows.append(
+            GanttLineRowOut(
+                line_id=line_id, name=line.get("name", ""), down_times=down_times
+            )
+        )
+    rows.sort(key=lambda row: row.line_id)
+    return rows
+
+
+def _station_rows(
+    groups: dict[str, list[dict[str, Any]]],
+    stations: dict[str, dict[str, Any]],
+    window_start: datetime,
+    window_end: datetime,
+) -> list[GanttWorkStationRowOut]:
+    rows = []
+    for station_id, issues in groups.items():
+        station = stations.get(station_id)
+        if station is None:
+            continue
+        down_times = _row_intervals(issues, window_start, window_end)
+        if not down_times:
+            continue
+        rows.append(
+            GanttWorkStationRowOut(
+                workstation_id=station_id,
+                name=station.get("name", ""),
+                type=kpi_services._station_type(station),
+                down_times=down_times,
+            )
+        )
+    rows.sort(key=lambda row: row.workstation_id)
+    return rows
+
+
+def _unfiltered_gantt_rows(
+    hierarchy: dict[str, Any],
+    by_station: dict[str, list[dict[str, Any]]],
+    by_line: dict[str, list[dict[str, Any]]],
+    by_uap: dict[str, list[dict[str, Any]]],
+    plant_issues: list[dict[str, Any]],
+    window_start: datetime,
+    window_end: datetime,
+) -> tuple[list[GanttUapRowOut], list[GanttLineRowOut], list[GanttWorkStationRowOut]]:
+    """§2.4, no `type` filter: each resource's own-scope issues, plus — for
+    the dominant location level only (`kpi.services._pick_location_kind`,
+    reused so this never drifts from the dashboard's `by_location` rule) —
+    every `plant`-scope issue spread onto EVERY ACTIVE resource of that
+    level.
+
+    W3 (review finding): the spread is restricted to active resources
+    (`core.archiving.is_active`) — an archived UAP/line/station must not
+    receive a bar for a plant-wide ticket it never lived through. This does
+    not contradict §2.6: a resource's OWN-scope tickets (`by_station`/
+    `by_line`/`by_uap` above) are never filtered by archiving, so an
+    archived resource carrying a ticket of its own still appears."""
+    uap_groups = {uap_id: list(issues) for uap_id, issues in by_uap.items()}
+    line_groups = {line_id: list(issues) for line_id, issues in by_line.items()}
+    station_groups = {sid: list(issues) for sid, issues in by_station.items()}
+
+    if plant_issues:
+        kind = kpi_services._pick_location_kind(hierarchy)
+        if kind == "uap":
+            for uap_id, uap in hierarchy["uaps"].items():
+                if is_active(uap):
+                    uap_groups.setdefault(uap_id, []).extend(plant_issues)
+        elif kind == "line":
+            for line_id, line in hierarchy["lines"].items():
+                if is_active(line):
+                    line_groups.setdefault(line_id, []).extend(plant_issues)
+        else:
+            for station_id, station in hierarchy["stations"].items():
+                if is_active(station):
+                    station_groups.setdefault(station_id, []).extend(plant_issues)
+
+    return (
+        _uap_rows(uap_groups, hierarchy["uaps"], window_start, window_end),
+        _line_rows(line_groups, hierarchy["lines"], window_start, window_end),
+        _station_rows(station_groups, hierarchy["stations"], window_start, window_end),
+    )
+
+
+def _type_filtered_station_rows(
+    type_filter: str,
+    hierarchy: dict[str, Any],
+    by_station: dict[str, list[dict[str, Any]]],
+    by_line: dict[str, list[dict[str, Any]]],
+    by_uap: dict[str, list[dict[str, Any]]],
+    plant_issues: list[dict[str, Any]],
+    window_start: datetime,
+    window_end: datetime,
+) -> list[GanttWorkStationRowOut]:
+    """§2.5 — every workstation of the namespace whose `type` matches
+    `type_filter`, wherever it hangs, with its own tickets UNIONED with its
+    ancestors' (line/UAP/plant) — ancestor downtime propagates down in this
+    mode, unlike the unfiltered §2.4 "own row only" rule. `plant_issues`
+    apply unconditionally here (every matching station, regardless of the
+    namespace's dominant location level — a different rule from the
+    unfiltered spread in `_unfiltered_gantt_rows`)."""
+    rows = []
+    for station_id, station in hierarchy["stations"].items():
+        if kpi_services._station_type(station) != type_filter:
+            continue
+
+        line_id = hierarchy["station_to_line"].get(station_id)
+        uap_id = hierarchy["line_to_uap"].get(line_id) if line_id else None
+
+        issues = list(by_station.get(station_id, []))
+        if line_id:
+            issues += by_line.get(line_id, [])
+        if uap_id:
+            issues += by_uap.get(uap_id, [])
+        issues += plant_issues
+
+        down_times = _row_intervals(issues, window_start, window_end)
+        if not down_times:
+            continue
+        rows.append(
+            GanttWorkStationRowOut(
+                workstation_id=station_id,
+                name=station.get("name", ""),
+                type=kpi_services._station_type(station),
+                down_times=down_times,
+            )
+        )
+    rows.sort(key=lambda row: row.workstation_id)
+    return rows
+
+
+def _fetch_gantt_issues(
+    client: FirestoreClient,
+    namespace_id: str,
+    window_start: datetime,
+    window_end: datetime,
+) -> list[dict[str, Any]]:
+    """The namespace's downtime issues that can possibly overlap `window`
+    (§2.3's "every issue whose downtime overlaps window") — bounded, unlike
+    the naive "read the whole subcollection" it replaces (review finding
+    W2). Mirrors `kpi.services._fetch_tickets`'s bounded-query-union
+    convention: three independent, parallelized (`kpi_services._run_parallel`)
+    queries, de-duplicated by id afterward, rather than one Firestore field
+    filter per issue:
+
+    1. `created_at` inside `[window_start, window_end]` — issues that
+       started during the window.
+    2. `status` in the open set (pending/ongoing/resolved) — an issue
+       created before the window that is still live may still overlap it
+       (an open-ended `down`/`unconfirmed` tail, §2.3).
+    3. `closed_at >= window_start` — an issue created before the window
+       whose CLOSE happened inside/after it; `closed_at` is always the
+       latest timestamp a document can carry, so this is the only
+       closed-issue case that can still overlap `window` (a `closed_at`
+       before `window_start` means every one of its segments already ended
+       before the window, per `_issue_segments`/`_clamp_interval`).
+
+    Every issue this excludes is `created_at`-before-`window_start` AND
+    (not `status`-open AND (no `closed_at`, or `closed_at` before
+    `window_start`)) — i.e. every one of its `_issue_segments` necessarily
+    ends before `window_start`, so `_clamp_interval` would drop it anyway;
+    the result set is therefore identical to the unbounded read, just
+    without paying to fetch the tenant's whole ticket history for a
+    one-day view."""
+    created_in_window, still_open, closed_after_window_start = kpi_services._run_parallel(
+        [
+            lambda: client.find_subdocuments(
+                DOWN_TIME_COLLECTION,
+                namespace_id,
+                ISSUES_SUBCOLLECTION,
+                params={
+                    "created_at": [
+                        (">=", window_start.isoformat()),
+                        ("<=", window_end.isoformat()),
+                    ]
+                },
+            ),
+            lambda: client.find_subdocuments(
+                DOWN_TIME_COLLECTION,
+                namespace_id,
+                ISSUES_SUBCOLLECTION,
+                params={"status": [("in", kpi_services._OPEN_STATUSES)]},
+            ),
+            lambda: client.find_subdocuments(
+                DOWN_TIME_COLLECTION,
+                namespace_id,
+                ISSUES_SUBCOLLECTION,
+                params={"closed_at": [(">=", window_start.isoformat())]},
+            ),
+        ]
+    )
+    by_id: dict[str, dict[str, Any]] = {}
+    for issue in (*created_in_window, *still_open, *closed_after_window_start):
+        issue_id = issue.get("id")
+        if issue_id:
+            by_id[issue_id] = issue
+    return list(by_id.values())
+
+
+def get_down_time_gantt(
+    day: Optional[date_cls],
+    type_filter: Optional[str],
+    current: dict[str, Any],
+) -> DownTimeGanttOut:
+    """`GET /down-times/gantt` (§2 of the BOM). Tenant-scoped to the caller's
+    namespace; no role-based process narrowing beyond the endpoint's own
+    role scope (§2.6) — every issue of the namespace is a candidate,
+    including ones on an archived resource (unlike `list_down_times`)."""
+    client = get_firestore_client()
+    namespace_id = current["namespace_id"]
+
+    _namespace, tz, settings = kpi_services._namespace_context(client, namespace_id)
+    resolved_day = day or datetime.now(tz).date()
+    window_start, window_end, shifts = _gantt_window(settings, resolved_day, tz)
+
+    issues = _fetch_gantt_issues(client, namespace_id, window_start, window_end)
+    by_station, by_line, by_uap, plant_issues = _own_scope_groups(issues)
+    hierarchy = kpi_services._location_hierarchy(client, namespace_id)
+
+    if type_filter is None:
+        uaps, lines, work_stations = _unfiltered_gantt_rows(
+            hierarchy,
+            by_station,
+            by_line,
+            by_uap,
+            plant_issues,
+            window_start,
+            window_end,
+        )
+    else:
+        uaps, lines = [], []
+        work_stations = _type_filtered_station_rows(
+            type_filter,
+            hierarchy,
+            by_station,
+            by_line,
+            by_uap,
+            plant_issues,
+            window_start,
+            window_end,
+        )
+
+    return DownTimeGanttOut(
+        day=resolved_day.isoformat(),
+        window=GanttWindowOut(start=window_start.isoformat(), end=window_end.isoformat()),
+        shifts=shifts,
+        uaps=uaps,
+        lines=lines,
+        work_stations=work_stations,
+    )
 
 
 def get_down_time_summary(current: dict[str, Any]) -> DownTimeSummaryOut:

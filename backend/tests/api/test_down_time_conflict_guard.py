@@ -16,13 +16,31 @@ Every "should now be blocked" test is expected to fail on its own assertion
 open ticket at all yet. The "still allowed" tests assert behavior that
 already holds today and are not expected to fail — they exist to pin the
 non-regression half of the contract once the guard lands.
+
+**rev4** (§4, structured 409 body, review findings W10 / mobile-parsing
+angle): `detail` is a structured object —
+`{"code": "downtime_already_open", "blocking_scope", "blocking_ticket_id",
+"message"}` — not prose to substring-match.
+
+**rev5** (§4, developer ruling 2026-09-11): `blocking_ticket_id` is ALWAYS
+the blocking ticket's id — no `_is_visible` gating in front of it.
+Declaring a downtime is restricted to `production agent`
+(`_down_time_report_scope`), and `production agent` is in
+`_FULL_VISIBILITY_ROLES`: the only role that can ever receive this 409
+already reads every ticket of its namespace through `GET /down-times/{id}`,
+so a "blocking ticket hidden from the caller" scenario cannot occur. See
+`TestConflictGuardVisibility` for the pinned rule. The default
+`_seed_open_issue` still carries `process=Process.PRODUCTION.value`,
+matching the default `_agent`'s (production agent -> process "production")
+own process; that value is incidental now (process no longer affects the
+outcome) and kept only as a sensible default payload.
 """
 
 import uuid
 
 import pytest
 
-from src.app.globals.enum import DownTimeStatus, DownTimeType, ProductionScope, Role
+from src.app.globals.enum import DownTimeStatus, DownTimeType, Process, ProductionScope, Role
 
 NS = "ns-conflict-guard"
 DOWN_TIMES_URL = "/down-times"
@@ -60,6 +78,10 @@ def _seed_open_issue(fake_db, namespace_id=NS, **overrides):
         "down_time_type": DownTimeType.BREAKDOWN.value,
         "status": DownTimeStatus.PENDING.value,
         "created_by": "creator-1",
+        # Matches the default `_agent`'s own process (production agent ->
+        # "production"), so the blocking ticket is visible to the caller by
+        # default — see `_is_visible` / `TestConflictGuardVisibility`.
+        "process": Process.PRODUCTION.value,
     }
     issue.update(overrides)
     fake_db.collection(DOWN_TIME_COLLECTION).document(namespace_id).collection(
@@ -87,9 +109,15 @@ class TestConflictGuardBlocks:
             },
         )
         assert res.status_code == 409, res.text
-        # §4 requires the message to name the resource / cite the existing
-        # ticket id — a clear, user-facing conflict message, not a bare 409.
-        assert existing["id"] in res.text
+        # §4 rev4 — `detail` is a structured object, not prose to
+        # substring-match: `code` / `blocking_scope` / `blocking_ticket_id`
+        # / `message`. The default issue carries the caller's own process,
+        # so the blocking ticket is visible and its id is present.
+        detail = res.json()["detail"]
+        assert detail["code"] == "downtime_already_open"
+        assert detail["blocking_scope"] == ProductionScope.PLANT.value
+        assert detail["blocking_ticket_id"] == existing["id"]
+        assert existing["id"] in detail["message"]
 
     def test_workstation_scope_already_ongoing_returns_409(
         self, client, seed_user, seed_uap, seed_production_line, seed_workstation,
@@ -434,3 +462,86 @@ class TestConflictGuardAllows:
         )
         assert res.status_code == 202, res.text
         assert len(publish_spy) == 1
+
+
+class TestConflictGuardVisibility:
+    """§4 rev5 — `blocking_ticket_id` is ALWAYS the blocking ticket's id;
+    there is no visibility gating to pin here. Declaring a downtime is
+    restricted to `production agent` (`_down_time_report_scope`), and
+    `production agent` is in `_FULL_VISIBILITY_ROLES` — the only role that
+    can ever receive this 409 already reads every ticket of its namespace
+    through `GET /down-times/{id}`. So the "blocking ticket in another
+    process" scenario cannot occur for any caller of this endpoint, and no
+    `_is_visible` check belongs in front of `blocking_ticket_id` (developer
+    ruling, 2026-09-11, spec §4 rev5 — do not re-add the gating)."""
+
+    def test_blocking_ticket_in_another_process_still_shows_its_id(
+        self, client, seed_user, seed_uap, seed_production_line, seed_workstation,
+        auth_headers, fake_db,
+    ):
+        """The declaring production agent is a full-visibility role, so even
+        a blocking ticket owned by another process (maintenance) must
+        surface its id: `blocking_ticket_id` is set and the id appears in
+        `message`. This is the case that used to be wrongly hidden."""
+        agent = _agent(seed_user)  # production agent -> process "production"
+        uap = seed_uap(namespace_id=NS)
+        line = seed_production_line(namespace_id=NS, uap_id=uap["id"])
+        station = seed_workstation(namespace_id=NS, production_line_id=line["id"])
+        blocking = _seed_open_issue(
+            fake_db,
+            down_time_scope="production line",
+            production_line_id=line["id"],
+            uap_id=uap["id"],
+            status=DownTimeStatus.ONGOING.value,
+            process=Process.MAINTENANCE.value,
+        )
+        res = client.post(
+            DOWN_TIMES_URL,
+            headers=auth_headers(agent),
+            json={
+                "production_scope": ProductionScope.WORK_STATION.value,
+                "uap_id": uap["id"],
+                "production_line_id": line["id"],
+                "workstation_id": station["id"],
+                "down_time_type": DownTimeType.BREAKDOWN.value,
+            },
+        )
+        assert res.status_code == 409, res.text
+        detail = res.json()["detail"]
+        assert detail["blocking_ticket_id"] == blocking["id"]
+        assert blocking["id"] in detail["message"]
+
+    def test_blocking_ticket_in_the_same_process_shows_its_id(
+        self, client, seed_user, seed_uap, seed_production_line, seed_workstation,
+        auth_headers, fake_db,
+    ):
+        """Same scenario, but the blocking ticket belongs to the caller's
+        own process (production): the id must be present too — same-process
+        or not makes no difference once there is no visibility gating."""
+        agent = _agent(seed_user)  # production agent -> process "production"
+        uap = seed_uap(namespace_id=NS)
+        line = seed_production_line(namespace_id=NS, uap_id=uap["id"])
+        station = seed_workstation(namespace_id=NS, production_line_id=line["id"])
+        blocking = _seed_open_issue(
+            fake_db,
+            down_time_scope="production line",
+            production_line_id=line["id"],
+            uap_id=uap["id"],
+            status=DownTimeStatus.ONGOING.value,
+            process=Process.PRODUCTION.value,
+        )
+        res = client.post(
+            DOWN_TIMES_URL,
+            headers=auth_headers(agent),
+            json={
+                "production_scope": ProductionScope.WORK_STATION.value,
+                "uap_id": uap["id"],
+                "production_line_id": line["id"],
+                "workstation_id": station["id"],
+                "down_time_type": DownTimeType.BREAKDOWN.value,
+            },
+        )
+        assert res.status_code == 409, res.text
+        detail = res.json()["detail"]
+        assert detail["blocking_ticket_id"] == blocking["id"]
+        assert blocking["id"] in detail["message"]

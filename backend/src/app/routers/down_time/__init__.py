@@ -1,4 +1,5 @@
-from typing import Optional
+from datetime import date
+from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, Query, status
 
@@ -10,6 +11,7 @@ from src.app.routers.down_time import services
 from src.app.routers.down_time.modelsIn import CreateDownTimeIn
 from src.app.routers.down_time.modelsOut import (
     DownTimeAckOut,
+    DownTimeGanttOut,
     DownTimeOut,
     DownTimePageOut,
     DownTimeSummaryOut,
@@ -20,6 +22,12 @@ router = APIRouter(prefix="/down-times", tags=["down-times"])
 # Only production agents report downtimes (they're the ones on the floor
 # when a workstation/line/UAP stop happens).
 _down_time_report_scope = require_roles(Role.PRODUCTION_AGENT)
+
+# Dashboard/analytics-style read — same scope as `_kpi_scope`
+# (`src.app.routers.kpi`): owner/admin/manager/production supervisor.
+_gantt_scope = require_roles(
+    Role.OWNER, Role.ADMIN, Role.MANAGER, Role.PRODUCTION_SUPERVISOR
+)
 
 
 @router.post(
@@ -40,13 +48,30 @@ _down_time_report_scope = require_roles(Role.PRODUCTION_AGENT)
         "with 422. `department` is required (and restricted to `production`/"
         "`maintenance`) only when `down_time_type` is Setup / Changeover.\n\n"
         "This endpoint does not write the downtime ticket synchronously: it "
-        "validates the request then dispatches the `add_down_time` async "
-        "job (in-process today; a Pub/Sub publish / Cloud Task at the same "
-        "call site tomorrow) and immediately returns `202 Accepted` with the "
-        "job's id. Restricted to production agents."
+        "validates the request, checks the single-open-downtime guard (§4 — "
+        "the target resource or any of its ancestors must not already carry "
+        "a `pending`/`ongoing` issue), then dispatches the `add_down_time` "
+        "async job (in-process today; a Pub/Sub publish / Cloud Task at the "
+        "same call site tomorrow) and immediately returns `202 Accepted` "
+        "with the job's id. Restricted to production agents."
     ),
     responses={
         403: {"description": "Caller is not a production agent."},
+        409: {
+            "description": (
+                "A downtime is already open (`pending`/`ongoing`) on the "
+                "target resource or one of its ancestors (workstation -> "
+                "its production line -> its UAP -> plant) — see "
+                "`.claude/specs/downtime-gantt.md` §4. No job is published "
+                "when this happens. `detail` is a structured object: "
+                "`{\"code\": \"downtime_already_open\", \"blocking_scope\": "
+                "\"plant\"|\"uap\"|\"production line\"|\"work station\", "
+                "\"blocking_ticket_id\": \"<id>\", \"message\": "
+                "\"<English sentence>\"}`. `blocking_ticket_id` is always "
+                "the blocking ticket's id (see "
+                "`.claude/specs/downtime-gantt.md` §4)."
+            )
+        },
         422: {
             "description": (
                 "Invalid scope/id combination: a missing required id for "
@@ -65,9 +90,7 @@ async def create_down_time(
     payload: CreateDownTimeIn,
     current: dict = Depends(_down_time_report_scope),
 ) -> ApiResponse[DownTimeAckOut]:
-    result = services.create_down_time(
-        payload, current["namespace_id"], current["id"]
-    )
+    result = services.create_down_time(payload, current)
     return ApiResponse(message="Downtime reported.", data=result)
 
 
@@ -96,6 +119,56 @@ async def get_down_time_summary(
 ) -> ApiResponse[DownTimeSummaryOut]:
     result = services.get_down_time_summary(current)
     return ApiResponse(message="Downtime summary.", data=result)
+
+
+@router.get(
+    "/gantt",
+    response_model=ApiResponse[DownTimeGanttOut],
+    summary="Day-scoped downtime Gantt",
+    description=(
+        "A day-scoped Gantt of the plant's downtime, for `day` (default: "
+        "today in the namespace timezone). Every resource that had at least "
+        "one downtime interval that day is one row, grouped into `uaps` / "
+        "`lines` / `work_stations` (see `.claude/specs/downtime-gantt.md` "
+        "§2 for the full contract). `window`/`shifts` project the "
+        "namespace's configured shifts onto absolute datetimes of the "
+        "production day (falling back to the calendar day when no usable "
+        "shift configuration exists). Each row's `down_times` are the "
+        "namespace's tickets overlapping `window`, clamped to it, split "
+        "into `down` (created -> resolved) and `unconfirmed` (resolved -> "
+        "closed) segments, merged per state, with `down` subtracted from "
+        "any overlapping `unconfirmed`. A ticket scoped to a uap/line/"
+        "workstation appears only on its own row; a plant-scoped ticket is "
+        "spread over every resource of the dominant location level (same "
+        "rule as the KPI dashboard's `by_location`). Supplying `type` "
+        "(bottleneck/critical) switches to a workstation-only view: `uaps`/"
+        "`lines` come back empty and `work_stations` holds every "
+        "matching-type station of the namespace, with its line's/UAP's/the "
+        "plant's downtime propagated down onto it (a bottleneck whose line "
+        "is stopped is unavailable too). Archived resources are included "
+        "here (unlike `GET /down-times`), with their stored name — this is "
+        "a KPI-style read. Restricted to owner/admin/manager/production "
+        "supervisor, tenant-scoped to the caller's namespace."
+    ),
+    responses={
+        403: {"description": "Caller lacks the required role."},
+        422: {"description": "Malformed `day`, or an unknown `type`."},
+    },
+)
+async def get_down_time_gantt(
+    day: Optional[date] = Query(
+        default=None,
+        description="Production day (ISO 'YYYY-MM-DD'); defaults to today.",
+    ),
+    type_filter: Optional[Literal["bottleneck", "critical"]] = Query(
+        default=None,
+        alias="type",
+        description="Optional workstation-type filter (bottleneck/critical).",
+    ),
+    current: dict = Depends(_gantt_scope),
+) -> ApiResponse[DownTimeGanttOut]:
+    result = services.get_down_time_gantt(day, type_filter, current)
+    return ApiResponse(message="Downtime gantt.", data=result)
 
 
 @router.get(
