@@ -113,6 +113,24 @@ const fr = {
         noStations: "Aucun poste de travail pour cette sélection.",
         save: "Signaler l'arrêt",
         success: "Arrêt signalé.",
+        conflict: {
+          title: "Un arrêt est déjà ouvert",
+          level: {
+            plant:
+              "Un arrêt est déjà en cours sur toute l'usine. Mettez à jour le ticket existant au lieu d'en déclarer un nouveau.",
+            uap: "Un arrêt est déjà en cours sur cette zone (UAP). Mettez à jour le ticket existant au lieu d'en déclarer un nouveau.",
+            production_line:
+              "Un arrêt est déjà en cours sur cette ligne de production. Mettez à jour le ticket existant au lieu d'en déclarer un nouveau.",
+            work_station:
+              "Un arrêt est déjà en cours sur ce poste de travail. Mettez à jour le ticket existant au lieu d'en déclarer un nouveau.",
+            unknown:
+              "Un arrêt est déjà en cours sur cette ressource. Mettez à jour le ticket existant au lieu d'en déclarer un nouveau.",
+          },
+          parentNote:
+            "C'est un niveau supérieur qui est à l'arrêt : tant qu'il l'est, tout ce qu'il contient l'est aussi.",
+          ticket: "Ticket concerné : {{id}}",
+          openTicket: "Ouvrir le ticket existant",
+        },
       },
     },
     errors: {
