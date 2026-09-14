@@ -24,6 +24,15 @@ app.use(
   express.static(dist, {
     index: false,
     setHeaders: (res, filePath) => {
+      // `index.html` names the current build's hashed assets, so a cached copy
+      // outlives the files it points at: the browser then asks for a bundle
+      // that no longer exists, the fallback below answers with HTML, and the
+      // page stays blank. It must always be revalidated — whether it is
+      // reached through the fallback or asked for by name here.
+      if (filePath.endsWith("index.html")) {
+        res.setHeader("Cache-Control", "no-cache");
+        return;
+      }
       const immutable = filePath.includes(`${path.sep}assets${path.sep}`);
       res.setHeader(
         "Cache-Control",
