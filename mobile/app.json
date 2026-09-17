@@ -17,10 +17,10 @@
     ],
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.azibodin.optiflow"
+      "bundleIdentifier": "com.azibodin.optiflow.app"
     },
     "android": {
-      "package": "com.azibodin.optiflow",
+      "package": "com.azibodin.optiflow.app",
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#020617"

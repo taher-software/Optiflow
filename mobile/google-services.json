@@ -1,21 +1,21 @@
 {
   "project_info": {
-    "project_number": "82480165502",
-    "project_id": "mobile-optiflow",
-    "storage_bucket": "mobile-optiflow.firebasestorage.app"
+    "project_number": "821125646570",
+    "project_id": "optiflow-app",
+    "storage_bucket": "optiflow-app.firebasestorage.app"
   },
   "client": [
     {
       "client_info": {
-        "mobilesdk_app_id": "1:82480165502:android:34cae0c292b41af2089e2f",
+        "mobilesdk_app_id": "1:821125646570:android:e534f14be0bc8f5669ef93",
         "android_client_info": {
-          "package_name": "com.azibodin.optiflow"
+          "package_name": "com.azibodin.optiflow.app"
         }
       },
       "oauth_client": [],
       "api_key": [
         {
-          "current_key": "AIzaSyDnsIQ9bjlBYdFyM38UDAaAKsf_7WWEfwc"
+          "current_key": "AIzaSyD4MXzRLcb0qKtKb7RrbV2GWZZPQx2uN-Q"
         }
       ],
       "services": {
