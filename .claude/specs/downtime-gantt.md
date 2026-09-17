@@ -184,9 +184,10 @@ open downtime.
 - **Response**: `409 Conflict` whose `detail` is a **structured object**, so no
   client has to parse prose:
   `{"code": "downtime_already_open", "blocking_scope": "production line",
-  "blocking_ticket_id": "<id>|null", "message": "<the English sentence>"}`.
-  `message` stays for API explorers; the mobile and web clients read `code` and
-  `blocking_scope` and render their own localised text.
+  "blocking_ticket_id": "<id>", "message_fr": "<French sentence>",
+  "message_en": "<English sentence>"}`. The two messages are the same
+  user-facing sentence, naming the blocking level and ticket; the client shows
+  the one matching its language as-is (developer ruling, 2026-09-17).
   `blocking_ticket_id` is **always the blocking ticket's id**. Review finding W10
   suspected a visibility leak here; it does not exist and the guard against it was
   removed rather than kept as unreachable code (developer ruling, 2026-09-11):
@@ -202,10 +203,10 @@ open downtime.
   the 409), and re-checked defensively in the `add_down_time` async handler,
   which aborts without creating the ticket when the conflict exists (the endpoint
   only publishes; it never runs the handler in-process).
-- **Mobile**: `DeclareDownTimeScreen` surfaces the 409 as a clear localised
-  message (fr + en), not a generic error toast, reading the structured fields
-  above — never by parsing the English sentence. The "open the existing ticket"
-  action is offered only when `blocking_ticket_id` is present.
+- **Mobile**: `DeclareDownTimeScreen` shows the 409 as a toast carrying
+  `message_fr` or `message_en`, whichever matches the app language (itself
+  taken from the device), falling back to the other version, then to a local
+  generic sentence when the body carries neither.
 - **Known residual race** (review finding W6, accepted 2026-09-11): the check and
   the write are two operations with no transaction, so two simultaneous
   declarations on the same resource can both pass. The window is small, the

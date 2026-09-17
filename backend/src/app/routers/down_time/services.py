@@ -227,12 +227,25 @@ def _validate_workstation(
     return station
 
 
+# How each blocking level is named in the 409 messages: (English, French).
+_CONFLICT_LEVEL_LABELS: dict[str, tuple[str, str]] = {
+    ProductionScope.PLANT.value: ("the plant", "l'usine"),
+    ProductionScope.UAP.value: ("this UAP", "cette UAP"),
+    ProductionScope.PRODUCTION_LINE.value: (
+        "this production line",
+        "cette ligne de production",
+    ),
+    ProductionScope.WORK_STATION.value: ("this workstation", "ce poste de travail"),
+}
+
+
 def _conflict_detail(conflict: DownTimeConflict) -> dict[str, Any]:
-    """The structured, machine-readable 409 body for a blocked declaration
-    (§4, review finding W10 — resolved as not applicable): `code` is a
+    """The structured 409 body for a blocked declaration (§4): `code` is a
     stable token clients switch on, `blocking_scope` the level the blocking
-    ticket was declared at. `message` stays for API explorers; the
-    mobile/web clients read `code` / `blocking_scope` instead of parsing it.
+    ticket was declared at, and `message_fr` / `message_en` the same
+    user-facing sentence in each supported language. The mobile app shows
+    the one matching the device language as-is, so both must read as a
+    finished sentence addressed to the person declaring.
 
     `blocking_ticket_id` is ALWAYS the blocking ticket's id (spec §4). The
     `_is_visible` gating this used to carry is provably unreachable:
@@ -243,24 +256,24 @@ def _conflict_detail(conflict: DownTimeConflict) -> dict[str, Any]:
     the declaring role set ever widens beyond the full-visibility roles,
     this visibility question comes back and the gating must be
     reintroduced."""
-    level_label = {
-        ProductionScope.PLANT.value: "the plant",
-        ProductionScope.UAP.value: "this UAP",
-        ProductionScope.PRODUCTION_LINE.value: "this production line",
-        ProductionScope.WORK_STATION.value: "this workstation",
-    }.get(conflict.down_time_scope, "this resource")
-
-    message = (
-        f"A downtime is already open on {level_label} (ticket "
-        f"{conflict.issue_id}). Update the existing ticket instead of "
-        "declaring a new one."
+    label_en, label_fr = _CONFLICT_LEVEL_LABELS.get(
+        conflict.down_time_scope, ("this resource", "cette ressource")
     )
 
     return {
         "code": "downtime_already_open",
         "blocking_scope": conflict.down_time_scope,
         "blocking_ticket_id": conflict.issue_id,
-        "message": message,
+        "message_fr": (
+            f"Un arrêt est déjà ouvert sur {label_fr} (ticket "
+            f"{conflict.issue_id}). Mettez à jour le ticket existant au lieu "
+            "d'en déclarer un nouveau."
+        ),
+        "message_en": (
+            f"A downtime is already open on {label_en} (ticket "
+            f"{conflict.issue_id}). Update the existing ticket instead of "
+            "declaring a new one."
+        ),
     }
 
 

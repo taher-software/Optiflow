@@ -20,7 +20,9 @@ non-regression half of the contract once the guard lands.
 **rev4** (§4, structured 409 body, review findings W10 / mobile-parsing
 angle): `detail` is a structured object —
 `{"code": "downtime_already_open", "blocking_scope", "blocking_ticket_id",
-"message"}` — not prose to substring-match.
+"message_fr", "message_en"}` — not prose to substring-match. The two
+messages carry the same user-facing sentence, one per language, for the
+mobile app to show in the device language.
 
 **rev5** (§4, developer ruling 2026-09-11): `blocking_ticket_id` is ALWAYS
 the blocking ticket's id — no `_is_visible` gating in front of it.
@@ -111,13 +113,20 @@ class TestConflictGuardBlocks:
         assert res.status_code == 409, res.text
         # §4 rev4 — `detail` is a structured object, not prose to
         # substring-match: `code` / `blocking_scope` / `blocking_ticket_id`
-        # / `message`. The default issue carries the caller's own process,
-        # so the blocking ticket is visible and its id is present.
+        # / `message_fr` / `message_en`.
         detail = res.json()["detail"]
         assert detail["code"] == "downtime_already_open"
         assert detail["blocking_scope"] == ProductionScope.PLANT.value
         assert detail["blocking_ticket_id"] == existing["id"]
-        assert existing["id"] in detail["message"]
+        assert "message" not in detail
+        assert detail["message_fr"] == (
+            f"Un arrêt est déjà ouvert sur l'usine (ticket {existing['id']}). "
+            "Mettez à jour le ticket existant au lieu d'en déclarer un nouveau."
+        )
+        assert detail["message_en"] == (
+            f"A downtime is already open on the plant (ticket {existing['id']}). "
+            "Update the existing ticket instead of declaring a new one."
+        )
 
     def test_workstation_scope_already_ongoing_returns_409(
         self, client, seed_user, seed_uap, seed_production_line, seed_workstation,
@@ -482,7 +491,7 @@ class TestConflictGuardVisibility:
         """The declaring production agent is a full-visibility role, so even
         a blocking ticket owned by another process (maintenance) must
         surface its id: `blocking_ticket_id` is set and the id appears in
-        `message`. This is the case that used to be wrongly hidden."""
+        both messages. This is the case that used to be wrongly hidden."""
         agent = _agent(seed_user)  # production agent -> process "production"
         uap = seed_uap(namespace_id=NS)
         line = seed_production_line(namespace_id=NS, uap_id=uap["id"])
@@ -509,7 +518,11 @@ class TestConflictGuardVisibility:
         assert res.status_code == 409, res.text
         detail = res.json()["detail"]
         assert detail["blocking_ticket_id"] == blocking["id"]
-        assert blocking["id"] in detail["message"]
+        assert blocking["id"] in detail["message_fr"]
+        assert blocking["id"] in detail["message_en"]
+        # The blocking level is named in each language.
+        assert "cette ligne de production" in detail["message_fr"]
+        assert "this production line" in detail["message_en"]
 
     def test_blocking_ticket_in_the_same_process_shows_its_id(
         self, client, seed_user, seed_uap, seed_production_line, seed_workstation,
@@ -544,4 +557,8 @@ class TestConflictGuardVisibility:
         assert res.status_code == 409, res.text
         detail = res.json()["detail"]
         assert detail["blocking_ticket_id"] == blocking["id"]
-        assert blocking["id"] in detail["message"]
+        assert blocking["id"] in detail["message_fr"]
+        assert blocking["id"] in detail["message_en"]
+        # The blocking level is named in each language.
+        assert "cette ligne de production" in detail["message_fr"]
+        assert "this production line" in detail["message_en"]

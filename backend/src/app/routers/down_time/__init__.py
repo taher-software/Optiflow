@@ -66,8 +66,10 @@ _gantt_scope = require_roles(
                 "when this happens. `detail` is a structured object: "
                 "`{\"code\": \"downtime_already_open\", \"blocking_scope\": "
                 "\"plant\"|\"uap\"|\"production line\"|\"work station\", "
-                "\"blocking_ticket_id\": \"<id>\", \"message\": "
-                "\"<English sentence>\"}`. `blocking_ticket_id` is always "
+                "\"blocking_ticket_id\": \"<id>\", \"message_fr\": "
+                "\"<French sentence>\", \"message_en\": \"<English "
+                "sentence>\"}` — the two messages are the same user-facing "
+                "sentence, for the client to show in its own language. `blocking_ticket_id` is always "
                 "the blocking ticket's id (see "
                 "`.claude/specs/downtime-gantt.md` §4)."
             )
