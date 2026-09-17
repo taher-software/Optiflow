@@ -113,24 +113,8 @@ const en = {
         noStations: "No work station for this selection.",
         save: "Report downtime",
         success: "Downtime reported.",
-        conflict: {
-          title: "A downtime is already open",
-          level: {
-            plant:
-              "A downtime is already open on the entire plant. Update the existing ticket instead of declaring a new one.",
-            uap: "A downtime is already open on this zone area (UAP). Update the existing ticket instead of declaring a new one.",
-            production_line:
-              "A downtime is already open on this production line. Update the existing ticket instead of declaring a new one.",
-            work_station:
-              "A downtime is already open on this work station. Update the existing ticket instead of declaring a new one.",
-            unknown:
-              "A downtime is already open on this resource. Update the existing ticket instead of declaring a new one.",
-          },
-          parentNote:
-            "A higher level is down: while it is, everything it contains is down too.",
-          ticket: "Ticket: {{id}}",
-          openTicket: "Open the existing ticket",
-        },
+        conflict:
+          "A downtime is already open on this resource. Update the existing ticket instead of declaring a new one.",
       },
     },
     errors: {

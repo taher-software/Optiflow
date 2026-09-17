@@ -7,10 +7,6 @@ import type {
   DownTimeStatus,
   DownTimeSummary,
 } from "../constants/downtime";
-import {
-  readDownTimeConflict,
-  type DownTimeConflict,
-} from "../utils/downTimeConflict";
 import { apiRequest, type ApiResult } from "./apiClient";
 
 const PAGE_SIZE = 10;
@@ -28,9 +24,6 @@ interface DownTimeState {
   /** Appending the next page. */
   loadingMore: boolean;
   error: string | null;
-  /** Set when the last declaration was refused with 409 (§4: the resource or
-   * one of its ancestors already has an open ticket). */
-  conflict: DownTimeConflict | null;
   fetchSummary: () => Promise<void>;
   /** Load the first page for `status` (replaces the list). */
   fetchIssues: (status?: DownTimeStatus) => Promise<void>;
@@ -40,8 +33,6 @@ interface DownTimeState {
   createDownTime: (
     payload: CreateDownTimePayload,
   ) => Promise<ApiResult<{ job_id: string }>>;
-  /** Drop the pending conflict (the user changed their selection). */
-  clearConflict: () => void;
   acknowledge: (id: string) => Promise<ApiResult<DownTime>>;
   resolve: (id: string) => Promise<ApiResult<DownTime>>;
   close: (id: string) => Promise<ApiResult<DownTime>>;
@@ -69,7 +60,6 @@ export const useDownTimeStore = create<DownTimeState>((set, get) => ({
   loadingIssues: false,
   loadingMore: false,
   error: null,
-  conflict: null,
 
   fetchSummary: async () => {
     set({ loadingSummary: true, error: null });
@@ -120,22 +110,8 @@ export const useDownTimeStore = create<DownTimeState>((set, get) => ({
   },
 
   getIssue: (id) => apiRequest<DownTime>(`/down-times/${id}`),
-  createDownTime: async (payload) => {
-    set({ conflict: null });
-    const res = await apiRequest<{ job_id: string }>(
-      "/down-times",
-      "POST",
-      payload,
-    );
-    // 409 = a downtime is already open on the target or one of its ancestors.
-    // The backend `detail` is a structured object (spec §4) — read its fields,
-    // never the English sentence it also carries.
-    if (!res.ok && res.status === 409) {
-      set({ conflict: readDownTimeConflict(res.detailBody) });
-    }
-    return res;
-  },
-  clearConflict: () => set({ conflict: null }),
+  createDownTime: (payload) =>
+    apiRequest<{ job_id: string }>("/down-times", "POST", payload),
   acknowledge: (id) =>
     apiRequest<DownTime>(`/down-times/${id}/acknowledge`, "POST"),
   resolve: (id) => apiRequest<DownTime>(`/down-times/${id}/resolve`, "POST"),
