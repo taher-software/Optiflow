@@ -1,15 +1,18 @@
+import hmac
 from typing import Callable
 
 from fastapi import Depends, HTTPException, status
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
 from itsdangerous import BadSignature, SignatureExpired
 
+from src.app.core.config import get_settings
 from src.app.core.firestore import USERS_COLLECTION
 from src.app.core.security import read_access_token
 from src.app.gcp import get_firestore_client
 from src.app.globals.enum import Role
 
 _bearer = HTTPBearer(auto_error=False)
+_api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
 
 def get_current_user(
@@ -50,3 +53,20 @@ def require_roles(*roles: Role) -> Callable[..., dict]:
         return user
 
     return checker
+
+
+def require_api_key(api_key: str | None = Depends(_api_key_header)) -> None:
+    """Platform-level auth for back-office endpoints (`/plans`,
+    `/subscriptions`): a static key sent via `X-API-Key`, compared in
+    constant time. Not a substitute for, nor combinable with, a user bearer
+    token — these endpoints are never called by tenant users.
+
+    Fails closed: an unconfigured (empty) `platform_api_key` setting rejects
+    every request rather than accepting an empty key.
+    """
+    configured = get_settings().platform_api_key
+    if not configured or not api_key or not hmac.compare_digest(api_key, configured):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or missing API key.",
+        )

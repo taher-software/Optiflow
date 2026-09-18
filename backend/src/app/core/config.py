@@ -31,6 +31,12 @@ class Settings(BaseSettings):
     # `{worker_url}/cloud_job`).
     worker_url: str = "http://localhost:8000"
 
+    # Platform (back-office) API key — protects the `/plans` and
+    # `/subscriptions` endpoints (see `core.deps.require_api_key`). Left
+    # empty by default so an unconfigured deployment fails closed (every
+    # request rejected) rather than accepting an empty key.
+    platform_api_key: str = ""
+
 
 @lru_cache
 def get_settings() -> Settings:

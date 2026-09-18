@@ -83,6 +83,16 @@ def create_account(payload: RegisterAccountIn, timezone: str | None) -> Register
                 "city": payload.company.city,
                 "timezone": timezone,
                 "confirmed": False,
+                # Subscription state — platform-managed via `/subscriptions`
+                # (see `routers.subscription`); untouched until a plan is
+                # subscribed.
+                "subscription_plan_id": None,
+                "subscription_start_date": None,
+                "subscription_end_date": None,
+                "oiu_generated": None,
+                "extra_subscription_plan_id": None,
+                "extra_subscription_start_date": None,
+                "extra_subscription_end_date": None,
             },
             document_id=namespace_id,
         )
