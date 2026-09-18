@@ -13,11 +13,11 @@ _PARA = "margin:0 0 16px;font-size:15px;line-height:1.6;color:#334155;"
 _SHELL_CHROME: dict[Language, dict[str, str]] = {
     Language.FR: {
         "copy_link": "Ou copiez ce lien&nbsp;: ",
-        "footer": "OptiFlow — automatisez la gestion des arrêts machine et éradiquez leurs causes.",
+        "footer": "Operio — automatisez la gestion des arrêts machine et éradiquez leurs causes.",
     },
     Language.EN: {
         "copy_link": "Or copy this link: ",
-        "footer": "OptiFlow — automate machine-downtime management and eliminate its root causes.",
+        "footer": "Operio — automate machine-downtime management and eliminate its root causes.",
     },
 }
 
@@ -82,7 +82,7 @@ def _send(to: str, subject: str, html: str) -> None:
 
 def send_confirmation_email(to: str, confirm_url: str) -> None:
     body = (
-        f'<p style="{_PARA}">Bienvenue sur <strong>OptiFlow</strong>&nbsp;! Nous sommes '
+        f'<p style="{_PARA}">Bienvenue sur <strong>Operio</strong>&nbsp;! Nous sommes '
         "ravis de vous compter parmi les usines qui reprennent le contrôle de leurs "
         "arrêts machine.</p>"
         f'<p style="{_PARA}">Il ne reste qu\'une étape&nbsp;: confirmez votre compte pour '
@@ -90,20 +90,20 @@ def send_confirmation_email(to: str, confirm_url: str) -> None:
         f'<p style="{_PARA}">Ce lien est valable pendant 24&nbsp;heures.</p>'
     )
     html = _shell(
-        "Confirmez votre compte OptiFlow pour l'activer.",
-        "Activez votre compte OptiFlow",
+        "Confirmez votre compte Operio pour l'activer.",
+        "Activez votre compte Operio",
         body,
         "Confirmer mon compte",
         confirm_url,
     )
-    _send(to, "Confirmez votre compte OptiFlow", html)
+    _send(to, "Confirmez votre compte Operio", html)
 
 
 def send_welcome_email(to: str, username: str, password: str) -> None:
     app_url = get_settings().frontend_url
     body = (
         f'<p style="{_PARA}">Votre compte est confirmé et prêt à l\'emploi. Bienvenue '
-        "dans OptiFlow&nbsp;!</p>"
+        "dans Operio&nbsp;!</p>"
         f'<p style="{_PARA}">Voici vos identifiants de connexion&nbsp;:</p>'
         '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
         'style="margin:0 0 16px;background:#f1f5f9;border-radius:12px;">'
@@ -115,13 +115,13 @@ def send_welcome_email(to: str, username: str, password: str) -> None:
         "après votre première connexion.</p>"
     )
     html = _shell(
-        "Votre compte OptiFlow est prêt — voici vos identifiants.",
+        "Votre compte Operio est prêt — voici vos identifiants.",
         "Votre compte est prêt 🎉",
         body,
-        "Accéder à OptiFlow",
+        "Accéder à Operio",
         app_url,
     )
-    _send(to, "Votre compte OptiFlow est prêt", html)
+    _send(to, "Votre compte Operio est prêt", html)
 
 
 _SUPERVISOR_EMAIL_COPY: dict[Language, dict[str, str]] = {
@@ -131,9 +131,9 @@ _SUPERVISOR_EMAIL_COPY: dict[Language, dict[str, str]] = {
         "para1": "A downtime occurred at <strong>{location}</strong> for an unknown reason.",
         "para2": (
             "Please contact the production team on site to learn more about the "
-            "issue, and follow the ticket through to closure in OptiFlow."
+            "issue, and follow the ticket through to closure in Operio."
         ),
-        "cta": "Open OptiFlow",
+        "cta": "Open Operio",
     },
     Language.FR: {
         "subject": "Arrêt de cause inconnue — {location}",
@@ -141,9 +141,9 @@ _SUPERVISOR_EMAIL_COPY: dict[Language, dict[str, str]] = {
         "para1": "Un arrêt s'est produit à <strong>{location}</strong> pour une raison inconnue.",
         "para2": (
             "Merci de contacter l'équipe de production sur place pour en savoir "
-            "plus, et de suivre le ticket jusqu'à sa clôture dans OptiFlow."
+            "plus, et de suivre le ticket jusqu'à sa clôture dans Operio."
         ),
-        "cta": "Ouvrir OptiFlow",
+        "cta": "Ouvrir Operio",
     },
 }
 
@@ -185,8 +185,8 @@ _ESCALATION_EMAIL_COPY: dict[Language, dict[str, str]] = {
             "The downtime at <strong>{location}</strong> has been "
             "unresolved for <strong>{duration}</strong>."
         ),
-        "para2": "Please follow up on this ticket in OptiFlow.",
-        "cta": "Open OptiFlow",
+        "para2": "Please follow up on this ticket in Operio.",
+        "cta": "Open Operio",
     },
     Language.FR: {
         "subject": "Escalade — arrêt non résolu depuis {duration}",
@@ -195,8 +195,8 @@ _ESCALATION_EMAIL_COPY: dict[Language, dict[str, str]] = {
             "L'arrêt à <strong>{location}</strong> n'est toujours pas "
             "résolu depuis <strong>{duration}</strong>."
         ),
-        "para2": "Merci de suivre ce ticket dans OptiFlow.",
-        "cta": "Ouvrir OptiFlow",
+        "para2": "Merci de suivre ce ticket dans Operio.",
+        "cta": "Ouvrir Operio",
     },
 }
 

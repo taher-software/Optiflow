@@ -11,7 +11,7 @@ import { ROUTES } from "../constants/routes";
 
 /**
  * Public prospect / landing page. Marketing surface that highlights the
- * core OptiFlow value propositions. Static — no data fetching.
+ * core Operio value propositions. Static — no data fetching.
  */
 export function ProspectPage() {
   const { t } = useTranslation();

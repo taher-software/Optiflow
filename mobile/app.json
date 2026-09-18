@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "OptiFlow",
+    "name": "Operio",
     "slug": "optiflow",
     "owner": "azibodin",
     "version": "0.1.0",
@@ -12,9 +12,7 @@
       "resizeMode": "contain",
       "backgroundColor": "#020617"
     },
-    "assetBundlePatterns": [
-      "**/*"
-    ],
+    "assetBundlePatterns": ["**/*"],
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.azibodin.optiflow.app"

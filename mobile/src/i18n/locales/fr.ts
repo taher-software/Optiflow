@@ -4,7 +4,7 @@ const fr = {
       badge: "La plateforme opérationnelle des usines modernes",
       headline: "Gardez votre production en flux.",
       subhead:
-        "OptiFlow relie vos équipes, vos machines et vos données pour une usine plus fluide — tout ce qu'il faut pour maintenir la production en mouvement, au même endroit.",
+        "Operio relie vos équipes, vos machines et vos données pour une usine plus fluide — tout ce qu'il faut pour maintenir la production en mouvement, au même endroit.",
       values: {
         visibility: "Une visibilité en temps réel sur toute l'usine",
         response: "Une réponse plus rapide et coordonnée sur le terrain",

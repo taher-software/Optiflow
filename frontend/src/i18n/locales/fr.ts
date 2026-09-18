@@ -15,7 +15,7 @@ const fr = {
         sections: {
           controller: {
             heading: "Qui est responsable de vos données",
-            body: "OptiFlow est édité et exploité par {{tradeName}} {{legalForm}}, dont le siège social est situé {{registeredOffice}}, matricule fiscal {{taxId}}.\n\n{{tradeName}} {{legalForm}} est responsable de traitement pour les données de compte, de contact et de facturation de ses clients. Pour les données d'exploitation qu'une usine enregistre dans OptiFlow, elle agit en qualité de sous-traitant, sur instruction de cette usine.\n\nPour toute question sur la présente politique, ou pour exercer vos droits, écrivez à {{contactEmail}} ou appelez le {{contactPhone}}.",
+            body: "Operio est édité et exploité par {{tradeName}} {{legalForm}}, dont le siège social est situé {{registeredOffice}}, matricule fiscal {{taxId}}.\n\n{{tradeName}} {{legalForm}} est responsable de traitement pour les données de compte, de contact et de facturation de ses clients. Pour les données d'exploitation qu'une usine enregistre dans Operio, elle agit en qualité de sous-traitant, sur instruction de cette usine.\n\nPour toute question sur la présente politique, ou pour exercer vos droits, écrivez à {{contactEmail}} ou appelez le {{contactPhone}}.",
           },
           data: {
             heading: "Les données que nous collectons",
@@ -47,11 +47,11 @@ const fr = {
           },
           cookies: {
             heading: "Cookies et stockage local",
-            body: "OptiFlow n'utilise ni cookie publicitaire, ni traceur tiers.\n\nL'application web enregistre deux éléments dans le stockage local de votre navigateur : votre jeton de session, pour vous maintenir connecté, et votre préférence de langue. Effacer les données de votre navigateur supprime les deux et vous déconnecte.",
+            body: "Operio n'utilise ni cookie publicitaire, ni traceur tiers.\n\nL'application web enregistre deux éléments dans le stockage local de votre navigateur : votre jeton de session, pour vous maintenir connecté, et votre préférence de langue. Effacer les données de votre navigateur supprime les deux et vous déconnecte.",
           },
           children: {
             heading: "Mineurs",
-            body: "OptiFlow est un outil professionnel destiné au personnel des usines. Il ne s'adresse pas aux personnes de moins de 16 ans et ne doit pas être utilisé par elles.",
+            body: "Operio est un outil professionnel destiné au personnel des usines. Il ne s'adresse pas aux personnes de moins de 16 ans et ne doit pas être utilisé par elles.",
           },
           changes: {
             heading: "Modification de la présente politique",
@@ -66,11 +66,11 @@ const fr = {
         sections: {
           purpose: {
             heading: "1. Objet",
-            body: "Les présentes conditions générales de vente régissent la souscription au service OptiFlow et son utilisation. Le service est édité par {{tradeName}} {{legalForm}}, dont le siège social est situé {{registeredOffice}}, matricule fiscal {{taxId}} (l'« Éditeur »).\n\nElles sont acceptées par le client lors de la souscription et prévalent sur ses propres conditions d'achat.",
+            body: "Les présentes conditions générales de vente régissent la souscription au service Operio et son utilisation. Le service est édité par {{tradeName}} {{legalForm}}, dont le siège social est situé {{registeredOffice}}, matricule fiscal {{taxId}} (l'« Éditeur »).\n\nElles sont acceptées par le client lors de la souscription et prévalent sur ses propres conditions d'achat.",
           },
           service: {
             heading: "2. Description du service",
-            body: "OptiFlow est une plateforme logicielle en mode SaaS dédiée à la gestion des arrêts machine en milieu industriel. Elle couvre la détection de l'arrêt, la notification des intervenants, la prise en charge et le suivi du ticket, la validation du retour à la production et le calcul des KPI de l'usine.\n\nLe service s'utilise via une application web et une application mobile, sans installation sur les serveurs du client.",
+            body: "Operio est une plateforme logicielle en mode SaaS dédiée à la gestion des arrêts machine en milieu industriel. Elle couvre la détection de l'arrêt, la notification des intervenants, la prise en charge et le suivi du ticket, la validation du retour à la production et le calcul des KPI de l'usine.\n\nLe service s'utilise via une application web et une application mobile, sans installation sur les serveurs du client.",
           },
           account: {
             heading: "3. Comptes et accès",
@@ -102,7 +102,7 @@ const fr = {
           },
           liability: {
             heading: "10. Responsabilité",
-            body: "L'Éditeur est tenu d'une obligation de moyens. Sa responsabilité est limitée aux dommages directs et, toutes causes confondues, au montant des sommes versées par le client au cours des douze mois précédant le fait générateur.\n\nL'Éditeur n'est pas responsable des dommages indirects, notamment perte de production, perte de chiffre d'affaires ou perte de données résultant d'une cause extérieure à son contrôle.\n\nOptiFlow est un outil de gestion et de traçabilité. Il ne se substitue ni aux procédures de sécurité du client, ni à ses obligations réglementaires relatives à ses équipements.",
+            body: "L'Éditeur est tenu d'une obligation de moyens. Sa responsabilité est limitée aux dommages directs et, toutes causes confondues, au montant des sommes versées par le client au cours des douze mois précédant le fait générateur.\n\nL'Éditeur n'est pas responsable des dommages indirects, notamment perte de production, perte de chiffre d'affaires ou perte de données résultant d'une cause extérieure à son contrôle.\n\nOperio est un outil de gestion et de traçabilité. Il ne se substitue ni aux procédures de sécurité du client, ni à ses obligations réglementaires relatives à ses équipements.",
           },
           intellectualProperty: {
             heading: "11. Propriété intellectuelle",
@@ -137,7 +137,7 @@ const fr = {
       hero: {
         headline: "Ne perdez plus d'heures à cause des arrêts machine.",
         subhead:
-          "OptiFlow est la plateforme multi-tenant qui détecte chaque arrêt, le pilote jusqu'à sa résolution et aide votre usine à éliminer durablement les temps d'arrêt.",
+          "Operio est la plateforme multi-tenant qui détecte chaque arrêt, le pilote jusqu'à sa résolution et aide votre usine à éliminer durablement les temps d'arrêt.",
         primaryCta: "Demander une démo",
         secondaryCta: "Découvrir le fonctionnement",
       },
@@ -145,7 +145,7 @@ const fr = {
         automate: {
           title: "Automatiser la gestion des arrêts",
           description:
-            "Dès qu'un poste s'arrête, OptiFlow ouvre un ticket, notifie le bon intervenant et le suit jusqu'à la prise en charge, la réparation et la reprise validée — sans relance manuelle.",
+            "Dès qu'un poste s'arrête, Operio ouvre un ticket, notifie le bon intervenant et le suit jusqu'à la prise en charge, la réparation et la reprise validée — sans relance manuelle.",
         },
         empower: {
           title: "Donner du pouvoir à vos équipes",
@@ -166,9 +166,9 @@ const fr = {
       closing: {
         title: "Transformez les arrêts en temps de production.",
         subtitle:
-          "Découvrez comment OptiFlow maintient votre production en flux — de la première alerte d'arrêt à une cause racine que vous n'aurez plus jamais à affronter.",
+          "Découvrez comment Operio maintient votre production en flux — de la première alerte d'arrêt à une cause racine que vous n'aurez plus jamais à affronter.",
       },
-      footer: "© {{year}} OptiFlow. Gardez votre production en flux.",
+      footer: "© {{year}} Operio. Gardez votre production en flux.",
     },
 
     login: {

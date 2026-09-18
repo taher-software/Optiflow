@@ -15,7 +15,7 @@ const en = {
         sections: {
           controller: {
             heading: "Who is responsible for your data",
-            body: "OptiFlow is published and operated by {{tradeName}} {{legalForm}}, registered office {{registeredOffice}}, tax identification number {{taxId}}.\n\n{{tradeName}} {{legalForm}} is the data controller for the account, contact and billing data of its customers. For the operational data a plant records in OptiFlow, it acts on that plant's instructions as a data processor.\n\nFor any question about this policy, or to exercise your rights, contact us at {{contactEmail}} or {{contactPhone}}.",
+            body: "Operio is published and operated by {{tradeName}} {{legalForm}}, registered office {{registeredOffice}}, tax identification number {{taxId}}.\n\n{{tradeName}} {{legalForm}} is the data controller for the account, contact and billing data of its customers. For the operational data a plant records in Operio, it acts on that plant's instructions as a data processor.\n\nFor any question about this policy, or to exercise your rights, contact us at {{contactEmail}} or {{contactPhone}}.",
           },
           data: {
             heading: "What we collect",
@@ -47,11 +47,11 @@ const en = {
           },
           cookies: {
             heading: "Cookies and local storage",
-            body: "OptiFlow does not use advertising or third-party tracking cookies.\n\nThe web application stores two items in your browser's local storage: your session token, so you stay signed in, and your language preference. Clearing your browser data removes both and signs you out.",
+            body: "Operio does not use advertising or third-party tracking cookies.\n\nThe web application stores two items in your browser's local storage: your session token, so you stay signed in, and your language preference. Clearing your browser data removes both and signs you out.",
           },
           children: {
             heading: "Children",
-            body: "OptiFlow is a professional tool intended for plant staff. It is not directed at, and must not be used by, persons under 16.",
+            body: "Operio is a professional tool intended for plant staff. It is not directed at, and must not be used by, persons under 16.",
           },
           changes: {
             heading: "Changes to this policy",
@@ -66,11 +66,11 @@ const en = {
         sections: {
           purpose: {
             heading: "1. Purpose",
-            body: 'These terms of sale govern the subscription to and use of the OptiFlow service, published by {{tradeName}} {{legalForm}}, registered office {{registeredOffice}}, tax identification number {{taxId}} (the "Publisher").\n\nThey are accepted by the customer when the subscription is signed and prevail over any of the customer\'s own purchasing terms.',
+            body: 'These terms of sale govern the subscription to and use of the Operio service, published by {{tradeName}} {{legalForm}}, registered office {{registeredOffice}}, tax identification number {{taxId}} (the "Publisher").\n\nThey are accepted by the customer when the subscription is signed and prevail over any of the customer\'s own purchasing terms.',
           },
           service: {
             heading: "2. The service",
-            body: "OptiFlow is a software-as-a-service platform for managing machine downtime in manufacturing plants. It covers detecting a stoppage, notifying the responders, acknowledging and tracking the ticket, validating the return to production, and computing the resulting plant KPIs.\n\nThe service is accessed over the internet through a web application and a mobile application. No installation on the customer's servers is required.",
+            body: "Operio is a software-as-a-service platform for managing machine downtime in manufacturing plants. It covers detecting a stoppage, notifying the responders, acknowledging and tracking the ticket, validating the return to production, and computing the resulting plant KPIs.\n\nThe service is accessed over the internet through a web application and a mobile application. No installation on the customer's servers is required.",
           },
           account: {
             heading: "3. Accounts and access",
@@ -102,7 +102,7 @@ const en = {
           },
           liability: {
             heading: "10. Liability",
-            body: "The Publisher is bound by an obligation of means. Its liability is limited to direct damage and, in the aggregate, to the amounts paid by the customer over the twelve months preceding the event giving rise to the claim.\n\nThe Publisher is not liable for indirect damage, in particular loss of production, loss of turnover or loss of data resulting from a cause outside its control.\n\nOptiFlow is a management and traceability tool. It does not replace the customer's safety procedures or its regulatory obligations regarding its equipment.",
+            body: "The Publisher is bound by an obligation of means. Its liability is limited to direct damage and, in the aggregate, to the amounts paid by the customer over the twelve months preceding the event giving rise to the claim.\n\nThe Publisher is not liable for indirect damage, in particular loss of production, loss of turnover or loss of data resulting from a cause outside its control.\n\nOperio is a management and traceability tool. It does not replace the customer's safety procedures or its regulatory obligations regarding its equipment.",
           },
           intellectualProperty: {
             heading: "11. Intellectual property",
@@ -137,7 +137,7 @@ const en = {
       hero: {
         headline: "Stop losing hours to machine downtime.",
         subhead:
-          "OptiFlow is the multi-tenant platform that detects every stoppage, drives it to resolution, and helps your plant eliminate downtime for good.",
+          "Operio is the multi-tenant platform that detects every stoppage, drives it to resolution, and helps your plant eliminate downtime for good.",
         primaryCta: "Request a demo",
         secondaryCta: "See how it works",
       },
@@ -145,7 +145,7 @@ const en = {
         automate: {
           title: "Automate downtime management",
           description:
-            "The instant a workstation stops, OptiFlow opens a ticket, notifies the right responder, and follows it through acknowledge, repair, and validated recovery — no manual chasing.",
+            "The instant a workstation stops, Operio opens a ticket, notifies the right responder, and follows it through acknowledge, repair, and validated recovery — no manual chasing.",
         },
         empower: {
           title: "Empower your staff",
@@ -166,9 +166,9 @@ const en = {
       closing: {
         title: "Turn downtime into uptime.",
         subtitle:
-          "See how OptiFlow keeps your production flowing — from the first stoppage alert to a root cause you never have to face again.",
+          "See how Operio keeps your production flowing — from the first stoppage alert to a root cause you never have to face again.",
       },
-      footer: "© {{year}} OptiFlow. Keep production flowing.",
+      footer: "© {{year}} Operio. Keep production flowing.",
     },
 
     login: {

@@ -1,6 +1,6 @@
 import { BRAND } from "../constants/brand";
 
-/** OptiFlow logo mark + wordmark. Presentational, no state. */
+/** Operio logo mark + wordmark. Presentational, no state. */
 export function BrandLogo() {
   return (
     <div className="flex items-center gap-3">

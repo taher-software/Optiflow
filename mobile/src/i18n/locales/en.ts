@@ -4,7 +4,7 @@ const en = {
       badge: "The operations platform for modern plants",
       headline: "Keep production flowing.",
       subhead:
-        "OptiFlow connects your teams, machines and data so your plant runs smoother — everything you need to keep production moving, in one place.",
+        "Operio connects your teams, machines and data so your plant runs smoother — everything you need to keep production moving, in one place.",
       values: {
         visibility: "Real-time visibility across your plant",
         response: "Faster, coordinated response on the floor",

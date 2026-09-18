@@ -2,7 +2,7 @@ import { View, Text } from "react-native";
 
 import { BRAND } from "../constants/brand";
 
-/** OptiFlow logo mark + wordmark. Presentational, no state. */
+/** Operio logo mark + wordmark. Presentational, no state. */
 export function BrandLogo() {
   return (
     <View className="flex-row items-center gap-3">
