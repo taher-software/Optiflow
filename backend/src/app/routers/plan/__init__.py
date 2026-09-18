@@ -23,7 +23,8 @@ router = APIRouter(
         "leading/trailing whitespace and case). `quota`, when present, "
         "makes this an *extra* (quota) plan; leave it out (or send `null`) "
         "for a *base* plan — see `POST /subscriptions` for how the "
-        "distinction is used. Protected by the platform API key "
+        "distinction is used. `maintenance_price` is optional (`null` by "
+        "default). Protected by the platform API key "
         "(`X-API-Key`), never by a user bearer token."
     ),
     responses={
@@ -76,7 +77,8 @@ async def get_plan(plan_id: str) -> ApiResponse[PlanOut]:
         "`quota` follows an omitted-vs-`null` distinction rather than the "
         "value alone: omit it to leave the current quota unchanged, send it "
         "explicitly as `null` to clear it (turning the plan back into a "
-        "base plan), or send a non-negative integer to set it. Editing a "
+        "base plan), or send a non-negative integer to set it. "
+        "`maintenance_price` follows the same omitted-vs-`null` rule. Editing a "
         "plan never touches namespaces already subscribed to it — their "
         "computed dates/quota stay as they are. Protected by the platform "
         "API key."

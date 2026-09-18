@@ -19,6 +19,7 @@ def _to_out(plan: dict[str, Any]) -> PlanOut:
         price=plan.get("price", 0.0),
         duration=plan.get("duration", 0),
         quota=plan.get("quota"),
+        maintenance_price=plan.get("maintenance_price"),
     )
 
 
@@ -50,6 +51,7 @@ def create_plan(payload: CreatePlanIn) -> PlanOut:
         "price": payload.price,
         "duration": payload.duration,
         "quota": payload.quota,
+        "maintenance_price": payload.maintenance_price,
     }
     client.create_document(PLAN_COLLECTION, doc, document_id=plan_id)
     return _to_out(doc)
@@ -91,6 +93,9 @@ def update_plan(plan_id: str, payload: UpdatePlanIn) -> PlanOut:
         # into a base plan), so this branch is keyed off `model_fields_set`
         # alone, not off `payload.quota is not None` like the other fields.
         updates["quota"] = payload.quota
+    if "maintenance_price" in fields_set:
+        # Clearable like `quota`: an explicit `null` removes it.
+        updates["maintenance_price"] = payload.maintenance_price
 
     if updates:
         client.update_document(PLAN_COLLECTION, plan_id, updates)

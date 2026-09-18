@@ -39,6 +39,15 @@ class CreatePlanIn(BaseModel):
         ),
         examples=[500],
     )
+    maintenance_price: Optional[float] = Field(
+        default=None,
+        ge=0,
+        description=(
+            "Optional maintenance price, a plain number (no currency), must "
+            "be >= 0 when present. `null` (the default) means none."
+        ),
+        examples=[9.9],
+    )
 
     @field_validator("name")
     @classmethod
@@ -50,9 +59,10 @@ class UpdatePlanIn(BaseModel):
     """Payload to update an existing plan. Every field optional.
 
     Partial-update semantics: only fields present in `model_fields_set` are
-    applied. `quota` distinguishes "omitted" (left unchanged) from
+    applied. `quota` and `maintenance_price` distinguish "omitted" (left unchanged) from
     "explicitly set to `null`" via `model_fields_set`, not via the value
-    alone, so a plan can be turned back into a base plan (quota removed).
+    alone, so either can be cleared (a plan with its quota removed turns
+    back into a base plan).
     """
 
     name: Optional[str] = Field(
@@ -82,6 +92,15 @@ class UpdatePlanIn(BaseModel):
             "non-negative integer to set it."
         ),
         examples=[500],
+    )
+    maintenance_price: Optional[float] = Field(
+        default=None,
+        ge=0,
+        description=(
+            "New maintenance price. Omit to leave unchanged; send explicitly "
+            "as `null` to clear it; send a number >= 0 to set it."
+        ),
+        examples=[9.9],
     )
 
     @field_validator("name")

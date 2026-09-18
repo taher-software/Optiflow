@@ -54,8 +54,9 @@ not tenant-scoped).
 | `price` | float | yes | `>= 0`, a plain number, no currency |
 | `duration` | int | yes | number of days, `>= 1` |
 | `quota` | int \| null | no | `>= 0` when present; default `null` |
+| `maintenance_price` | float \| null | no | `>= 0` when present; default `null`; PATCH: omitted = unchanged, explicit `null` = cleared |
 
-`PlanOut` = `{id, name, price, duration, quota}`.
+`PlanOut` = `{id, name, price, duration, quota, maintenance_price}`.
 
 ### 4.2 Endpoints
 

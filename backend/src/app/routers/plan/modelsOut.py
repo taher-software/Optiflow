@@ -22,3 +22,8 @@ class PlanOut(BaseModel):
         ),
         examples=[500],
     )
+    maintenance_price: Optional[float] = Field(
+        default=None,
+        description="Maintenance price (no currency), or `None` when not set.",
+        examples=[9.9],
+    )
