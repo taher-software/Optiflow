@@ -1,16 +1,26 @@
 import uuid
-from datetime import datetime, timedelta, timezone
-from typing import Any
+from datetime import date, datetime, timedelta, timezone
+from typing import Any, Optional
 
 from fastapi import HTTPException, status
 
-from src.app.core.firestore import TEMPORARY_CONNECTION_COLLECTION, USERS_COLLECTION
+from src.app.core.firestore import (
+    NAMESPACE_COLLECTION,
+    PLAN_COLLECTION,
+    TEMPORARY_CONNECTION_COLLECTION,
+    USERS_COLLECTION,
+)
 from src.app.core.security import make_access_token, verify_password
 from src.app.core.security_code import generate_security_code
+from src.app.core.timezone import namespace_timezone
 from src.app.gcp import get_firestore_client
 from src.app.gcp.firestore import FirestoreClient
 from src.app.routers.auth.modelsIn import CheckUserCodeIn, LoginIn, MobileLoginIn
 from src.app.routers.auth.modelsOut import AuthUserOut, LoginOut
+
+# Subscription expiry: below this many days expired the tenant only gets a
+# warning; at or above it the base subscription is considered blocked.
+_BLOCKED_AFTER_DAYS_EXPIRED = 30
 
 # Device lockout on failed pairing attempts (`/auth/check-user-code`). A
 # device is blocked after this many consecutive failed attempts, and the
@@ -52,13 +62,58 @@ def login(payload: LoginIn) -> LoginOut:
     return _build_login_out(user)
 
 
+def _subscription_status(
+    client: FirestoreClient, namespace_id: str
+) -> tuple[Optional[bool], Optional[bool], Optional[str], Optional[str]]:
+    """Compute the base subscription status shown on login:
+    `(warning, blocked, plan_id, plan_name)`.
+
+    Only the namespace's base subscription (`subscription_plan_id`,
+    `subscription_end_date`) is considered -- every `extra_*` field and
+    `oiu_generated` are ignored (those belong to the separate quota
+    subscription, see `.claude/specs/subscription-plans.md`). Any missing
+    namespace, missing/malformed end date resolves to `(None, None, ...)`
+    for the warning/blocked pair -- this never fails the login.
+    """
+    namespace = client.get_document(NAMESPACE_COLLECTION, namespace_id)
+
+    plan_id = (namespace or {}).get("subscription_plan_id")
+    plan_name: Optional[str] = None
+    if plan_id:
+        plan = client.get_document(PLAN_COLLECTION, plan_id)
+        plan_name = plan.get("name") if plan else None
+
+    warning: Optional[bool] = None
+    blocked: Optional[bool] = None
+    end_date_raw = (namespace or {}).get("subscription_end_date")
+    if end_date_raw:
+        try:
+            end_date = date.fromisoformat(end_date_raw)
+        except (TypeError, ValueError):
+            end_date = None
+        if end_date is not None:
+            today = datetime.now(namespace_timezone(namespace_id, namespace)).date()
+            days_expired = (today - end_date).days
+            if days_expired >= _BLOCKED_AFTER_DAYS_EXPIRED:
+                warning, blocked = False, True
+            elif days_expired >= 1:
+                warning, blocked = True, False
+            # days_expired <= 0 (active, incl. the end date itself): both stay None.
+
+    return warning, blocked, plan_id, plan_name
+
+
 def _build_login_out(user: dict[str, Any]) -> LoginOut:
+    client = get_firestore_client()
     token = make_access_token(
         {
             "user_id": user["id"],
             "namespace_id": user.get("namespace_id", ""),
             "role": user.get("role", ""),
         }
+    )
+    warning, blocked, plan_id, plan_name = _subscription_status(
+        client, user.get("namespace_id", "")
     )
     return LoginOut(
         access_token=token,
@@ -72,6 +127,10 @@ def _build_login_out(user: dict[str, Any]) -> LoginOut:
             avatar_url=user.get("avatar_url"),
             online=user.get("online", True),
         ),
+        warning=warning,
+        blocked=blocked,
+        plan_id=plan_id,
+        plan_name=plan_name,
     )
 
 
