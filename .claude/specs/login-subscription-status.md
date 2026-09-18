@@ -48,7 +48,7 @@ Read the user's namespace document (`NAMESPACE_COLLECTION`, id =
 
 | Situation | `warning` | `blocked` |
 |---|---|---|
-| No `subscription_end_date` (null / missing key / no namespace doc) | `null` | `null` |
+| No `subscription_end_date` (null / missing key / no namespace doc) — never subscribed | `false` | `true` |
 | `days_expired <= 0` (active, incl. the end date itself) | `null` | `null` |
 | `1 <= days_expired <= 29` | `true` | `false` |
 | `days_expired >= 30` | `false` | `true` |
@@ -67,7 +67,8 @@ backend refuses nothing based on it; web/mobile decide what to show.
 
 ## 5. Out of scope (bucket C, not tested)
 
-- Malformed `subscription_end_date` → treat as no subscription (all status
-  fields `null`), do not fail the login.
+- Malformed `subscription_end_date` → `warning`/`blocked` `null`, do not
+  fail the login.
 - `plan_id` pointing to a deleted plan (prevented by `/plans` delete rule).
-- Namespace document missing for an existing user → all four fields `null`.
+- Namespace document missing for an existing user → treated as never
+  subscribed (`blocked = true`, plan fields `null`).

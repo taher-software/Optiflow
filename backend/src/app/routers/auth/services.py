@@ -71,9 +71,10 @@ def _subscription_status(
     Only the namespace's base subscription (`subscription_plan_id`,
     `subscription_end_date`) is considered -- every `extra_*` field and
     `oiu_generated` are ignored (those belong to the separate quota
-    subscription, see `.claude/specs/subscription-plans.md`). Any missing
-    namespace, missing/malformed end date resolves to `(None, None, ...)`
-    for the warning/blocked pair -- this never fails the login.
+    subscription, see `.claude/specs/subscription-plans.md`). A namespace
+    with no base subscription yet (missing namespace or no end date) is
+    blocked; a malformed end date resolves to `(None, None, ...)` for the
+    warning/blocked pair -- this never fails the login.
     """
     namespace = client.get_document(NAMESPACE_COLLECTION, namespace_id)
 
@@ -86,7 +87,10 @@ def _subscription_status(
     warning: Optional[bool] = None
     blocked: Optional[bool] = None
     end_date_raw = (namespace or {}).get("subscription_end_date")
-    if end_date_raw:
+    if not end_date_raw:
+        # Never subscribed yet: blocked until a base subscription exists.
+        warning, blocked = False, True
+    else:
         try:
             end_date = date.fromisoformat(end_date_raw)
         except (TypeError, ValueError):

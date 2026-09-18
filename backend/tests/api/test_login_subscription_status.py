@@ -124,7 +124,7 @@ class TestLoginSubscriptionStatus:
         assert data["plan_id"] == plan["id"]
         assert data["plan_name"] == plan["name"]
 
-    def test_login_no_subscription_returns_all_null(
+    def test_login_no_subscription_returns_blocked(
         self, client, seed_user, seed_namespace, monkeypatch
     ):
         _freeze_today(monkeypatch)
@@ -134,12 +134,12 @@ class TestLoginSubscriptionStatus:
         response = client.post(MOBILE_LOGIN_URL, json={"device_id": "device-1"})
 
         data = response.json()["data"]
-        assert data["warning"] is None
-        assert data["blocked"] is None
+        assert data["warning"] is False
+        assert data["blocked"] is True
         assert data["plan_id"] is None
         assert data["plan_name"] is None
 
-    def test_login_extra_only_subscription_is_ignored(
+    def test_login_extra_only_subscription_is_ignored_and_blocked(
         self, client, seed_user, seed_namespace, fake_db, monkeypatch
     ):
         _freeze_today(monkeypatch)
@@ -154,8 +154,8 @@ class TestLoginSubscriptionStatus:
         response = client.post(MOBILE_LOGIN_URL, json={"device_id": "device-1"})
 
         data = response.json()["data"]
-        assert data["warning"] is None
-        assert data["blocked"] is None
+        assert data["warning"] is False
+        assert data["blocked"] is True
         assert data["plan_id"] is None
         assert data["plan_name"] is None
 
