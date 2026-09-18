@@ -3,6 +3,8 @@ USERS_COLLECTION = "Users"
 UAP_COLLECTION = "uap"
 PRODUCTION_LINE_COLLECTION = "production_line"
 WORKSTATION_COLLECTION = "workstation"
+# Platform-level (global, not tenant-scoped) commercial plans.
+PLAN_COLLECTION = "plan"
 
 # Failed mobile-pairing attempts per device (`/auth/check-user-code` lockout).
 TEMPORARY_CONNECTION_COLLECTION = "temporary_connection"
