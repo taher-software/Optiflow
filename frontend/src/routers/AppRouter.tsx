@@ -11,6 +11,7 @@ import ProspectPage from "../pages/ProspectPage";
 import RegisterPage from "../pages/RegisterPage";
 import SettingsPage from "../pages/SettingsPage";
 import StatsPage from "../pages/StatsPage";
+import SubscriptionPage from "../pages/SubscriptionPage";
 import PrivacyPolicyPage from "../pages/PrivacyPolicyPage";
 import ProductionLineFormPage from "../pages/ProductionLineFormPage";
 import ProductionLinesPage from "../pages/ProductionLinesPage";
@@ -27,6 +28,7 @@ import WorkstationsPage from "../pages/WorkstationsPage";
  *   /       public prospect page
  *   /login  sign in
  *   /app    protected operations area (guarded -> splash -> dashboard)
+ *   /app/subscription  paywall (only when the subscription is warned/blocked)
  *   /privacy, /terms  public legal documents
  */
 export function AppRouter() {
@@ -63,6 +65,7 @@ export function AppRouter() {
             />
             <Route path={ROUTES.settings} element={<SettingsPage />} />
             <Route path={ROUTES.stats} element={<StatsPage />} />
+            <Route path={ROUTES.subscription} element={<SubscriptionPage />} />
           </Route>
         </Route>
       </Routes>

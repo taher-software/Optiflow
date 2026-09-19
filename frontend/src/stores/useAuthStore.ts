@@ -24,13 +24,40 @@ interface AuthState {
   /** The tenant (plant/organization) the signed-in user belongs to. */
   tenantId: string | null;
   error: string | null;
+  /** Base subscription expired less than 30 days ago (grace period). `null`
+   * (or absent from an older persisted session) = not warned. */
+  warning: boolean | null;
+  /** Never subscribed, or expired 30+ days ago: the app is locked to the
+   * subscription page. `null` (or absent) = not blocked. */
+  blocked: boolean | null;
+  /** The namespace's base plan id, `null` when it never subscribed. */
+  planId: string | null;
+  /** The namespace's base plan name, when known. */
+  planName: string | null;
   signIn: (username: string, password: string) => Promise<void>;
   signOut: () => void;
 }
 
 interface LoginResponse {
-  data: { access_token: string; token_type: string; user: AuthUser };
+  data: {
+    access_token: string;
+    token_type: string;
+    user: AuthUser;
+    /** Base subscription state, at the root of `LoginOut`. */
+    warning?: boolean | null;
+    blocked?: boolean | null;
+    plan_id?: string | null;
+    plan_name?: string | null;
+  };
 }
+
+/** Subscription fields of a signed-out session. */
+const NO_SUBSCRIPTION = {
+  warning: null,
+  blocked: null,
+  planId: null,
+  planName: null,
+} as const;
 
 /**
  * Authentication state. The access token is persisted to localStorage so the
@@ -45,6 +72,7 @@ export const useAuthStore = create<AuthState>()(
       user: null,
       tenantId: null,
       error: null,
+      ...NO_SUBSCRIPTION,
 
       signIn: async (username, password) => {
         set({ status: "loading", error: null });
@@ -79,6 +107,10 @@ export const useAuthStore = create<AuthState>()(
             user: body.data.user,
             tenantId: body.data.user.namespace_id,
             error: null,
+            warning: body.data.warning ?? null,
+            blocked: body.data.blocked ?? null,
+            planId: body.data.plan_id ?? null,
+            planName: body.data.plan_name ?? null,
           });
         } catch {
           set({ status: "unauthenticated", error: "login.errors.failed" });
@@ -92,6 +124,7 @@ export const useAuthStore = create<AuthState>()(
           user: null,
           tenantId: null,
           error: null,
+          ...NO_SUBSCRIPTION,
         });
       },
     }),
@@ -102,6 +135,10 @@ export const useAuthStore = create<AuthState>()(
         token: s.token,
         user: s.user,
         tenantId: s.tenantId,
+        warning: s.warning,
+        blocked: s.blocked,
+        planId: s.planId,
+        planName: s.planName,
       }),
     },
   ),

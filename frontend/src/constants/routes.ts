@@ -36,4 +36,7 @@ export const ROUTES = {
   downTimes: "/app/down-times",
   /** Stats explorer (daily KPI tracking + episode comparison). */
   stats: "/app/stats",
+  /** Subscription paywall: plans, amounts and bank transfer instructions
+   * (only reachable when the subscription is expired or blocked). */
+  subscription: "/app/subscription",
 } as const;

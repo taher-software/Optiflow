@@ -10,7 +10,14 @@ from src.app.gcp import get_firestore_client
 from src.app.gcp.firestore import FirestoreClient
 
 from src.app.routers.subscription.modelsIn import CreateSubscriptionIn
-from src.app.routers.subscription.modelsOut import SubscriptionOut
+from src.app.routers.subscription.modelsOut import CatalogPlanOut, SubscriptionOut
+
+# Order matters: this is the display order of `GET /subscriptions/plans`.
+_CATALOG_PLAN_NAMES = (
+    "Operio Standard",
+    "Operio Dedicated",
+    "Operio Intelligence",
+)
 
 _SUBSCRIPTION_FIELDS = (
     "subscription_plan_id",
@@ -92,3 +99,33 @@ def create_subscription(payload: CreateSubscriptionIn) -> SubscriptionOut:
         is_extra=is_extra,
         **final_state,
     )
+
+
+def list_catalog_plans() -> list[CatalogPlanOut]:
+    """Returns the tenant-facing plan catalog for the web paywall: only the
+    plans matching one of `_CATALOG_PLAN_NAMES` (compared with
+    `normalized_name`, same as plan-name uniqueness), in that fixed order.
+    Any catalog name with no matching plan is simply absent from the result.
+    """
+    client = get_firestore_client()
+
+    by_normalized_name: dict[str, dict[str, Any]] = {}
+    for doc in client.find_documents(PLAN_COLLECTION):
+        by_normalized_name.setdefault(normalized_name(doc.get("name", "")), doc)
+
+    catalog: list[CatalogPlanOut] = []
+    for catalog_name in _CATALOG_PLAN_NAMES:
+        plan = by_normalized_name.get(normalized_name(catalog_name))
+        if plan is None:
+            continue
+        catalog.append(
+            CatalogPlanOut(
+                id=plan["id"],
+                name=plan.get("name", ""),
+                price=plan["price"],
+                duration=plan["duration"],
+                quota=plan.get("quota"),
+                maintenance_price=plan.get("maintenance_price"),
+            )
+        )
+    return catalog
