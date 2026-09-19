@@ -448,6 +448,92 @@ const en = {
       lines: "Production lines",
       stations: "Work stations",
       settings: "Settings",
+      subscription: "Subscription",
+    },
+
+    subscription: {
+      title: "Subscription",
+      status: {
+        expired:
+          "Your subscription has expired. Renew it as soon as possible to avoid the system being blocked.",
+        blocked:
+          "Your subscription has expired and access to Operio is suspended. Renew your plan to restore access.",
+        neverSubscribed:
+          "Your organization has no active subscription yet. Choose a plan below to start using Operio.",
+      },
+      banner: {
+        message:
+          "Your subscription has expired. Renew it as soon as possible to avoid the system being blocked.",
+        renew: "Renew",
+      },
+      loading: "Loading plans…",
+      loadError: "The plans could not be loaded.",
+      empty:
+        "No plan is available for your organization right now. Please contact us.",
+      kind: { first: "New subscription", renewal: "Renewal" },
+      complementaryNote: "In addition to a base plan (Standard or Private).",
+      durationLabel: "Duration:",
+      duration: {
+        annual: "Annual (per year)",
+        days_one: "{{count}} day",
+        days_other: "{{count}} days",
+      },
+      quotaLabel: "Quota:",
+      quotaValue_one: "{{count}} request maximum",
+      quotaValue_other: "{{count}} requests maximum",
+      amounts: {
+        acquisition: "Acquisition (excl. tax)",
+        maintenance: "Annual maintenance & hosting (excl. tax)",
+        ht: "Amount excl. tax (HT)",
+        vat: "VAT 19%",
+        stamp: "Fiscal stamp",
+        total: "Total incl. tax (TTC)",
+      },
+      plans: {
+        standard: {
+          name: "Operio Standard",
+          tagline: "The Operio application, hosted and maintained for you.",
+          features: {
+            infrastructure: "Deployed on Azibodin infrastructure",
+            application: "Standard application",
+            updates: "Product updates included",
+            hosting: "Storage and hosting included",
+            support: "Standard support",
+          },
+        },
+        dedicated: {
+          name: "Operio Private",
+          tagline: "You acquire a dedicated installation, not just a licence.",
+          features: {
+            infrastructure: "Infrastructure dedicated to your company",
+            deployment: "Specific deployment",
+            branding: "Identity customisation (logo, colours, domain name)",
+            configuration: "Configuration adapted to how your plant operates",
+            development: "Possibility of specific developments",
+          },
+        },
+        intelligence: {
+          name: "Operio Intelligence",
+          tagline:
+            "A complementary plan to start querying your plant's own data.",
+          features: {
+            query: "Query your own production data",
+            quota: "Works with a quota: a maximum number of requests",
+          },
+        },
+      },
+      payment: {
+        title: "Pay by bank transfer",
+        steps: {
+          choose: "Choose your plan above.",
+          transfer: "Transfer its Total incl. tax (TTC) to the account below.",
+          activation:
+            "Your subscription is activated once the transfer is received.",
+        },
+        accountHolder: "Account holder",
+        rib: "RIB",
+        bank: "Bank",
+      },
     },
 
     settings: {

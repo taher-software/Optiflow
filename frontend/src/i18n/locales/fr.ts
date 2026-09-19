@@ -454,6 +454,97 @@ const fr = {
       lines: "Lignes de production",
       stations: "Postes de travail",
       settings: "Paramètres",
+      subscription: "Abonnement",
+    },
+
+    subscription: {
+      title: "Abonnement",
+      status: {
+        expired:
+          "Votre abonnement a expiré. Renouvelez-le au plus vite pour éviter le blocage du système.",
+        blocked:
+          "Votre abonnement a expiré et l'accès à Operio est suspendu. Renouvelez votre formule pour rétablir l'accès.",
+        neverSubscribed:
+          "Votre organisation n'a pas encore d'abonnement actif. Choisissez une formule ci-dessous pour commencer à utiliser Operio.",
+      },
+      banner: {
+        message:
+          "Votre abonnement a expiré. Renouvelez-le au plus vite pour éviter le blocage du système.",
+        renew: "Renouveler",
+      },
+      loading: "Chargement des formules…",
+      loadError: "Les formules n'ont pas pu être chargées.",
+      empty:
+        "Aucune formule n'est disponible pour votre organisation pour le moment. Contactez-nous.",
+      kind: { first: "Nouvel abonnement", renewal: "Renouvellement" },
+      complementaryNote:
+        "En complément d'une formule de base (Standard ou Private).",
+      durationLabel: "Durée :",
+      duration: {
+        annual: "Annuel (par an)",
+        days_one: "{{count}} jour",
+        days_many: "{{count}} jours",
+        days_other: "{{count}} jours",
+      },
+      quotaLabel: "Quota :",
+      quotaValue_one: "{{count}} requête maximum",
+      quotaValue_many: "{{count}} de requêtes maximum",
+      quotaValue_other: "{{count}} requêtes maximum",
+      amounts: {
+        acquisition: "Acquisition (HT)",
+        maintenance: "Maintenance et hébergement annuels (HT)",
+        ht: "Montant HT",
+        vat: "TVA 19 %",
+        stamp: "Timbre fiscal",
+        total: "Total TTC",
+      },
+      plans: {
+        standard: {
+          name: "Operio Standard",
+          tagline: "L'application Operio, hébergée et maintenue pour vous.",
+          features: {
+            infrastructure: "Déploiement sur l'infrastructure Azibodin",
+            application: "Application standard",
+            updates: "Mises à jour du produit incluses",
+            hosting: "Stockage et hébergement inclus",
+            support: "Support standard",
+          },
+        },
+        dedicated: {
+          name: "Operio Private",
+          tagline:
+            "Vous achetez une installation dédiée, pas seulement une licence.",
+          features: {
+            infrastructure: "Infrastructure dédiée à votre entreprise",
+            deployment: "Déploiement spécifique",
+            branding:
+              "Personnalisation de l'identité (logo, couleurs, nom de domaine)",
+            configuration:
+              "Configuration adaptée au fonctionnement de votre usine",
+            development: "Possibilité de développements spécifiques",
+          },
+        },
+        intelligence: {
+          name: "Operio Intelligence",
+          tagline:
+            "Une formule complémentaire pour commencer à interroger les données de votre usine.",
+          features: {
+            query: "Interrogez vos propres données de production",
+            quota: "Fonctionne avec un quota : un nombre maximum de requêtes",
+          },
+        },
+      },
+      payment: {
+        title: "Paiement par virement bancaire",
+        steps: {
+          choose: "Choisissez votre formule ci-dessus.",
+          transfer: "Virez son montant Total TTC sur le compte ci-dessous.",
+          activation: "Votre abonnement est activé dès réception du virement.",
+        },
+        accountHolder: "Titulaire du compte",
+        rib: "RIB",
+        bank: "Banque",
+      },
     },
 
     settings: {

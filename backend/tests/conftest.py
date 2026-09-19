@@ -25,6 +25,7 @@ import src.app.routers.auth.services as auth_services_module
 import src.app.routers.down_time.services as down_time_services_module
 import src.app.routers.kpi.services as kpi_services_module
 import src.app.routers.registration.services as registration_services_module
+import src.app.routers.subscription.services as subscription_services_module
 import src.app.routers.uap.services as uap_services_module
 import src.app.routers.user.services as user_services_module
 import src.app.routers.production_line.services as production_line_services_module
@@ -82,6 +83,9 @@ def fake_db(monkeypatch):
     monkeypatch.setattr(auth_services_module, "get_firestore_client", lambda: client)
     monkeypatch.setattr(
         registration_services_module, "get_firestore_client", lambda: client
+    )
+    monkeypatch.setattr(
+        subscription_services_module, "get_firestore_client", lambda: client
     )
     monkeypatch.setattr(user_services_module, "get_firestore_client", lambda: client)
     monkeypatch.setattr(

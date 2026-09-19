@@ -43,3 +43,33 @@ class SubscriptionOut(BaseModel):
             "period had already ended (see `POST /subscriptions`)."
         ),
     )
+
+
+class CatalogPlanOut(BaseModel):
+    """A plan from the tenant-facing catalog, as returned by
+    `GET /subscriptions/plans`. Same shape as `PlanOut` (see
+    `src.app.routers.plan.modelsOut`)."""
+
+    id: str = Field(..., description="Plan id.", examples=["plan_5b2f1d"])
+    name: str = Field(
+        ..., description="Plan name.", examples=["Operio Standard"]
+    )
+    price: float = Field(
+        ..., description="Plan price, a plain number (no currency).", examples=[49.9]
+    )
+    duration: int = Field(
+        ..., description="Subscription duration in days.", examples=[365]
+    )
+    quota: Optional[int] = Field(
+        default=None,
+        description=(
+            "Quota granted by this plan (maximum number of requests), or "
+            "`None` for a base plan."
+        ),
+        examples=[500],
+    )
+    maintenance_price: Optional[float] = Field(
+        default=None,
+        description="Maintenance price (no currency), or `None` when not set.",
+        examples=[9.9],
+    )

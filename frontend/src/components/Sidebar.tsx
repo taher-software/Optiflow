@@ -4,6 +4,7 @@ import { NavLink, useNavigate } from "react-router-dom";
 
 import { ROUTES } from "../constants/routes";
 import { useAuthStore } from "../stores/useAuthStore";
+import { canSeeSubscription } from "../utils/subscriptionAccess";
 import { BrandLogo } from "./BrandLogo";
 import { LanguageSwitcher } from "./LanguageSwitcher";
 
@@ -38,6 +39,11 @@ export function Sidebar() {
   const navigate = useNavigate();
   const user = useAuthStore((s) => s.user);
   const signOut = useAuthStore((s) => s.signOut);
+  const warning = useAuthStore((s) => s.warning);
+  const blocked = useAuthStore((s) => s.blocked);
+  // Blocked subscription: the subscription page is the only reachable page,
+  // so every other entry is hidden (sign-out + language stay available).
+  const locked = blocked === true;
 
   const canManageUsers = user?.role === "owner" || user?.role === "admin";
   const canManageUaps =
@@ -101,6 +107,12 @@ export function Sidebar() {
       icon: icon("M3 21h18M6 17V9m6 8V5m6 12v-6"),
       show: true,
     },
+    {
+      to: ROUTES.subscription,
+      label: t("nav.subscription"),
+      icon: icon("M3 7h18v10H3zM3 11h18M7 15h3"),
+      show: canSeeSubscription({ warning, blocked }),
+    },
   ];
 
   const onSignOut = () => {
@@ -116,7 +128,7 @@ export function Sidebar() {
 
       <nav className="flex-1 space-y-1 px-3">
         {items
-          .filter((i) => i.show)
+          .filter((i) => i.show && (!locked || i.to === ROUTES.subscription))
           .map((i) => (
             <NavLink
               key={i.to}
