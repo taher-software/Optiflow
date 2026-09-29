@@ -35,10 +35,11 @@ does the rest of the work once a carry-over ticket is in the slice.
 """
 
 import logging
+from bisect import bisect_right
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
-from datetime import date, datetime, time, timedelta
-from typing import Any, Callable, Optional
+from datetime import date, datetime, time, timedelta, timezone
+from typing import Any, Callable, NamedTuple, Optional
 
 from fastapi import HTTPException, status
 
@@ -194,6 +195,36 @@ def _process_for_ticket(issue: dict[str, Any]) -> Optional[str]:
     return mapped.value if mapped else None
 
 
+class _OpenWindows(NamedTuple):
+    """kpi-shift-downtime-overlap §4/§9 performance — the plant's/a shift's
+    open sub-intervals, pre-sorted and (for `_plant_open_windows`) coalesced
+    into a mutually DISJOINT list, split into two parallel lists so
+    `_overlap_seconds` can `bisect` straight to the first candidate window
+    instead of scanning every one of them per ticket. Built ONCE per
+    request/period by `_plant_open_windows`/`_shift_open_windows_by_id`
+    (section 3bis below) — never reconstructed per ticket. Every bound is a
+    UTC `datetime` (§4 DST fix — see `_shift_open_windows`)."""
+
+    starts: list[datetime]
+    ends: list[datetime]
+
+
+# The empty `_OpenWindows` — distinct from `None`: `None` means "no
+# configured shift at all, don't clip anything" (§2's 24h/day fallback);
+# this means "clip to NOTHING", i.e. every ticket contributes 0 seconds
+# (§2 — a shift that has no open windows of its own, e.g. an out-of-range
+# `shift` filter, is never open at all).
+_EMPTY_OPEN_WINDOWS = _OpenWindows(starts=[], ends=[])
+
+
+def _build_open_windows(windows: list[tuple[datetime, datetime]]) -> _OpenWindows:
+    """`_OpenWindows` from an already sorted, disjoint `windows` list (both
+    `_plant_open_windows`, after coalescing, and a single shift's own
+    `_shift_open_windows`, whose civil-day instances are naturally ordered
+    and never overlap each other, satisfy this)."""
+    return _OpenWindows(starts=[w[0] for w in windows], ends=[w[1] for w in windows])
+
+
 # --------------------------------------------------------------------------
 # 2. Ticket-level KPI primitives (§5bis.1/2).
 # --------------------------------------------------------------------------
@@ -241,6 +272,7 @@ def _ticket_downtime_seconds(
     period_end: datetime,
     now: datetime,
     hierarchy: Optional[dict[str, Any]] = None,
+    open_windows: Optional[_OpenWindows] = None,
 ) -> float:
     """A single ticket's downtime, clamped to the queried period (§5bis.1):
     closed -> `created_at -> resolved_at`; not closed -> `created_at -> now`;
@@ -260,7 +292,18 @@ def _ticket_downtime_seconds(
     which only ever looks at CLOSED tickets). `hierarchy` is optional and
     defaults to `None` (no archiving awareness at all, today's exact
     behavior) so every direct unit-test call site of this function keeps
-    working unchanged."""
+    working unchanged.
+
+    `open_windows` (kpi-shift-downtime-overlap §2/§4): when given, the
+    effective `[effective_start, effective_end)` window computed above is
+    further clipped to the union of `open_windows` (`_overlap_seconds`)
+    instead of counted in full — this is what turns "raw ticket interval"
+    into "time the plant/shift was actually open" (closed time, and a
+    shift's own break, are dropped). `None` (the default) skips this
+    entirely and returns the raw clamped duration, today's exact behavior —
+    both for every direct unit-test call site of this function AND for the
+    §2 "no configured shift window at all" fallback (24h/day, nothing to
+    clip)."""
     created_at = _parse_iso(issue.get("created_at"))
     if created_at is None:
         return 0.0
@@ -276,7 +319,9 @@ def _ticket_downtime_seconds(
     period_upper = min(period_end, now)
     effective_end = min(natural_end, period_upper)
     effective_start = max(created_at, period_start)
-    return max(0.0, (effective_end - effective_start).total_seconds())
+    if open_windows is None:
+        return max(0.0, (effective_end - effective_start).total_seconds())
+    return _overlap_seconds(effective_start, effective_end, open_windows)
 
 
 def _mttr_seconds(tickets: list[dict[str, Any]]) -> float | None:
@@ -303,6 +348,7 @@ def _compute_base_kpis(
     count_tickets: Optional[list[dict[str, Any]]] = None,
     weight_of: Optional[Callable[[dict[str, Any]], int]] = None,
     hierarchy: Optional[dict[str, Any]] = None,
+    open_windows: Optional[_OpenWindows] = None,
 ) -> BaseKpis:
     """The 4 headline KPIs for a slice (§5bis.3/4/empty-slice rule;
     availability removed in revision 2). Used both for a `Kpis` object's own
@@ -330,11 +376,17 @@ def _compute_base_kpis(
     is bounded at its `archived_at` (resource-archiving rule 2) instead of
     running to `now`. `None` (the default) keeps every direct unit-test call
     site of this function on today's exact behavior.
+
+    `open_windows` (kpi-shift-downtime-overlap §2/§4), also threaded
+    straight through to `_ticket_downtime_seconds`, clips each ticket's
+    clamped downtime to the plant's/a shift's open windows before it's
+    weighted and summed. `None` (the default) is today's exact behavior —
+    no clipping at all.
     """
     count_source = tickets if count_tickets is None else count_tickets
     weight_fn = weight_of if weight_of is not None else _flat_weight
     downtime = sum(
-        _ticket_downtime_seconds(issue, period_start, period_end, now, hierarchy)
+        _ticket_downtime_seconds(issue, period_start, period_end, now, hierarchy, open_windows)
         * weight_fn(issue)
         for issue in tickets
     )
@@ -376,6 +428,7 @@ def _compute_kpis(
     type_weight_fn: Optional[Callable[[dict[str, Any]], dict[str, int]]] = None,
     perimeter_type_counts: Optional[dict[str, int]] = None,
     hierarchy: Optional[dict[str, Any]] = None,
+    open_windows: Optional[_OpenWindows] = None,
 ) -> Kpis:
     """`_compute_base_kpis` plus, optionally, the `bottleneck`/`critical`
     divisions (kpi-workstation-type-slices §3).
@@ -384,6 +437,10 @@ def _compute_kpis(
     `_compute_type_slice` for resource-archiving rule 2's open-ticket bound
     — see `_compute_base_kpis`'s own docstring. `None` (default) is today's
     behavior, unchanged.
+
+    `open_windows` (kpi-shift-downtime-overlap), forwarded the same way,
+    clips every downtime sum below (root + slices) to the plant's/a shift's
+    open windows. `None` (default) is today's exact behavior.
 
     `type_weight_fn` and `perimeter_type_counts` are an all-or-nothing pair:
     passing only one is a caller bug (there is no way to compute a slice
@@ -409,6 +466,7 @@ def _compute_kpis(
         count_tickets,
         weight_of,
         hierarchy,
+        open_windows,
     )
     if type_weight_fn is None or perimeter_type_counts is None:
         return _widen_kpis(base)
@@ -425,6 +483,7 @@ def _compute_kpis(
         perimeter_type_counts,
         WorkstationType.BOTTLENECK.value,
         hierarchy,
+        open_windows,
     )
     critical = _compute_type_slice(
         tickets,
@@ -437,6 +496,7 @@ def _compute_kpis(
         perimeter_type_counts,
         WorkstationType.CRITICAL.value,
         hierarchy,
+        open_windows,
     )
     return _widen_kpis(base, bottleneck=bottleneck, critical=critical)
 
@@ -452,6 +512,7 @@ def _compute_type_slice(
     perimeter_type_counts: dict[str, int],
     type_key: str,
     hierarchy: Optional[dict[str, Any]] = None,
+    open_windows: Optional[_OpenWindows] = None,
 ) -> Optional[BaseKpis]:
     """One `bottleneck`/`critical` division (§3.1/§3.2). `None` when the
     perimeter (`perimeter_type_counts`, precomputed once per request, never
@@ -471,6 +532,9 @@ def _compute_type_slice(
     own downtime sum consistent with the root's (resource-archiving rule 2 —
     an open ticket on an archived resource is bounded here exactly like it
     is at the root, never left to run to `now` in one and not the other).
+
+    `open_windows`, also forwarded, keeps this slice's downtime clipped to
+    the same open windows as the root's (kpi-shift-downtime-overlap).
     """
     if perimeter_type_counts.get(type_key, 0) <= 0:
         return None
@@ -479,7 +543,7 @@ def _compute_type_slice(
         return type_weight_fn(issue).get(type_key, 0)
 
     downtime = sum(
-        _ticket_downtime_seconds(issue, period_start, period_end, now, hierarchy)
+        _ticket_downtime_seconds(issue, period_start, period_end, now, hierarchy, open_windows)
         * _weight(issue)
         for issue in tickets
     )
@@ -820,6 +884,176 @@ def _planned_seconds(
         )
 
     return per_day * full_days + last_day_planned
+
+
+# --------------------------------------------------------------------------
+# 3bis. Open windows (kpi-shift-downtime-overlap §2/§4) — the plant/shift
+# clock windows every downtime aggregation clips to. Built ONCE per request
+# (never per ticket, §9 performance) from the same `_configured_shifts` /
+# `_valid_break` machinery section 3 already uses for planned time.
+# --------------------------------------------------------------------------
+
+
+def _civil_days(period_start: datetime, period_end: datetime) -> list[date]:
+    """Every civil day (namespace tz) a shift instance touching the queried
+    period could start on (§2 "Shift instances"): `period_start.date() - 1`
+    (so a night shift's tail, started the day before the period, is still
+    built and later clamped by the ticket interval itself) through
+    `period_end.date()` inclusive."""
+    day = period_start.date() - timedelta(days=1)
+    last_day = period_end.date()
+    days: list[date] = []
+    while day <= last_day:
+        days.append(day)
+        day += timedelta(days=1)
+    return days
+
+
+def _shift_open_windows(
+    shift: dict[str, Any], days: list[date], tz: Any
+) -> list[tuple[datetime, datetime]]:
+    """§2 "Shift open windows of S" — one open sub-interval per civil `day`
+    in `days`, minus the shift's own break when it has a valid one
+    (`_valid_break`/`_break_window`). Midnight-wrap aware (`end_time <=
+    start_time`, same convention as every other shift helper in this
+    module): the instance's end lands on the following civil day. A break
+    splits its instance into up to 2 open sub-intervals (before and after
+    the break); an instance with no valid break yields exactly one. `[]`
+    when the shift's own window doesn't parse (`_configured_shifts` already
+    filters those out for every real caller — this function stays defensive
+    for direct unit-test callers).
+
+    DST (bucket C): every bound is computed in `tz`'s local wall-clock time
+    first (so "06:00" means 06:00 local on that civil day, DST or not) and
+    then converted to UTC (`.astimezone(timezone.utc)`) before being stored.
+    This matters because every window sharing the SAME `tz` object would
+    otherwise be vulnerable to a well-known aware-`datetime` pitfall:
+    comparing/subtracting two datetimes that carry the identical `tzinfo`
+    instance skips the usual `utcoffset()`-based conversion, which is wrong
+    across a DST transition (a zone's UTC offset is not constant). UTC's
+    offset IS constant, so once every bound lives in `timezone.utc`, that
+    pitfall can't recur — window comparisons/merges (`_plant_open_windows`)
+    and overlap arithmetic (`_overlap_seconds`) are then genuinely absolute,
+    not wall-clock, instant comparisons."""
+    start_min = _parse_hhmm(shift.get("start_time", ""))
+    end_min = _parse_hhmm(shift.get("end_time", ""))
+    if start_min is None or end_min is None:
+        return []
+    wraps_midnight = end_min <= start_min
+    break_window = _break_window(shift)  # (offset_seconds, length_seconds) or None
+
+    windows: list[tuple[datetime, datetime]] = []
+    for day in days:
+        start_dt = datetime.combine(
+            day, time(hour=start_min // 60, minute=start_min % 60), tzinfo=tz
+        )
+        end_day = day + timedelta(days=1) if wraps_midnight else day
+        end_dt = datetime.combine(
+            end_day, time(hour=end_min // 60, minute=end_min % 60), tzinfo=tz
+        )
+        if break_window is None:
+            windows.append((start_dt.astimezone(timezone.utc), end_dt.astimezone(timezone.utc)))
+            continue
+        # Break bounds are computed in the SAME local wall-clock space as
+        # the window itself (offset from `start_dt`, still local) before
+        # either gets converted to UTC below — this is what keeps the break
+        # positioned correctly relative to the shift's own wall-clock start
+        # regardless of a DST transition landing inside the shift.
+        break_offset_seconds, break_length_seconds = break_window
+        break_start_dt = start_dt + timedelta(seconds=break_offset_seconds)
+        break_end_dt = break_start_dt + timedelta(seconds=break_length_seconds)
+        if break_start_dt > start_dt:
+            windows.append(
+                (start_dt.astimezone(timezone.utc), break_start_dt.astimezone(timezone.utc))
+            )
+        if break_end_dt < end_dt:
+            windows.append(
+                (break_end_dt.astimezone(timezone.utc), end_dt.astimezone(timezone.utc))
+            )
+    return windows
+
+
+def _shift_open_windows_by_id(
+    settings: dict[str, Any], period_start: datetime, period_end: datetime, tz: Any
+) -> dict[str, _OpenWindows]:
+    """`{shift_id: open_windows}` for every configured shift (`_configured_shifts`),
+    computed ONCE per request/period — the single source both `_group_by_shift`
+    and `_downtime_by_shift_bars`/the drilldown+daily `shift` filters build
+    their own overlap sums from, and what `_plant_open_windows` unions into
+    the plant-wide windows below. Each shift's own raw window list is
+    already sorted/disjoint by construction (`_shift_open_windows` walks
+    `days` in order), so it's wrapped as-is via `_build_open_windows`."""
+    days = _civil_days(period_start, period_end)
+    return {
+        sid: _build_open_windows(_shift_open_windows(shift, days, tz))
+        for sid, shift in _configured_shifts(settings)
+    }
+
+
+def _plant_open_windows(
+    shift_windows_by_id: dict[str, _OpenWindows],
+) -> Optional[_OpenWindows]:
+    """§2 "Plant open windows" — the union of every configured shift's own
+    open windows, COALESCED into a sorted, non-overlapping list (§7 — a
+    handover overlap between two shifts, e.g. shift 1 ending 14:15 and shift
+    2 starting 14:00, must count once in `overall`/`by_location`/`by_type`/
+    pareto/daily, never twice). `_overlap_seconds` intersects each window
+    independently and sums the results, so feeding it raw, unmerged windows
+    would double-count any instant two shifts both cover — coalescing here,
+    once per request, is what keeps every plant-wide aggregation correct
+    without every caller of `_overlap_seconds` having to worry about it.
+    `None` when the namespace has no configured shift at all, signaling
+    "24h/day, nothing to clip" to `_ticket_downtime_seconds` (§2's own
+    fallback, today's exact behavior)."""
+    if not shift_windows_by_id:
+        return None
+    windows: list[tuple[datetime, datetime]] = []
+    for shift_windows in shift_windows_by_id.values():
+        windows.extend(zip(shift_windows.starts, shift_windows.ends))
+    if not windows:
+        return _EMPTY_OPEN_WINDOWS
+    windows.sort(key=lambda window: window[0])
+    merged: list[tuple[datetime, datetime]] = [windows[0]]
+    for start, end in windows[1:]:
+        last_start, last_end = merged[-1]
+        if start <= last_end:
+            if end > last_end:
+                merged[-1] = (last_start, end)
+        else:
+            merged.append((start, end))
+    return _build_open_windows(merged)
+
+
+def _overlap_seconds(start: datetime, end: datetime, windows: _OpenWindows) -> float:
+    """Seconds of `[start, end)` that fall inside the union of `windows`
+    (kpi-shift-downtime-overlap §4/§9 performance).
+
+    `windows.starts`/`windows.ends` are sorted and mutually DISJOINT
+    (`_plant_open_windows` coalesces; a single shift's own
+    `_shift_open_windows` never overlap themselves — each day's instance,
+    minus its own break, is disjoint from the next day's), which is what
+    makes a `bisect` lookup valid: `bisect_right(windows.ends, start)` finds
+    the first window whose END is strictly after `start` — every earlier
+    window ends at or before `start` and so cannot overlap `[start, end)` at
+    all — and the scan then stops the instant a window's OWN start reaches
+    `end` (disjoint + sorted means every window after that one starts even
+    later). This turns a per-ticket, O(all windows in the period) scan into
+    O(log windows + windows actually touched), which matters once a
+    366-day/multi-shift period has built a couple thousand of them. 0 when
+    `end <= start` or `windows` is empty."""
+    if end <= start or not windows.starts:
+        return 0.0
+    starts, ends = windows.starts, windows.ends
+    index = bisect_right(ends, start)
+    total = 0.0
+    window_count = len(starts)
+    while index < window_count and starts[index] < end:
+        lo = max(start, starts[index])
+        hi = min(end, ends[index])
+        if hi > lo:
+            total += (hi - lo).total_seconds()
+        index += 1
+    return total
 
 
 # --------------------------------------------------------------------------
@@ -1673,6 +1907,7 @@ def _group_by_location(
     period_end: datetime,
     now: datetime,
     count_tickets: list[dict[str, Any]],
+    open_windows: Optional[_OpenWindows] = None,
 ) -> list[BreakdownRow]:
     """Tickets not attributable to `kind`'s level are excluded from the real
     rows below (never bucketed under a synthetic row there). `tickets`
@@ -1711,7 +1946,12 @@ def _group_by_location(
     unrecognized-scope ticket with no id (§2 deliberately never spreads or
     counts it toward `unassigned` either, so its header weight has no
     matching row at all — an existing, unchanged gap this contract does not
-    claim to close)."""
+    claim to close).
+
+    `open_windows` (kpi-shift-downtime-overlap §4), forwarded to every
+    `_compute_kpis` call below, clips each row's downtime to the plant's
+    open windows — the same windows the header (`overall`) clips to, which
+    is what keeps this breakdown's total reconciling with the header's."""
     names: dict[str, str]
     if kind == "uap":
         names = {i: d.get("name", "") for i, d in hierarchy["uaps"].items()}
@@ -1750,6 +1990,7 @@ def _group_by_location(
                     type_weight_fn=type_weight_fn,
                     perimeter_type_counts=perimeter_type_counts,
                     hierarchy=hierarchy,
+                    open_windows=open_windows,
                 ),
             )
         )
@@ -1775,6 +2016,7 @@ def _group_by_location(
                         count_tickets=unassigned_count_tickets,
                         weight_of=lambda _issue, _n=unassigned_count: _n,
                         hierarchy=hierarchy,
+                        open_windows=open_windows,
                     ),
                 )
             )
@@ -1794,15 +2036,25 @@ def _group_by_shift(
     type_weight_fn: Optional[Callable[[dict[str, Any]], dict[str, int]]] = None,
     perimeter_type_counts: Optional[dict[str, int]] = None,
     hierarchy: Optional[dict[str, Any]] = None,
+    shift_windows: Optional[dict[str, _OpenWindows]] = None,
 ) -> list[BreakdownRow]:
     """§5bis.5 — empty when the namespace runs a single shift; a shift with
     no configured clock window emits no row at all (fix #3/#5 companion: a
-    row with a permanently `None` planned time isn't useful). Tickets
-    without a stored `shift` are excluded (no "unassigned" bucket). Each
-    shift's own planned time (its own window minus its break, counted up to
-    now for the in-progress day per §5bis.4bis) feeds its MTBF; downtime aggregates current + carry-over tickets
-    (fix #1), weighted per ticket (§5bis.1bis) — count/mttr stay on
-    current-range only, unweighted.
+    row with a permanently `None` planned time isn't useful). Each shift's
+    own planned time (its own window minus its break, counted up to now for
+    the in-progress day per §5bis.4bis) feeds its MTBF.
+
+    kpi-shift-downtime-overlap §4 (revision): a row's `downtime_seconds` is
+    now the OVERLAP of every ticket (current + carry-over, fix #1) with that
+    shift's own open windows (`shift_windows[sid]`, `_ticket_downtime_seconds`'s
+    `open_windows` param via `_compute_kpis`) — `current + carry_overs` is
+    passed through UNFILTERED by the ticket's own stored `shift`, so a
+    ticket contributes to whichever row(s) its actual time overlaps,
+    regardless of what shift it was opened under (including one with no
+    stored `shift` at all). `count`/`mttr` are UNCHANGED: still the mean/
+    count over `current` tickets whose STORED `shift` matches this row's id
+    (current-range only, unweighted) — the two can now legitimately
+    disagree (a ticket's downtime lands on a different row than its count).
 
     kpi-workstation-type-slices §4 — a `by_shift` row's perimeter is the
     whole namespace (a shift spans the whole plant), so `type_weight_fn`/
@@ -1810,7 +2062,9 @@ def _group_by_shift(
     passed through unchanged for every shift row.
 
     `hierarchy`, forwarded to `_compute_kpis`, applies resource-archiving
-    rule 2's open-ticket bound to each shift row's own downtime sum."""
+    rule 2's open-ticket bound to each shift row's own downtime sum.
+    `shift_windows`, `None` by default, preserves the plain unclipped
+    behavior for a direct unit-test call site with no windows built."""
     shift_number = settings.get("shift_number", 1)
     if shift_number <= 1:
         return []
@@ -1822,10 +2076,10 @@ def _group_by_shift(
         if sid not in configured:
             continue
         count_tickets = [issue for issue in current if str(issue.get("shift")) == sid]
-        downtime_tickets = [issue for issue in all_tickets if str(issue.get("shift")) == sid]
+        windows = shift_windows.get(sid) if shift_windows is not None else None
         planned = _planned_seconds(settings, period_start, period_end, now, shift_filter=sid)
         kpis = _compute_kpis(
-            downtime_tickets,
+            all_tickets,
             period_start,
             period_end,
             now,
@@ -1835,6 +2089,7 @@ def _group_by_shift(
             type_weight_fn=type_weight_fn,
             perimeter_type_counts=perimeter_type_counts,
             hierarchy=hierarchy,
+            open_windows=windows,
         )
         rows.append(BreakdownRow(kind="shift", id=sid, label=sid, kpis=kpis))
     return rows
@@ -1848,6 +2103,7 @@ def _group_by_type(
     count_tickets: list[dict[str, Any]],
     weight_of: Optional[Callable[[dict[str, Any]], int]] = None,
     hierarchy: Optional[dict[str, Any]] = None,
+    open_windows: Optional[_OpenWindows] = None,
 ) -> list[BreakdownRow]:
     def _group(ticket_list: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
         groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -1873,6 +2129,7 @@ def _group_by_type(
                 count_tickets=count_groups.get(type_id, []),
                 weight_of=weight_of,
                 hierarchy=hierarchy,
+                open_windows=open_windows,
             ),
         )
         for type_id in set(downtime_groups) | set(count_groups)
@@ -1888,6 +2145,7 @@ def _downtime_by_process(
     now: datetime,
     weight_of: Optional[Callable[[dict[str, Any]], int]] = None,
     hierarchy: Optional[dict[str, Any]] = None,
+    open_windows: Optional[_OpenWindows] = None,
 ) -> dict[str, float]:
     weight_fn = weight_of if weight_of is not None else _flat_weight
     totals: dict[str, float] = defaultdict(float)
@@ -1895,7 +2153,7 @@ def _downtime_by_process(
         process = _process_for_ticket(issue)
         if process is not None:
             totals[process] += _ticket_downtime_seconds(
-                issue, period_start, period_end, now, hierarchy
+                issue, period_start, period_end, now, hierarchy, open_windows
             ) * weight_fn(issue)
     return dict(totals)
 
@@ -1907,12 +2165,17 @@ def _pareto_by_process(
     now: datetime,
     weight_of: Optional[Callable[[dict[str, Any]], int]] = None,
     hierarchy: Optional[dict[str, Any]] = None,
+    open_windows: Optional[_OpenWindows] = None,
 ) -> list[ParetoRow]:
     """Share of total (weighted, §5bis.1bis) downtime per process, sorted
     desc, running cumulative. Empty list when total downtime is 0 (nothing
     to chart). `hierarchy`, forwarded to `_downtime_by_process`, applies
-    resource-archiving rule 2's open-ticket bound."""
-    totals = _downtime_by_process(tickets, period_start, period_end, now, weight_of, hierarchy)
+    resource-archiving rule 2's open-ticket bound. `open_windows`, also
+    forwarded, clips every process's downtime to the plant's open windows
+    (kpi-shift-downtime-overlap §1) before shares are computed."""
+    totals = _downtime_by_process(
+        tickets, period_start, period_end, now, weight_of, hierarchy, open_windows
+    )
     total = sum(totals.values())
     if total <= 0:
         return []
@@ -1956,20 +2219,29 @@ def _downtime_by_shift_bars(
     now: datetime,
     weight_of: Optional[Callable[[dict[str, Any]], int]] = None,
     hierarchy: Optional[dict[str, Any]] = None,
+    shift_windows: Optional[dict[str, _OpenWindows]] = None,
 ) -> list[Bar]:
+    """kpi-shift-downtime-overlap §4 (revision) — one bar per CONFIGURED
+    shift (`_configured_shifts`), each bar's value the overlap of every
+    ticket in `tickets` with that shift's own open windows
+    (`shift_windows[sid]`) — no longer a plain sum keyed off the ticket's
+    own stored `shift` (so a ticket lands on every bar its actual time
+    overlaps, stored `shift` or not, same overlap rule as `_group_by_shift`).
+    `shift_windows=None` (default) preserves the plain unclipped behavior
+    for a direct unit-test call site with no windows built."""
     shift_number = settings.get("shift_number", 1)
     if shift_number <= 1:
         return []
     weight_fn = weight_of if weight_of is not None else _flat_weight
-    totals: dict[str, float] = defaultdict(float)
-    for issue in tickets:
-        shift_value = issue.get("shift")
-        if shift_value is None:
-            continue
-        totals[str(shift_value)] += _ticket_downtime_seconds(
-            issue, period_start, period_end, now, hierarchy
-        ) * weight_fn(issue)
-    bars = [Bar(id=sid, label=sid, value=int(round(sec))) for sid, sec in totals.items()]
+    bars = []
+    for sid, _shift in _configured_shifts(settings):
+        windows = shift_windows.get(sid) if shift_windows is not None else None
+        total = sum(
+            _ticket_downtime_seconds(issue, period_start, period_end, now, hierarchy, windows)
+            * weight_fn(issue)
+            for issue in tickets
+        )
+        bars.append(Bar(id=sid, label=sid, value=int(round(total))))
     bars.sort(key=lambda bar: bar.value, reverse=True)
     return bars
 
@@ -1981,6 +2253,7 @@ def _downtime_by_type_bars(
     now: datetime,
     weight_of: Optional[Callable[[dict[str, Any]], int]] = None,
     hierarchy: Optional[dict[str, Any]] = None,
+    open_windows: Optional[_OpenWindows] = None,
 ) -> list[Bar]:
     weight_fn = weight_of if weight_of is not None else _flat_weight
     totals: dict[str, float] = defaultdict(float)
@@ -1988,7 +2261,7 @@ def _downtime_by_type_bars(
         type_id = _type_id_for_ticket(issue)
         if type_id is not None:
             totals[type_id] += _ticket_downtime_seconds(
-                issue, period_start, period_end, now, hierarchy
+                issue, period_start, period_end, now, hierarchy, open_windows
             ) * weight_fn(issue)
     bars = [Bar(id=tid, label=tid, value=int(round(sec))) for tid, sec in totals.items()]
     bars.sort(key=lambda bar: bar.value, reverse=True)
@@ -2265,6 +2538,14 @@ def get_dashboard(query: DashboardQueryIn, namespace_id: str) -> DashboardData:
 
     planned = _planned_seconds(settings, period_start, period_end, now)
 
+    # kpi-shift-downtime-overlap §2/§9 performance — built ONCE per request,
+    # never per ticket: every configured shift's own open windows, plus
+    # their union (the plant's own open windows, `None` with no configured
+    # shift at all -- §2's 24h/day fallback, today's exact unclipped
+    # behavior).
+    shift_windows = _shift_open_windows_by_id(settings, period_start, period_end, tz)
+    plant_windows = _plant_open_windows(shift_windows)
+
     return DashboardData(
         namespace=NamespaceMeta(
             name=namespace.get("company_name") or "",
@@ -2292,6 +2573,7 @@ def get_dashboard(query: DashboardQueryIn, namespace_id: str) -> DashboardData:
             type_weight_fn=namespace_type_weight_fn,
             perimeter_type_counts=namespace_type_counts,
             hierarchy=hierarchy,
+            open_windows=plant_windows,
         ),
         by_shift=_group_by_shift(
             current,
@@ -2304,16 +2586,31 @@ def get_dashboard(query: DashboardQueryIn, namespace_id: str) -> DashboardData:
             type_weight_fn=namespace_type_weight_fn,
             perimeter_type_counts=namespace_type_counts,
             hierarchy=hierarchy,
+            shift_windows=shift_windows,
         ),
         by_location=_group_by_location(
-            all_tickets, hierarchy, location_kind, period_start, period_end, now, current
+            all_tickets,
+            hierarchy,
+            location_kind,
+            period_start,
+            period_end,
+            now,
+            current,
+            open_windows=plant_windows,
         ),
         pareto_by_process=_pareto_by_process(
-            all_tickets, period_start, period_end, now, weight_of, hierarchy
+            all_tickets, period_start, period_end, now, weight_of, hierarchy, plant_windows
         ),
         repair_by_process=_repair_by_process(current),
         by_type=_group_by_type(
-            all_tickets, period_start, period_end, now, current, weight_of, hierarchy
+            all_tickets,
+            period_start,
+            period_end,
+            now,
+            current,
+            weight_of,
+            hierarchy,
+            open_windows=plant_windows,
         ),
     )
 
@@ -2328,6 +2625,10 @@ def get_drilldown(query: DrilldownQueryIn, namespace_id: str) -> DrilldownData:
     current, carry_overs = _fetch_tickets(client, namespace_id, period_start, period_end)
     hierarchy = _location_hierarchy(client, namespace_id)
 
+    # kpi-shift-downtime-overlap §2/§9 performance — built ONCE per request.
+    shift_windows = _shift_open_windows_by_id(settings, period_start, period_end, tz)
+    plant_windows = _plant_open_windows(shift_windows)
+
     steps = _parse_drill_path(query.path)
 
     dims_fixed: set[str] = set()
@@ -2338,9 +2639,21 @@ def get_drilldown(query: DrilldownQueryIn, namespace_id: str) -> DrilldownData:
     # necessarily the last step) is what `children` derives from.
     last_location_kind: Optional[str] = None
     last_location_id: Optional[str] = None
+    # kpi-shift-downtime-overlap §4 — `downtime_current`/`downtime_carry_overs`
+    # mirror `current`/`carry_overs` through every non-`shift` dimension
+    # (location/process/type) but are deliberately NEVER filtered by a
+    # `shift` step or the `shift` query param: the shift filter's downtime
+    # is the OVERLAP of every ticket of the scope with the target shift's
+    # own open windows (below), not a subset of tickets stored under that
+    # shift — while `current`/`carry_overs` (and therefore `count_tickets`)
+    # keep selecting by the ticket's STORED `shift`, unchanged.
+    downtime_current, downtime_carry_overs = current, carry_overs
     for kind, seg_id in steps:
         current = _apply_path_step(current, hierarchy, kind, seg_id)
         carry_overs = _apply_path_step(carry_overs, hierarchy, kind, seg_id)
+        if kind != "shift":
+            downtime_current = _apply_path_step(downtime_current, hierarchy, kind, seg_id)
+            downtime_carry_overs = _apply_path_step(downtime_carry_overs, hierarchy, kind, seg_id)
         dims_fixed.add(kind)
         if kind == "shift":
             shift_in_path = seg_id
@@ -2392,8 +2705,16 @@ def get_drilldown(query: DrilldownQueryIn, namespace_id: str) -> DrilldownData:
     if query.process:
         current = [t for t in current if _process_for_ticket(t) == query.process]
         carry_overs = [t for t in carry_overs if _process_for_ticket(t) == query.process]
+        downtime_current = [t for t in downtime_current if _process_for_ticket(t) == query.process]
+        downtime_carry_overs = [
+            t for t in downtime_carry_overs if _process_for_ticket(t) == query.process
+        ]
         dims_fixed.add("process")
     if query.shift:
+        # kpi-shift-downtime-overlap §4 — `current`/`carry_overs` (feeding
+        # `count_tickets` below) still select by the ticket's STORED `shift`,
+        # unchanged; `downtime_current`/`downtime_carry_overs` are
+        # deliberately left untouched here (see their own docstring above).
         current = [t for t in current if str(t.get("shift")) == query.shift]
         carry_overs = [t for t in carry_overs if str(t.get("shift")) == query.shift]
         dims_fixed.add("shift")
@@ -2412,11 +2733,28 @@ def get_drilldown(query: DrilldownQueryIn, namespace_id: str) -> DrilldownData:
         dims_fixed.add("process")
 
     all_tickets = current + carry_overs
+    # kpi-shift-downtime-overlap §4 — the ticket pool the header `kpis`'
+    # downtime is computed from: every dimension EXCEPT `shift` narrows it
+    # (mirrors `all_tickets` when no shift filter is active at all — the two
+    # are then the exact same list).
+    downtime_all_tickets = downtime_current + downtime_carry_overs
 
     shift_filter = query.shift or shift_in_path
     planned = _planned_seconds(settings, period_start, period_end, now, shift_filter=shift_filter)
+    # §4 — when a shift filter is active (path step or query param), the
+    # header's downtime is the overlap with THAT shift's own open windows
+    # over `downtime_all_tickets` (unfiltered by stored `shift`); with no
+    # shift filter, it's the plant's own open windows over the (here,
+    # identical) `all_tickets`/`downtime_all_tickets`. §2 — a shift id with
+    # NO configured window of its own (unconfigured/unvalidated `shift:N`,
+    # or a namespace with no shifts at all) is open nowhere:
+    # `_EMPTY_OPEN_WINDOWS` (never `None`, which instead means "don't clip
+    # at all" — the two must not be conflated here).
+    kpis_open_windows = (
+        shift_windows.get(shift_filter, _EMPTY_OPEN_WINDOWS) if shift_filter else plant_windows
+    )
     kpis = _compute_kpis(
-        all_tickets,
+        downtime_all_tickets,
         period_start,
         period_end,
         now,
@@ -2426,6 +2764,7 @@ def get_drilldown(query: DrilldownQueryIn, namespace_id: str) -> DrilldownData:
         type_weight_fn=slice_type_weight_fn,
         perimeter_type_counts=slice_perimeter_type_counts,
         hierarchy=hierarchy,
+        open_windows=kpis_open_windows,
     )
 
     last_kind, _last_id = steps[-1]
@@ -2443,7 +2782,7 @@ def get_drilldown(query: DrilldownQueryIn, namespace_id: str) -> DrilldownData:
                     kpis=_compute_kpis(
                         [
                             t
-                            for t in all_tickets
+                            for t in downtime_all_tickets
                             if line["id"] in _locations_for_ticket(t, hierarchy, "line")
                         ],
                         period_start,
@@ -2457,6 +2796,7 @@ def get_drilldown(query: DrilldownQueryIn, namespace_id: str) -> DrilldownData:
                         ],
                         weight_of=_location_weight_fn(hierarchy, "line", line["id"]),
                         hierarchy=hierarchy,
+                        open_windows=kpis_open_windows,
                     ),
                 )
                 for line in child_lines
@@ -2480,7 +2820,7 @@ def get_drilldown(query: DrilldownQueryIn, namespace_id: str) -> DrilldownData:
                 kpis=_compute_kpis(
                     [
                         t
-                        for t in all_tickets
+                        for t in downtime_all_tickets
                         if station["id"] in _locations_for_ticket(t, hierarchy, "station")
                     ],
                     period_start,
@@ -2494,6 +2834,7 @@ def get_drilldown(query: DrilldownQueryIn, namespace_id: str) -> DrilldownData:
                     ],
                     weight_of=_location_weight_fn(hierarchy, "station", station["id"]),
                     hierarchy=hierarchy,
+                    open_windows=kpis_open_windows,
                 ),
             )
             for station in child_stations
@@ -2506,21 +2847,41 @@ def get_drilldown(query: DrilldownQueryIn, namespace_id: str) -> DrilldownData:
         # dashboard's plant-wide top location level.
         top_kind = _pick_location_kind(hierarchy)
         children = _group_by_location(
-            all_tickets, hierarchy, top_kind, period_start, period_end, now, current
+            downtime_all_tickets,
+            hierarchy,
+            top_kind,
+            period_start,
+            period_end,
+            now,
+            current,
+            open_windows=kpis_open_windows,
         )
         children_hint_key = "dashboard.drill.locationsHint"
 
     pareto = repair = None
     if "process" not in dims_fixed:
         pareto = _pareto_by_process(
-            all_tickets, period_start, period_end, now, weight_of, hierarchy
+            downtime_all_tickets,
+            period_start,
+            period_end,
+            now,
+            weight_of,
+            hierarchy,
+            kpis_open_windows,
         )
         repair = _repair_by_process(current)
 
     downtime_by_shift = None
     if "shift" not in dims_fixed:
         downtime_by_shift = _downtime_by_shift_bars(
-            all_tickets, settings, period_start, period_end, now, weight_of, hierarchy
+            all_tickets,
+            settings,
+            period_start,
+            period_end,
+            now,
+            weight_of,
+            hierarchy,
+            shift_windows=shift_windows,
         )
 
     # `type` is only ever fixed by being a path step itself (there is no
@@ -2528,7 +2889,13 @@ def get_drilldown(query: DrilldownQueryIn, namespace_id: str) -> DrilldownData:
     downtime_by_type = None
     if "type" not in {kind for kind, _ in steps}:
         downtime_by_type = _downtime_by_type_bars(
-            all_tickets, period_start, period_end, now, weight_of, hierarchy
+            downtime_all_tickets,
+            period_start,
+            period_end,
+            now,
+            weight_of,
+            hierarchy,
+            kpis_open_windows,
         )
 
     # Fix #13 / client decision above: a `type` step counts as "process
@@ -2578,6 +2945,7 @@ def _daily_metric_value(
     now: datetime,
     weight_of: Optional[Callable[[dict[str, Any]], int]] = None,
     hierarchy: Optional[dict[str, Any]] = None,
+    open_windows: Optional[_OpenWindows] = None,
 ) -> float:
     """`metric`'s value for a single day.
 
@@ -2592,7 +2960,11 @@ def _daily_metric_value(
     touch this day to 0, so a multi-day ticket contributes its own slice to
     every day it overlaps instead of a single lump sum on its creation day.
     Weighted per workstation affected (§5bis.1bis), same as every other
-    downtime aggregation in this module.
+    downtime aggregation in this module. `open_windows` (kpi-shift-downtime
+    -overlap §4), forwarded to `_ticket_downtime_seconds`, further clips that
+    slice to the plant's (or, under a `shift` filter, that one shift's) own
+    open windows for `day_start`'s civil day — `None` is today's exact
+    unclipped behavior.
     """
     if metric == "count":
         return float(len(day_tickets))
@@ -2600,7 +2972,8 @@ def _daily_metric_value(
         return _mttr_seconds(day_tickets)
     weight_fn = weight_of if weight_of is not None else _flat_weight
     return sum(
-        _ticket_downtime_seconds(issue, day_start, day_end, now, hierarchy) * weight_fn(issue)
+        _ticket_downtime_seconds(issue, day_start, day_end, now, hierarchy, open_windows)
+        * weight_fn(issue)
         for issue in day_tickets
     )
 
@@ -2614,9 +2987,13 @@ def get_daily(query: DailyQueryIn, namespace_id: str) -> DailyPointsOut:
         )
 
     client = get_firestore_client()
-    _namespace, tz, _settings = _namespace_context(client, namespace_id)
+    _namespace, tz, settings = _namespace_context(client, namespace_id)
     period_start, period_end = _period_bounds(query.date_from, query.date_to, tz)
     now = datetime.now(tz)
+
+    # kpi-shift-downtime-overlap §2/§9 performance — built ONCE per request.
+    shift_windows = _shift_open_windows_by_id(settings, period_start, period_end, tz)
+    plant_windows = _plant_open_windows(shift_windows)
 
     current, carry_overs = _fetch_tickets(client, namespace_id, period_start, period_end)
 
@@ -2645,6 +3022,15 @@ def get_daily(query: DailyQueryIn, namespace_id: str) -> DailyPointsOut:
     if query.process:
         current = [t for t in current if _process_for_ticket(t) == query.process]
         carry_overs = [t for t in carry_overs if _process_for_ticket(t) == query.process]
+    # kpi-shift-downtime-overlap §4 — `duration_current`/`duration_carry_overs`
+    # mirror `current`/`carry_overs` through the `process` filter above but
+    # are deliberately snapshotted BEFORE the `shift` filter below: the daily
+    # `duration` metric's downtime under a `shift` filter is the overlap with
+    # that shift's own open windows over every ticket of the scope, not a
+    # subset selected by stored `shift` — while `count`/`mttr` (bucketed from
+    # `current` below) keep selecting by the ticket's STORED `shift`,
+    # unchanged.
+    duration_current, duration_carry_overs = current, carry_overs
     if query.shift:
         current = [t for t in current if str(t.get("shift")) == query.shift]
         carry_overs = [t for t in carry_overs if str(t.get("shift")) == query.shift]
@@ -2658,15 +3044,23 @@ def get_daily(query: DailyQueryIn, namespace_id: str) -> DailyPointsOut:
             continue
         buckets[created_at.astimezone(tz).date()].append(issue)
 
-    # `duration` instead considers the SAME ticket set (current + carry_overs)
-    # for every day of the period — no bucketing by creation day, no special
-    # -casing of the first day — and lets `_ticket_downtime_seconds`'s own
-    # clamp restrict each ticket's contribution to that one day
+    # `duration` instead considers the SAME ticket set (current + carry_overs,
+    # unfiltered by stored `shift`) for every day of the period — no
+    # bucketing by creation day, no special-casing of the first day — and
+    # lets `_ticket_downtime_seconds`'s own clamp+open-window clip restrict
+    # each ticket's contribution to that one day, open time only
     # (`_daily_metric_value`'s docstring). This is what turns a multi-day
     # downtime into a plateau across the days it actually spans instead of a
     # single spike on its creation day, and stops a carry-over ticket from
     # dumping its whole clamped duration onto the window's first day.
-    duration_tickets = current + carry_overs
+    duration_tickets = duration_current + duration_carry_overs
+    # §4 — a `shift` filter narrows `duration`'s open-window clip to that
+    # one shift's own windows; with none, the plant's own (union) windows.
+    # §2 — an unconfigured shift id clips to NOTHING (`_EMPTY_OPEN_WINDOWS`),
+    # never to "don't clip at all" (`None`).
+    duration_open_windows = (
+        shift_windows.get(query.shift, _EMPTY_OPEN_WINDOWS) if query.shift else plant_windows
+    )
 
     points: list[DailyPoint] = []
     day = query.date_from
@@ -2674,11 +3068,13 @@ def get_daily(query: DailyQueryIn, namespace_id: str) -> DailyPointsOut:
         if query.metric == "duration":
             day_start, day_end = _period_bounds(day, day, tz)
             day_tickets = duration_tickets
+            open_windows = duration_open_windows
         else:
             day_start, day_end = period_start, period_end
             day_tickets = buckets.get(day, [])
+            open_windows = None
         value = _daily_metric_value(
-            query.metric, day_tickets, day_start, day_end, now, weight_of, hierarchy
+            query.metric, day_tickets, day_start, day_end, now, weight_of, hierarchy, open_windows
         )
         points.append(DailyPoint(date=day.isoformat(), value=int(round(value))))
         day += timedelta(days=1)

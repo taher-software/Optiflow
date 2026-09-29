@@ -199,13 +199,19 @@ class TestDashboardExactNumbers:
         # 43200s.
         assert data["overall"]["mtbf_seconds"] == 14400
 
-        # by_shift: ticket C (no `shift` field) excluded entirely.
+        # by_shift (kpi-shift-downtime-overlap): downtime is now overlap
+        # with each shift's own open window, over EVERY ticket regardless of
+        # its stored `shift` — ticket C (no stored `shift`, 17:30-18:00) now
+        # contributes to shift 2's downtime because that slice overlaps
+        # shift 2's window (14:00-22:00), even though it carries no stored
+        # `shift` at all. `count` stays keyed by stored `shift` only, so C
+        # never counts toward shift 2's `count` (still 1, from B alone).
         by_shift = {row["id"]: row for row in data["by_shift"]}
         assert by_shift.keys() == {"1", "2"}
         assert by_shift["1"]["kpis"]["count"] == 1
         assert by_shift["1"]["kpis"]["downtime_seconds"] == 3600
         assert by_shift["2"]["kpis"]["count"] == 1
-        assert by_shift["2"]["kpis"]["downtime_seconds"] == 7200
+        assert by_shift["2"]["kpis"]["downtime_seconds"] == 7200 + 1800
 
         # by_location: 2 UAPs -> kind "uap". Rows never carry a meaningful
         # per-row planned-time denominator (fix #5).
