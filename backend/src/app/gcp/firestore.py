@@ -21,6 +21,15 @@ _ALLOWED_OPERATORS = frozenset(
 _SENSITIVE_PARAM_FIELDS = frozenset({"security_code", "password", "device_id"})
 _REDACTED_VALUE = "***REDACTED***"
 
+# Firestore's hard limit on the number of writes in a single batch commit.
+_BATCH_WRITE_LIMIT = 500
+
+
+def _chunked(items: list, size: int):
+    """Yield successive `size`-sized slices of `items`."""
+    for i in range(0, len(items), size):
+        yield items[i : i + size]
+
 
 def _redact_sensitive_params(params: dict) -> dict:
     """Returns a copy of `params` with sensitive field values replaced by a
@@ -717,6 +726,364 @@ class FirestoreClient:
         except Exception as e:
             logger.error(
                 f"Unexpected error deleting document '{document_id}' from collection '{collection_name}': {str(e)}",
+                exc_info=True,
+            )
+            raise
+
+    # ------------------------------------------------------------------
+    # Batch delete support.
+    #
+    # Generic helpers on top of Firestore's `WriteBatch`, used by cleanup
+    # endpoints that must remove many documents at once (e.g. wiping every
+    # doc owned by a tenant) without a per-document round-trip. Chunked to
+    # Firestore's hard limit of 500 operations per batch commit.
+    # ------------------------------------------------------------------
+
+    def batch_delete(self, refs: list) -> int:
+        """
+        Delete a list of `DocumentReference`s using Firestore's batched
+        writes, chunked into groups of at most `_BATCH_WRITE_LIMIT` (500,
+        Firestore's hard cap per batch commit).
+
+        Deleting a reference that doesn't exist is a no-op in Firestore (no
+        error), so the returned count is the number of delete operations
+        submitted, not a verified "existed and was removed" count.
+
+        Args:
+            refs: List of `DocumentReference` (or a test double with the
+                same `.delete(ref)`/`.commit()`-compatible surface via
+                `self.client.batch()`) to delete.
+
+        Returns:
+            int: Number of delete operations submitted.
+
+        Raises:
+            exceptions.PermissionDenied: If credentials lack delete permissions
+            exceptions.DeadlineExceeded: If a batch commit times out
+            Exception: On other Firestore API errors
+
+        Example:
+            refs = [client.client.collection("Users").document(uid) for uid in ids]
+            deleted = client.batch_delete(refs)
+        """
+        if not refs:
+            return 0
+
+        try:
+            deleted = 0
+            for chunk in _chunked(refs, _BATCH_WRITE_LIMIT):
+                batch = self.client.batch()
+                for ref in chunk:
+                    batch.delete(ref)
+                batch.commit()
+                deleted += len(chunk)
+
+            logger.info(f"Batch-deleted {deleted} document(s)")
+            return deleted
+
+        except exceptions.PermissionDenied as e:
+            logger.error(
+                f"Permission denied during batch delete: {str(e)}", exc_info=True
+            )
+            raise
+
+        except exceptions.Unauthenticated as e:
+            logger.error(
+                f"Authentication failed during batch delete: {str(e)}", exc_info=True
+            )
+            raise
+
+        except exceptions.DeadlineExceeded as e:
+            logger.error(f"Timeout during batch delete: {str(e)}", exc_info=True)
+            raise
+
+        except Exception as e:
+            logger.error(f"Unexpected error during batch delete: {str(e)}", exc_info=True)
+            raise
+
+    def delete_matching_documents(
+        self, collection_name: str, params: dict, page_size: int = _BATCH_WRITE_LIMIT
+    ) -> int:
+        """
+        Delete every document in `collection_name` matching `params` (AND
+        logic, equality only), without ever loading more than one page of
+        documents into memory at a time.
+
+        Pages **keys-only** (`.select([])` — no field data transferred, just
+        document ids) in chunks of `page_size` (Firestore's own batch-write
+        cap, 500, by default), batch-deletes each page via `batch_delete`,
+        and repeats the same filtered query until it comes back empty (each
+        deleted page removes those docs from the next page's result, so the
+        loop naturally drains the match set). Safe for a collection with an
+        unbounded number of matches, e.g. every `Users` doc in a large
+        tenant — this never holds more than one page's worth of ids at once.
+
+        `params` is required, non-empty, and every value must be non-blank
+        (`None`/`""` rejected): this method refuses to delete an entire
+        shared collection unfiltered, or on an accidentally-blank scoping
+        value (e.g. a caller that forgot to set `namespace_id`).
+
+        Args:
+            collection_name: Name of the collection (e.g. "Users")
+            params: Non-empty dict of field-value pairs (equality only)
+                every deleted document must match; no value may be `None`
+                or `""`.
+            page_size: Max documents fetched/deleted per round trip
+                (defaults to Firestore's 500-op batch-write cap).
+
+        Returns:
+            int: Total number of documents deleted.
+
+        Raises:
+            ValueError: If collection_name or params is invalid/empty/blank
+            Exception: On Firestore API errors (see `batch_delete`)
+
+        Example:
+            deleted = client.delete_matching_documents("Users", {"namespace_id": ns_id})
+        """
+        if not collection_name or not isinstance(collection_name, str):
+            raise ValueError("collection_name must be a non-empty string")
+
+        if not params or any(value is None or value == "" for value in params.values()):
+            raise ValueError(
+                "params must be a non-empty dict of non-blank values — refuses "
+                "to delete an entire shared collection unfiltered"
+            )
+
+        try:
+            collection_ref = self.client.collection(collection_name)
+            deleted = 0
+            while True:
+                query = collection_ref
+                for field, value in params.items():
+                    query = query.where(field, "==", value)
+                page = list(query.select([]).limit(page_size).stream())
+                if not page:
+                    break
+                refs = [collection_ref.document(snapshot.id) for snapshot in page]
+                deleted += self.batch_delete(refs)
+
+            logger.info(
+                f"Deleted {deleted} document(s) from collection '{collection_name}' "
+                f"matching params: {params}"
+            )
+            return deleted
+
+        except exceptions.PermissionDenied as e:
+            logger.error(
+                f"Permission denied deleting matching documents from collection "
+                f"'{collection_name}'. Check Firestore IAM permissions: {str(e)}",
+                exc_info=True,
+            )
+            raise
+
+        except exceptions.Unauthenticated as e:
+            logger.error(
+                f"Authentication failed deleting matching documents from collection "
+                f"'{collection_name}': {str(e)}",
+                exc_info=True,
+            )
+            raise
+
+        except exceptions.DeadlineExceeded as e:
+            logger.error(
+                f"Timeout deleting matching documents from collection "
+                f"'{collection_name}': {str(e)}",
+                exc_info=True,
+            )
+            raise
+
+        except Exception as e:
+            logger.error(
+                f"Unexpected error deleting matching documents from collection "
+                f"'{collection_name}': {str(e)}",
+                exc_info=True,
+            )
+            raise
+
+    def delete_subcollection(
+        self, parent_collection: str, parent_id: str, sub_collection: str
+    ) -> int:
+        """
+        Delete every document in `parent_collection/parent_id/sub_collection`
+        using a batched delete. Already scoped by construction (the whole
+        subcollection lives under one parent document), so no extra params
+        are needed.
+
+        Loads the whole subcollection's ids into memory first (via
+        `find_subdocuments`), so it's only appropriate for a subcollection
+        known to stay small. A subcollection that can grow unbounded (e.g. a
+        tenant's downtime tickets) should go through
+        `recursive_delete_document` instead, pairing it with
+        `count_subdocuments` if a precise count is needed.
+
+        Args:
+            parent_collection: Name of the top-level collection (e.g. "down_time")
+            parent_id: Id of the parent document (e.g. a namespace/ticket id)
+            sub_collection: Name of the subcollection (e.g. "issues")
+
+        Returns:
+            int: Number of documents deleted.
+
+        Raises:
+            ValueError: If any path part is invalid
+            Exception: On Firestore API errors (see `find_subdocuments` / `batch_delete`)
+
+        Example:
+            deleted = client.delete_subcollection("down_time", down_time_id, "issues")
+        """
+        docs = self.find_subdocuments(parent_collection, parent_id, sub_collection)
+        collection_ref = self._sub_collection_ref(
+            parent_collection, parent_id, sub_collection
+        )
+        refs = [collection_ref.document(doc["id"]) for doc in docs]
+        return self.batch_delete(refs)
+
+    def count_subdocuments(
+        self, parent_collection: str, parent_id: str, sub_collection: str
+    ) -> int:
+        """
+        Count documents in `parent_collection/parent_id/sub_collection`
+        without loading them, via Firestore's `count()` aggregation query —
+        a single round trip that returns just a number, no document data
+        transferred. Used ahead of `recursive_delete_document` so a cleanup
+        can report an accurate per-subcollection count without a separate
+        full listing (which `recursive_delete` itself doesn't provide,
+        since its own return value is an undifferentiated total across the
+        whole deleted subtree).
+
+        Args:
+            parent_collection: Name of the top-level collection (e.g. "down_time")
+            parent_id: Id of the parent document (e.g. a namespace id)
+            sub_collection: Name of the subcollection (e.g. "issues")
+
+        Returns:
+            int: Number of documents currently in the subcollection.
+
+        Raises:
+            ValueError: If any path part is invalid
+            Exception: On Firestore API errors
+
+        Example:
+            n = client.count_subdocuments("down_time", namespace_id, "issues")
+        """
+        try:
+            collection_ref = self._sub_collection_ref(
+                parent_collection, parent_id, sub_collection
+            )
+            result = collection_ref.count().get()
+            return int(result[0][0].value)
+
+        except exceptions.PermissionDenied as e:
+            logger.error(
+                f"Permission denied counting subcollection "
+                f"'{parent_collection}/{parent_id}/{sub_collection}'. "
+                f"Check Firestore IAM permissions: {str(e)}",
+                exc_info=True,
+            )
+            raise
+
+        except exceptions.Unauthenticated as e:
+            logger.error(
+                f"Authentication failed counting subcollection "
+                f"'{parent_collection}/{parent_id}/{sub_collection}': {str(e)}",
+                exc_info=True,
+            )
+            raise
+
+        except exceptions.DeadlineExceeded as e:
+            logger.error(
+                f"Timeout counting subcollection "
+                f"'{parent_collection}/{parent_id}/{sub_collection}': {str(e)}",
+                exc_info=True,
+            )
+            raise
+
+        except Exception as e:
+            logger.error(
+                f"Unexpected error counting subcollection "
+                f"'{parent_collection}/{parent_id}/{sub_collection}': {str(e)}",
+                exc_info=True,
+            )
+            raise
+
+    def recursive_delete_document(self, collection_name: str, document_id: str) -> int:
+        """
+        Delete a document and everything nested under it — every
+        subcollection, recursively — via Firestore's own `recursive_delete`,
+        which streams and deletes server-side without this process ever
+        holding the tree in memory. Use this instead of a manual
+        "list-then-batch-delete" pass whenever a document may own an
+        unbounded number of descendants (e.g. a tenant's downtime tickets
+        under `down_time/{namespace_id}/issues`).
+
+        Deleting a reference with no data of its own (only descendants, or
+        nothing at all) is a no-op that costs nothing extra — safe to call
+        even when the parent doc itself may not exist.
+
+        Args:
+            collection_name: Name of the top-level collection (e.g. "down_time")
+            document_id: Id of the document to delete, along with its subtree
+
+        Returns:
+            int: Total number of documents Firestore reports deleted (the
+                parent doc, if it had data, plus every descendant). This
+                total does not break down by subcollection — callers that
+                need a specific subcollection's count should get it via
+                `count_subdocuments` *before* calling this.
+
+        Raises:
+            ValueError: If collection_name or document_id is invalid
+            exceptions.PermissionDenied: If credentials lack delete permissions
+            exceptions.DeadlineExceeded: If the operation times out
+            Exception: On other Firestore API errors
+
+        Example:
+            deleted = client.recursive_delete_document("down_time", namespace_id)
+        """
+        if not collection_name or not isinstance(collection_name, str):
+            raise ValueError("collection_name must be a non-empty string")
+
+        if not document_id or not isinstance(document_id, str):
+            raise ValueError("document_id must be a non-empty string")
+
+        try:
+            doc_ref = self.client.collection(collection_name).document(document_id)
+            total = self.client.recursive_delete(doc_ref)
+            logger.info(
+                f"Recursively deleted {total} document(s) under "
+                f"'{collection_name}/{document_id}'"
+            )
+            return total
+
+        except exceptions.PermissionDenied as e:
+            logger.error(
+                f"Permission denied during recursive delete of "
+                f"'{collection_name}/{document_id}': {str(e)}",
+                exc_info=True,
+            )
+            raise
+
+        except exceptions.Unauthenticated as e:
+            logger.error(
+                f"Authentication failed during recursive delete of "
+                f"'{collection_name}/{document_id}': {str(e)}",
+                exc_info=True,
+            )
+            raise
+
+        except exceptions.DeadlineExceeded as e:
+            logger.error(
+                f"Timeout during recursive delete of "
+                f"'{collection_name}/{document_id}': {str(e)}",
+                exc_info=True,
+            )
+            raise
+
+        except Exception as e:
+            logger.error(
+                f"Unexpected error during recursive delete of "
+                f"'{collection_name}/{document_id}': {str(e)}",
                 exc_info=True,
             )
             raise
