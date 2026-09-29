@@ -97,8 +97,8 @@ class TestDashboard:
         assert data["overall"] == {
             "downtime_seconds": 0,
             "count": 0,
-            "mttr_seconds": 0,
-            "mtbf_seconds": data["overall"]["mtbf_seconds"],
+            "mttr_seconds": None,
+            "mtbf_seconds": None,
             # An empty namespace holds no bottleneck/critical workstation, so
             # both slices are `None` (not a zeroed slice).
             "bottleneck": None,

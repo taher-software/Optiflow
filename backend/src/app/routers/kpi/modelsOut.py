@@ -25,13 +25,17 @@ class BaseKpis(BaseModel):
     )
     count: int = Field(..., description="Number of tickets in the slice (unweighted).")
     mttr_seconds: int | None = Field(
-        None, description="Mean created_at -> resolved_at over CLOSED tickets only, seconds."
+        None,
+        description=(
+            "Mean created_at -> resolved_at over CLOSED tickets only, seconds. "
+            "`None` when the slice has no CLOSED ticket."
+        ),
     )
     mtbf_seconds: Optional[int] = Field(
         default=None,
         description=(
-            "Planned time of the slice's period divided by `count`; equals "
-            "the planned time itself when `count` is 0. `None` when the "
+            "Planned time of the slice's period divided by `count`. `None` "
+            "when `count` is 0, or when the "
             "slice has no meaningful planned-time denominator (unconfigured "
             "namespace planned time, or a breakdown row that doesn't carry "
             "its own planned time — e.g. by_location/by_type)."

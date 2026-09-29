@@ -167,12 +167,12 @@ class TestMttrSeconds:
 
         assert _mttr_seconds(tickets) == 2 * 3600
 
-    def test_no_closed_tickets_returns_zero(self):
+    def test_no_closed_tickets_returns_none(self):
         tickets = [_issue(status=DownTimeStatus.PENDING.value)]
-        assert _mttr_seconds(tickets) == 0.0
+        assert _mttr_seconds(tickets) is None
 
-    def test_empty_list_returns_zero(self):
-        assert _mttr_seconds([]) == 0.0
+    def test_empty_list_returns_none(self):
+        assert _mttr_seconds([]) is None
 
 
 # --------------------------------------------------------------------------
@@ -204,7 +204,7 @@ class TestComputeKpis:
         assert kpis.downtime_seconds == int(round(expected_downtime))
         assert kpis.mtbf_seconds == int(round(planned_seconds / 2))
 
-    def test_empty_slice_returns_zeros(self):
+    def test_empty_slice_returns_zero_downtime_and_null_mttr_mtbf(self):
         period_start = datetime(2026, 1, 10, 0, 0, tzinfo=UTC)
         period_end = datetime(2026, 1, 10, 23, 59, 59, tzinfo=UTC)
         now = datetime(2026, 1, 10, 12, 0, tzinfo=UTC)
@@ -214,8 +214,8 @@ class TestComputeKpis:
 
         assert kpis.downtime_seconds == 0
         assert kpis.count == 0
-        assert kpis.mttr_seconds == 0
-        assert kpis.mtbf_seconds == int(round(planned_seconds))
+        assert kpis.mttr_seconds is None
+        assert kpis.mtbf_seconds is None
 
     def test_zero_planned_seconds_gives_none_mtbf(self):
         """Fix #3: a non-positive planned-time denominator leaves MTBF with

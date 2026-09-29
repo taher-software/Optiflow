@@ -322,8 +322,8 @@ class TestCarryOverTickets:
         assert data["overall"]["count"] == 0
         # Clamped to [period_start 00:00, resolved_at 10:00] = 10h.
         assert data["overall"]["downtime_seconds"] == 10 * 3600
-        # No CLOSED ticket in the current-range query -> mttr stays 0.
-        assert data["overall"]["mttr_seconds"] == 0
+        # No CLOSED ticket in the current-range query -> no mttr (null).
+        assert data["overall"]["mttr_seconds"] is None
 
     def test_ticket_resolved_before_window_is_not_carried_over(
         self, client, seed_user, auth_headers, fake_db, freeze_kpi_clock
@@ -1360,7 +1360,9 @@ class TestMtbfPlannedTimeRevision3:
         current, not-yet-finished day's planned time (MTBF's denominator,
         since there are 0 tickets) must be the shift's raw elapsed time
         (12:00 - 06:00 = 6h) minus the break's full 30min duration, NOT the
-        old fractional estimate (elapsed/window * break-adjusted-window)."""
+        old fractional estimate (elapsed/window * break-adjusted-window).
+        One ticket is seeded so `mtbf_seconds` (planned / count) reads the
+        planned time back directly — with 0 tickets MTBF is null."""
         owner = _owner(seed_user)
         _seed_settings(
             fake_db,
@@ -1372,6 +1374,7 @@ class TestMtbfPlannedTimeRevision3:
                 "break_end_time": "10:30",
             },
         )
+        _seed_issue(fake_db, created_at=_paris(7), shift=1)
         fixed = datetime(2026, 1, 15, 12, 0, 0)
 
         class _FixedDatetime(datetime):
@@ -1484,8 +1487,9 @@ class TestMtbfPlannedTimeRevision3:
         morning's 6h tail + tonight's 1h45 progress so far); the break's own
         civil-day occupation is 45min (this morning's 00:00 -> 00:30 tail
         [30min] + tonight's 23:30 -> 23:45 so far [15min]) -> net planned
-        time for the still-open day is 7h, with 0 tickets so `mtbf_seconds`
-        reads that planned time back directly."""
+        time for the still-open day is 7h, with exactly 1 ticket so
+        `mtbf_seconds` (planned / count) reads that planned time back
+        directly — with 0 tickets MTBF is null."""
         owner = _owner(seed_user)
         _seed_settings(
             fake_db,
@@ -1497,6 +1501,7 @@ class TestMtbfPlannedTimeRevision3:
                 "break_end_time": "00:30",
             },
         )
+        _seed_issue(fake_db, created_at=_paris(23), shift=1)
         fixed = datetime(2026, 1, 15, 23, 45, 0)
 
         class _FixedDatetime(datetime):

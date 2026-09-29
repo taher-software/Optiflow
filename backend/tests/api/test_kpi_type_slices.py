@@ -560,11 +560,9 @@ class TestSliceAbsentWhenPerimeterHasNoWorkstationOfType:
         assert overall["bottleneck"] is not None
         assert overall["bottleneck"]["downtime_seconds"] == 0
         assert overall["bottleneck"]["count"] == 0
-        assert overall["bottleneck"]["mttr_seconds"] == 0
-        # `_compute_kpis` returns `planned_seconds` itself when count == 0
-        # (reused verbatim for the slice, §3.2) -- single 06:00-14:00 shift,
-        # one full unproratable day -> 28800.
-        assert overall["bottleneck"]["mtbf_seconds"] == 28800
+        # No ticket in the slice -> no mttr and no mtbf (null), not 0.
+        assert overall["bottleneck"]["mttr_seconds"] is None
+        assert overall["bottleneck"]["mtbf_seconds"] is None
 
     def test_uap_row_bottleneck_is_none_for_a_uap_with_no_bottleneck_even_though_the_plant_has_one(
         self, client, seed_user, auth_headers, fake_db, seed_uap, seed_production_line, seed_workstation
