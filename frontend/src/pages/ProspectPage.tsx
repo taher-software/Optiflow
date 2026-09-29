@@ -50,14 +50,14 @@ export function ProspectPage() {
           <CtaButton variant="primary" href={CALENDLY_URL} external>
             {t("prospect.hero.primaryCta")}
           </CtaButton>
-          <CtaButton variant="ghost">
+          <CtaButton variant="ghost" href="#benefits">
             {t("prospect.hero.secondaryCta")}
           </CtaButton>
         </div>
       </section>
 
       {/* Features */}
-      <section className="mx-auto max-w-6xl px-6 pb-24">
+      <section id="benefits" className="mx-auto max-w-6xl scroll-mt-8 px-6 pb-24">
         <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
           {FEATURE_ICONS.map((icon) => (
             <FeatureCard

@@ -15,7 +15,7 @@ export const LEGAL = {
   /** Tax identification number ("matricule fiscal"). */
   taxId: "1941754F",
   /** Contact address for support, privacy requests and legal notices. */
-  contactEmail: "ttaherhagui@gmail.com",
+  contactEmail: "azibodin@azibodin.tn",
   /** Contact phone, formatted for display. */
   contactPhone: "+216 92 152 219",
   /** Same number in E.164, for the `tel:` href. */

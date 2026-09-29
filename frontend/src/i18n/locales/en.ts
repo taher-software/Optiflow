@@ -133,40 +133,40 @@ const en = {
     },
 
     prospect: {
-      badge: "Downtime management for modern plants",
+      badge: "Production performance, one stoppage at a time",
       hero: {
-        headline: "Stop losing hours to machine downtime.",
+        headline: "Less downtime. More production.",
         subhead:
-          "Operio is the multi-tenant platform that detects every stoppage, drives it to resolution, and helps your plant eliminate downtime for good.",
+          "Operio helps your plant win back lost hours, hold every team accountable, and eliminate the causes of lost production for good.",
         primaryCta: "Request a demo",
-        secondaryCta: "See how it works",
+        secondaryCta: "See the benefits",
       },
       features: {
         automate: {
-          title: "Automate downtime management",
+          title: "More productive time",
           description:
-            "The instant a workstation stops, Operio opens a ticket, notifies the right responder, and follows it through acknowledge, repair, and validated recovery — no manual chasing.",
+            "Shorten every stoppage and give your lines back the hours they were losing. Your teams focus on production, not on coordination.",
         },
         empower: {
-          title: "Empower your staff",
+          title: "Accountable teams",
           description:
-            "Give operators and technicians one clear workflow on any device: see the issue, acknowledge it, and keep the ticket updated from the floor to the finish.",
+            "Everyone knows what is expected of them and when. Response commitments are clear, measured and shared, from operator to plant manager.",
         },
         transparent: {
-          title: "Transparent planning",
+          title: "Full traceability",
           description:
-            "Every stoppage, timestamp, and action is visible in real time. Plans are built on what is actually happening on the line — not on guesswork.",
+            "Every stoppage leaves a reliable, usable record. Manage on facts, back up your decisions, and walk into audits with confidence.",
         },
         rootcause: {
-          title: "Identify & eradicate root causes",
+          title: "Fewer causes of lost production",
           description:
-            "Turn downtime history into root-cause insight, then eliminate recurring failures so the same machine never steals the same hour twice.",
+            "See what really costs you time and act first where the impact is greatest, so the same problems stop coming back.",
         },
       },
       closing: {
         title: "Turn downtime into uptime.",
         subtitle:
-          "See how Operio keeps your production flowing — from the first stoppage alert to a root cause you never have to face again.",
+          "Book a demo to see what Operio can bring to your plant: productivity, team accountability and measurable continuous improvement.",
       },
       footer: "© {{year}} Operio. Keep production flowing.",
     },

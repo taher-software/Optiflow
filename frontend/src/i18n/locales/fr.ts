@@ -133,40 +133,40 @@ const fr = {
     },
 
     prospect: {
-      badge: "La gestion des arrêts pour les usines modernes",
+      badge: "La performance de production, arrêt après arrêt",
       hero: {
-        headline: "Ne perdez plus d'heures à cause des arrêts machine.",
+        headline: "Moins d'arrêts. Plus de production.",
         subhead:
-          "Operio est la plateforme multi-tenant qui détecte chaque arrêt, le pilote jusqu'à sa résolution et aide votre usine à éliminer durablement les temps d'arrêt.",
+          "Operio aide votre usine à récupérer les heures perdues, à responsabiliser chaque équipe et à éliminer durablement les causes de non-production.",
         primaryCta: "Demander une démo",
-        secondaryCta: "Découvrir le fonctionnement",
+        secondaryCta: "Voir les bénéfices",
       },
       features: {
         automate: {
-          title: "Automatiser la gestion des arrêts",
+          title: "Plus de temps productif",
           description:
-            "Dès qu'un poste s'arrête, Operio ouvre un ticket, notifie le bon intervenant et le suit jusqu'à la prise en charge, la réparation et la reprise validée — sans relance manuelle.",
+            "Réduisez la durée de chaque arrêt et rendez à vos lignes les heures qu'elles perdaient. Vos équipes se concentrent sur la production, pas sur la coordination.",
         },
         empower: {
-          title: "Donner du pouvoir à vos équipes",
+          title: "Des équipes responsabilisées",
           description:
-            "Offrez aux opérateurs et techniciens un flux de travail clair sur tout appareil : voir l'incident, le prendre en charge et mettre à jour le ticket, de l'atelier jusqu'à la clôture.",
+            "Chacun sait ce qu'on attend de lui et quand. Les engagements de réactivité sont clairs, mesurés et partagés, de l'opérateur au responsable d'usine.",
         },
         transparent: {
-          title: "Une planification transparente",
+          title: "Une traçabilité complète",
           description:
-            "Chaque arrêt, horodatage et action est visible en temps réel. Les plans reposent sur ce qui se passe réellement sur la ligne — pas sur des suppositions.",
+            "Chaque arrêt laisse un historique fiable et exploitable. Vous pilotez sur des faits, vous justifiez vos décisions et vous préparez vos audits sereinement.",
         },
         rootcause: {
-          title: "Identifier et éradiquer les causes racines",
+          title: "Moins de causes de non-production",
           description:
-            "Transformez l'historique des arrêts en analyse des causes racines, puis éliminez les pannes récurrentes pour qu'une même machine ne vous coûte jamais deux fois la même heure.",
+            "Identifiez ce qui vous coûte vraiment du temps et agissez en priorité là où l'impact est le plus fort, pour que les mêmes problèmes ne reviennent pas.",
         },
       },
       closing: {
         title: "Transformez les arrêts en temps de production.",
         subtitle:
-          "Découvrez comment Operio maintient votre production en flux — de la première alerte d'arrêt à une cause racine que vous n'aurez plus jamais à affronter.",
+          "Découvrez en démo ce qu'Operio peut apporter à votre usine : productivité, responsabilité des équipes et amélioration continue mesurable.",
       },
       footer: "© {{year}} Operio. Gardez votre production en flux.",
     },

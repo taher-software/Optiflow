@@ -279,7 +279,7 @@ def _ticket_downtime_seconds(
     return max(0.0, (effective_end - effective_start).total_seconds())
 
 
-def _mttr_seconds(tickets: list[dict[str, Any]]) -> float:
+def _mttr_seconds(tickets: list[dict[str, Any]]) -> float | None:
     """§5bis.2 — mean `created_at -> resolved_at` over CLOSED tickets only
     (0 when there are none)."""
     durations: list[float] = []
@@ -291,7 +291,7 @@ def _mttr_seconds(tickets: list[dict[str, Any]]) -> float:
         if created_at is None or resolved_at is None:
             continue
         durations.append(max(0.0, (resolved_at - created_at).total_seconds()))
-    return sum(durations) / len(durations) if durations else 0.0
+    return sum(durations) / len(durations) if durations else None
 
 
 def _compute_base_kpis(
@@ -343,11 +343,11 @@ def _compute_base_kpis(
     if planned_seconds <= 0:
         mtbf: Optional[float] = None
     else:
-        mtbf = planned_seconds if count == 0 else planned_seconds / count
+        mtbf = None if count == 0 else planned_seconds / count
     return BaseKpis(
         downtime_seconds=int(round(downtime)),
         count=count,
-        mttr_seconds=int(round(mttr)),
+        mttr_seconds=int(round(mttr)) if mttr is not None else None,
         mtbf_seconds=int(round(mtbf)) if mtbf is not None else None,
     )
 
@@ -489,11 +489,11 @@ def _compute_type_slice(
     if planned_seconds <= 0:
         mtbf: Optional[float] = None
     else:
-        mtbf = planned_seconds if count == 0 else planned_seconds / count
+        mtbf = None if count == 0 else planned_seconds / count
     return BaseKpis(
         downtime_seconds=int(round(downtime)),
         count=count,
-        mttr_seconds=int(round(mttr)),
+        mttr_seconds=int(round(mttr)) if mttr is not None else None,
         mtbf_seconds=int(round(mtbf)) if mtbf is not None else None,
     )
 
@@ -791,6 +791,7 @@ def _planned_seconds(
     0 when the effective window is empty or there's no positive planned time
     at all."""
     effective_end = min(period_end, now)
+
     if effective_end <= period_start:
         return 0.0
 

@@ -80,6 +80,7 @@ async def get_dashboard(
     to: date = Query(..., description="Period end (inclusive)."),
     current: dict = Depends(_kpi_scope),
 ) -> ApiResponse[DashboardData]:
+
     query = _build_query(DashboardQueryIn, date_from=from_, date_to=to)
     result = services.get_dashboard(query, current["namespace_id"])
     return ApiResponse(data=result)

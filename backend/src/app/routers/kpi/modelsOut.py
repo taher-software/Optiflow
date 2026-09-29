@@ -24,8 +24,8 @@ class BaseKpis(BaseModel):
         ),
     )
     count: int = Field(..., description="Number of tickets in the slice (unweighted).")
-    mttr_seconds: int = Field(
-        ..., description="Mean created_at -> resolved_at over CLOSED tickets only, seconds."
+    mttr_seconds: int | None = Field(
+        None, description="Mean created_at -> resolved_at over CLOSED tickets only, seconds."
     )
     mtbf_seconds: Optional[int] = Field(
         default=None,
