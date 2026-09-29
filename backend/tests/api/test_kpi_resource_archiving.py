@@ -307,7 +307,7 @@ class TestMttrUnaffectedByArchivingExceptViaStatus:
 
         res = client.get("/kpi/dashboard", params=_period(), headers=auth_headers(owner))
         assert res.status_code == 200, res.text
-        assert res.json()["data"]["overall"]["mttr_seconds"] == 0
+        assert res.json()["data"]["overall"]["mttr_seconds"] is None
 
     def test_ticket_closed_before_the_archive_counts_in_mttr_with_real_duration(
         self, client, seed_user, auth_headers, fake_db, one_station_hierarchy, freeze_kpi_clock

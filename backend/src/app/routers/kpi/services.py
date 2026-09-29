@@ -281,7 +281,7 @@ def _ticket_downtime_seconds(
 
 def _mttr_seconds(tickets: list[dict[str, Any]]) -> float | None:
     """§5bis.2 — mean `created_at -> resolved_at` over CLOSED tickets only
-    (0 when there are none)."""
+    (`None` when there are none)."""
     durations: list[float] = []
     for issue in tickets:
         if issue.get("status") != DownTimeStatus.CLOSED.value:
@@ -2597,7 +2597,10 @@ def _daily_metric_value(
     if metric == "count":
         return float(len(day_tickets))
     if metric == "mttr":
-        return _mttr_seconds(day_tickets)
+        # A day with no CLOSED ticket has no MTTR (`None`); the daily series
+        # reports it as 0, which the web chart reads as "no repair that day".
+        mttr = _mttr_seconds(day_tickets)
+        return mttr if mttr is not None else 0.0
     weight_fn = weight_of if weight_of is not None else _flat_weight
     return sum(
         _ticket_downtime_seconds(issue, day_start, day_end, now, hierarchy) * weight_fn(issue)
