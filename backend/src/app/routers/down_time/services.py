@@ -1192,10 +1192,13 @@ def _gantt_window(
     window_start = min(starts)
     window_end = max(ends)
     shifts = [p for _, p in sorted(zip(starts, projected), key=lambda pair: pair[0])]
+    
+    # import ipdb; ipdb.set_trace()
 
     if window_end <= window_start:
         window_start = datetime.combine(day, time.min, tzinfo=tz)
         window_end = window_start + timedelta(days=1)
+    
 
     return window_start, window_end, shifts
 
@@ -1609,6 +1612,8 @@ def get_down_time_gantt(
     _namespace, tz, settings = kpi_services._namespace_context(client, namespace_id)
     resolved_day = day or datetime.now(tz).date()
     window_start, window_end, shifts = _gantt_window(settings, resolved_day, tz)
+
+    #import ipdb; ipdb.set_trace()
 
     issues = _fetch_gantt_issues(client, namespace_id, window_start, window_end)
     by_station, by_line, by_uap, plant_issues = _own_scope_groups(issues)

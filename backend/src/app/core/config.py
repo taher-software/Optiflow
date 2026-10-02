@@ -8,12 +8,16 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    # Frontend URL used to build the email-confirmation link.
+    # Frontend URL used to build the email-confirmation link. Also an allowed
+    # CORS origin.
     frontend_url: str = "http://localhost:5173/"
+    # Extra allowed CORS origins, comma-separated (e.g. the apex domain next to
+    # `www`, or a legacy frontend host). `frontend_url` is always allowed too.
+    cors_allowed_origins: str = ""
 
     # Resend (transactional email).
     resend_api_key: str = ""
-    email_from: str = "bodor@bodor.tn"
+    email_from: str = "azibodin@azibodin.tn"
 
     # Security — signs the email-confirmation and access tokens.
     secret_key: str = "change-me-in-production"
